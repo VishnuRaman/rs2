@@ -901,6 +901,654 @@ fn main() {
     });
 }
 ```
+## Pipe: Stream Transformation Functions
+
+A Pipe represents a stream transformation from one type to another. It's a function from Stream[I] to Stream[O] that can be composed with other pipes to create complex stream processing pipelines.
+
+### Pipe Methods
+
+- `Pipe::new(f)` - Create a new pipe from a function
+- `apply(input)` - Apply this pipe to a stream
+- `compose(other)` - Compose this pipe with another pipe
+
+### Utility Functions
+
+- `map(f)` - Create a pipe that applies the given function to each element
+- `filter(predicate)` - Create a pipe that filters elements based on the predicate
+- `compose(p1, p2)` - Compose two pipes together
+- `identity()` - Identity pipe that doesn't transform the stream
+
+### Examples
+
+#### Basic Pipe Usage
+
+```rust
+use rs2::pipe::*;
+use rs2::rs2::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let numbers = from_iter(vec![1, 2, 3, 4, 5]);
+
+        // Create a pipe that doubles each number
+        let double_pipe = map(|x: i32| x * 2);
+
+        // Apply the pipe to the stream
+        let doubled = double_pipe.apply(numbers);
+
+        // Collect the results
+        let result = doubled.collect::<Vec<_>>().await;
+        println!("Doubled: {:?}", result); // [2, 4, 6, 8, 10]
+    });
+}
+```
+
+#### Composing Pipes
+
+```rust
+use rs2::pipe::*;
+use rs2::rs2::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let numbers = from_iter(vec![1, 2, 3, 4, 5, 6]);
+
+        // Create pipes for different transformations
+        let even_filter = filter(|&x: &i32| x % 2 == 0);
+        let double_map = map(|x: i32| x * 2);
+
+        // Compose the pipes using the compose function
+        let even_then_double = compose(even_filter, double_map);
+
+        // Apply the composed pipe to the stream
+        let result_stream = even_then_double.apply(numbers);
+
+        // Collect the results
+        let result = result_stream.collect::<Vec<_>>().await;
+        println!("Even numbers doubled: {:?}", result); // [4, 8, 12]
+
+        // Alternatively, use the compose method on the Pipe
+        let numbers = from_iter(vec![1, 2, 3, 4, 5, 6]);
+        let even_filter = filter(|&x: &i32| x % 2 == 0);
+        let double_map = map(|x: i32| x * 2);
+
+        // Use the compose method
+        let even_then_double = even_filter.compose(double_map);
+
+        // Apply the composed pipe to the stream
+        let result_stream = even_then_double.apply(numbers);
+
+        // Collect the results
+        let result = result_stream.collect::<Vec<_>>().await;
+        println!("Even numbers doubled (using compose method): {:?}", result); // [4, 8, 12]
+    });
+}
+```
+
+#### Real-World Example: User Data Processing Pipeline
+
+```rust
+use rs2::pipe::*;
+use rs2::rs2::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+use std::collections::HashMap;
+
+// Define our User type
+#[derive(Debug, Clone, PartialEq)]
+struct User {
+    id: u64,
+    name: String,
+    email: String,
+    active: bool,
+    role: String,
+    login_count: u32,
+}
+
+// Define a UserStats type
+#[derive(Debug, Clone, PartialEq)]
+struct UserStats {
+    id: u64,
+    name: String,
+    role: String,
+    is_active: bool,
+    login_frequency: &'static str,
+}
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of users
+        let users = vec![
+            User { id: 1, name: "Alice".to_string(), email: "alice@example.com".to_string(), active: true, role: "admin".to_string(), login_count: 120 },
+            User { id: 2, name: "Bob".to_string(), email: "bob@example.com".to_string(), active: true, role: "user".to_string(), login_count: 45 },
+            User { id: 3, name: "Charlie".to_string(), email: "charlie@example.com".to_string(), active: false, role: "user".to_string(), login_count: 5 },
+            User { id: 4, name: "Diana".to_string(), email: "diana@example.com".to_string(), active: true, role: "moderator".to_string(), login_count: 80 },
+            User { id: 5, name: "Eve".to_string(), email: "eve@example.com".to_string(), active: true, role: "user".to_string(), login_count: 30 },
+        ];
+
+        // Create pipes for different transformations
+
+        // 1. Filter active users
+        let active_filter = filter(|user: &User| user.active);
+
+        // 2. Transform User to UserStats
+        let stats_transform = map(|user: User| {
+            let frequency = match user.login_count {
+                0..=10 => "Low",
+                11..=50 => "Medium",
+                _ => "High",
+            };
+
+            UserStats {
+                id: user.id,
+                name: user.name,
+                role: user.role,
+                is_active: user.active,
+                login_frequency: frequency,
+            }
+        });
+
+        // 3. Compose the pipes
+        let process_users = active_filter.compose(stats_transform);
+
+        // Apply the processing pipeline to the stream
+        let user_stream = from_iter(users);
+        let stats_stream = process_users.apply(user_stream);
+
+        // Collect the results
+        let user_stats = stats_stream.collect::<Vec<_>>().await;
+
+        // Print the results
+        println!("User Statistics:");
+        for stats in user_stats {
+            println!("  - {} ({}): {} usage", stats.name, stats.role, stats.login_frequency);
+        }
+
+        // Group users by login frequency using another pipe
+        let group_by_frequency = map(|stats: UserStats| {
+            (stats.login_frequency, stats)
+        });
+
+        // Apply the grouping pipe to the stats stream
+        let user_stream = from_iter(users);
+        let stats_stream = process_users.apply(user_stream);
+        let grouped_stream = group_by_frequency.apply(stats_stream);
+
+        // Collect and organize by frequency
+        let mut frequency_groups: HashMap<&str, Vec<UserStats>> = HashMap::new();
+        let grouped_stats = grouped_stream.collect::<Vec<_>>().await;
+
+        for (frequency, stats) in grouped_stats {
+            frequency_groups.entry(frequency).or_insert_with(Vec::new).push(stats);
+        }
+
+        // Print the grouped results
+        println!("\nUsers by Login Frequency:");
+        for (frequency, users) in &frequency_groups {
+            println!("  {} Usage ({} users):", frequency, users.len());
+            for user in users {
+                println!("    - {} ({})", user.name, user.role);
+            }
+        }
+    });
+}
+```
+
+## Queue: Concurrent Queue with Stream Interface
+
+A Queue represents a concurrent queue with a Stream interface for dequeuing and async methods for enqueuing. It supports both bounded and unbounded queues.
+
+### Queue Types
+
+- `Queue::bounded(capacity)` - Create a new bounded queue with the given capacity
+- `Queue::unbounded()` - Create a new unbounded queue
+
+### Queue Methods
+
+- `enqueue(item)` - Enqueue an item into the queue
+- `try_enqueue(item)` - Try to enqueue an item without blocking
+- `dequeue()` - Get a stream for dequeuing items
+- `close()` - Close the queue, preventing further enqueues
+- `capacity()` - Get the capacity of the queue (None for unbounded)
+- `is_empty()` - Check if the queue is empty
+- `len()` - Get the current number of items in the queue
+
+### Examples
+
+#### Basic Queue Usage
+
+```rust
+use rs2::queue::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a bounded queue with capacity 5
+        let queue = Queue::bounded(5);
+
+        // Enqueue some items
+        for i in 1..=3 {
+            queue.enqueue(i).await.unwrap();
+            println!("Enqueued: {}", i);
+        }
+
+        // Get the current queue length
+        let len = queue.len().await;
+        println!("Queue length: {}", len); // 3
+
+        // Get a stream for dequeuing
+        let mut dequeue_stream = queue.dequeue();
+
+        // Dequeue and process items
+        while let Some(item) = dequeue_stream.next().await {
+            println!("Dequeued: {}", item);
+        }
+    });
+}
+```
+
+#### Producer-Consumer Pattern
+
+```rust
+use rs2::queue::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+use tokio::time::{sleep, Duration};
+use std::sync::Arc;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a shared queue
+        let queue = Arc::new(Queue::bounded(10));
+
+        // Clone for producer and consumer
+        let producer_queue = Arc::clone(&queue);
+        let consumer_queue = Arc::clone(&queue);
+
+        // Spawn producer task
+        let producer = tokio::spawn(async move {
+            for i in 1..=20 {
+                // Simulate some work
+                sleep(Duration::from_millis(100)).await;
+
+                // Enqueue item
+                match producer_queue.enqueue(i).await {
+                    Ok(_) => println!("Producer: Enqueued {}", i),
+                    Err(e) => println!("Producer: Failed to enqueue {}: {:?}", i, e),
+                }
+            }
+
+            // Close the queue when done
+            producer_queue.close().await;
+            println!("Producer: Done, queue closed");
+        });
+
+        // Spawn consumer task
+        let consumer = tokio::spawn(async move {
+            // Get dequeue stream
+            let mut items = consumer_queue.dequeue();
+
+            // Process items as they arrive
+            while let Some(item) = items.next().await {
+                println!("Consumer: Processing {}", item);
+
+                // Simulate slower processing
+                sleep(Duration::from_millis(200)).await;
+
+                println!("Consumer: Finished processing {}", item);
+            }
+
+            println!("Consumer: Queue exhausted");
+        });
+
+        // Wait for both tasks to complete
+        let _ = tokio::join!(producer, consumer);
+    });
+}
+```
+
+#### Real-World Example: Message Processing System
+
+```rust
+use rs2::queue::*;
+use rs2::rs2::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+use tokio::time::{sleep, Duration};
+use std::sync::Arc;
+use std::error::Error;
+
+// Define our Message type
+#[derive(Debug, Clone)]
+struct Message {
+    id: u64,
+    content: String,
+    priority: Priority,
+    timestamp: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Priority {
+    Low,
+    Medium,
+    High,
+}
+
+// Simulate message processing
+async fn process_message(msg: Message) -> Result<(), Box<dyn Error + Send + Sync>> {
+    println!("Processing message {}: '{}'", msg.id, msg.content);
+
+    // Simulate processing time based on priority
+    let delay = match msg.priority {
+        Priority::High => 50,
+        Priority::Medium => 100,
+        Priority::Low => 200,
+    };
+
+    sleep(Duration::from_millis(delay)).await;
+    println!("Completed message {}", msg.id);
+    Ok(())
+}
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create queues for different priority levels
+        let high_priority_queue = Arc::new(Queue::bounded(5));
+        let medium_priority_queue = Arc::new(Queue::bounded(10));
+        let low_priority_queue = Arc::new(Queue::bounded(20));
+
+        // Create some test messages
+        let messages = vec![
+            Message { id: 1, content: "Critical system alert".to_string(), priority: Priority::High, timestamp: 1000 },
+            Message { id: 2, content: "User login".to_string(), priority: Priority::Medium, timestamp: 1001 },
+            Message { id: 3, content: "Log rotation".to_string(), priority: Priority::Low, timestamp: 1002 },
+            Message { id: 4, content: "Security breach detected".to_string(), priority: Priority::High, timestamp: 1003 },
+            Message { id: 5, content: "New user registration".to_string(), priority: Priority::Medium, timestamp: 1004 },
+            Message { id: 6, content: "Daily report".to_string(), priority: Priority::Low, timestamp: 1005 },
+        ];
+
+        // Distribute messages to appropriate queues
+        for msg in messages {
+            let queue = match msg.priority {
+                Priority::High => Arc::clone(&high_priority_queue),
+                Priority::Medium => Arc::clone(&medium_priority_queue),
+                Priority::Low => Arc::clone(&low_priority_queue),
+            };
+
+            println!("Enqueueing message {}: '{}' with {:?} priority", 
+                     msg.id, msg.content, msg.priority);
+            queue.enqueue(msg).await.unwrap();
+        }
+
+        // Process messages from queues with priority
+        let high_stream = high_priority_queue.dequeue();
+        let medium_stream = medium_priority_queue.dequeue();
+        let low_stream = low_priority_queue.dequeue();
+
+        // Create a prioritized stream by merging the queues
+        // High priority messages are processed first, then medium, then low
+        let prioritized_stream = high_stream
+            .chain(medium_stream)
+            .chain(low_stream);
+
+        // Process messages with bounded concurrency
+        let results = prioritized_stream
+            .par_eval_map_rs2(2, |msg| async move {
+                let result = process_message(msg.clone()).await;
+                (msg, result)
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        // Report results
+        println!("\nProcessing Summary:");
+        println!("Total messages processed: {}", results.len());
+
+        let successes = results.iter().filter(|(_, result)| result.is_ok()).count();
+        let failures = results.len() - successes;
+
+        println!("Successful: {}", successes);
+        println!("Failed: {}", failures);
+    });
+}
+```
+
+## Connectors: Integration with External Systems
+
+RS2 provides a powerful connector system for integrating with external systems like Kafka, Redis, and more. Connectors allow you to create streams from external sources and send streams to external sinks.
+
+### Core Concepts
+
+#### StreamConnector Trait
+
+The `StreamConnector` trait is the core abstraction for all connectors in RS2. It defines the methods that all connectors must implement:
+
+```rust
+#[async_trait]
+pub trait StreamConnector<T>: Send + Sync
+where
+    T: Send + 'static,
+{
+    type Config: Send + Sync;
+    type Error: std::error::Error + Send + Sync + 'static;
+    type Metadata: Send + Sync;
+
+    async fn from_source(&self, config: Self::Config) -> Result<RS2Stream<T>, Self::Error>;
+    async fn to_sink(&self, stream: RS2Stream<T>, config: Self::Config) -> Result<Self::Metadata, Self::Error>;
+    async fn health_check(&self) -> Result<bool, Self::Error>;
+    async fn metadata(&self) -> Result<Self::Metadata, Self::Error>;
+    fn name(&self) -> &'static str;
+    fn version(&self) -> &'static str;
+}
+```
+
+#### Kafka Connector Example
+
+RS2 includes a Kafka connector that allows you to create streams from Kafka topics and send streams to Kafka topics:
+
+```rust
+use rs2::connectors::{KafkaConnector, CommonConfig};
+use rs2::rs2::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+use std::collections::HashMap;
+use std::time::Duration;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a Kafka connector
+        let connector = KafkaConnector::new("localhost:9092")
+            .with_consumer_group("my-consumer-group");
+
+        // Create a Kafka configuration
+        let config = KafkaConfig {
+            topic: "my-topic".to_string(),
+            partition: None, // All partitions
+            key: None,
+            headers: HashMap::new(),
+            auto_commit: true,
+            auto_offset_reset: "earliest".to_string(),
+            common: CommonConfig::default(),
+        };
+
+        // Check if the connector is healthy
+        let healthy = connector.health_check().await.unwrap();
+        if !healthy {
+            println!("Kafka connector is not healthy!");
+            return;
+        }
+
+        // Create a stream from Kafka
+        let stream = connector.from_source(config).await.unwrap();
+
+        // Process the stream with RS2 transformations
+        let processed_stream = stream
+            .map_rs2(|msg| {
+                println!("Received message: {}", msg);
+                format!("Processed: {}", msg)
+            })
+            .filter_rs2(|msg| !msg.contains("ignore"))
+            .throttle_rs2(Duration::from_millis(100));
+
+        // Send the processed stream back to a different Kafka topic
+        let sink_config = KafkaConfig {
+            topic: "output-topic".to_string(),
+            partition: Some(0),
+            key: Some("processed".to_string()),
+            headers: HashMap::new(),
+            auto_commit: true,
+            auto_offset_reset: "latest".to_string(),
+            common: CommonConfig {
+                batch_size: 100,
+                timeout_ms: 30000,
+                retry_attempts: 3,
+                compression: true,
+            },
+        };
+
+        // Send to sink
+        let metadata = connector.to_sink(processed_stream, sink_config).await.unwrap();
+        println!("Processed messages sent to Kafka: {:?}", metadata);
+    });
+}
+```
+
+### Creating Custom Connectors
+
+You can create your own connectors by implementing the `StreamConnector` trait:
+
+```rust
+use rs2::connectors::{ConnectorError, StreamConnector, CommonConfig};
+use rs2::rs2::*;
+use async_trait::async_trait;
+
+// Custom connector for a hypothetical message queue
+struct MyQueueConnector {
+    connection_string: String,
+}
+
+// Custom configuration for the connector
+#[derive(Clone)]
+struct MyQueueConfig {
+    queue_name: String,
+    common: CommonConfig,
+}
+
+// Custom metadata for the connector
+#[derive(Debug, Clone)]
+struct MyQueueMetadata {
+    queue_name: String,
+    messages_processed: usize,
+}
+
+impl MyQueueConnector {
+    fn new(connection_string: &str) -> Self {
+        Self {
+            connection_string: connection_string.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl StreamConnector<String> for MyQueueConnector {
+    type Config = MyQueueConfig;
+    type Error = ConnectorError;
+    type Metadata = MyQueueMetadata;
+
+    async fn from_source(&self, config: Self::Config) -> Result<RS2Stream<String>, Self::Error> {
+        // In a real implementation, you would connect to your message queue
+        // and create a stream of messages
+        println!("Connecting to {} with queue {}", self.connection_string, config.queue_name);
+
+        // For this example, we'll just return a stream of mock messages
+        let messages = vec![
+            "Message 1".to_string(),
+            "Message 2".to_string(),
+            "Message 3".to_string(),
+        ];
+
+        Ok(from_iter(messages))
+    }
+
+    async fn to_sink(&self, stream: RS2Stream<String>, config: Self::Config) -> Result<Self::Metadata, Self::Error> {
+        // In a real implementation, you would send each message in the stream
+        // to your message queue
+        println!("Sending to {} with queue {}", self.connection_string, config.queue_name);
+
+        // For this example, we'll just count the messages
+        let messages: Vec<String> = stream.collect().await;
+        let count = messages.len();
+
+        Ok(MyQueueMetadata {
+            queue_name: config.queue_name,
+            messages_processed: count,
+        })
+    }
+
+    async fn health_check(&self) -> Result<bool, Self::Error> {
+        // In a real implementation, you would check the health of your connection
+        Ok(true)
+    }
+
+    async fn metadata(&self) -> Result<Self::Metadata, Self::Error> {
+        // In a real implementation, you would return metadata about your connection
+        Ok(MyQueueMetadata {
+            queue_name: "default".to_string(),
+            messages_processed: 0,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "my-queue-connector"
+    }
+
+    fn version(&self) -> &'static str {
+        "1.0.0"
+    }
+}
+
+fn main() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a custom connector
+        let connector = MyQueueConnector::new("my-queue-server:1234");
+
+        // Create a configuration
+        let config = MyQueueConfig {
+            queue_name: "my-queue".to_string(),
+            common: CommonConfig::default(),
+        };
+
+        // Create a stream from the connector
+        let stream = connector.from_source(config.clone()).await.unwrap();
+
+        // Process the stream
+        let processed_stream = stream
+            .map_rs2(|msg| format!("Processed: {}", msg));
+
+        // Send the processed stream back to the connector
+        let metadata = connector.to_sink(processed_stream, config).await.unwrap();
+
+        println!("Processed {} messages for queue {}", 
+                 metadata.messages_processed, metadata.queue_name);
+    });
+}
+```
+
 ## **Feature Comparison with Other Rust Streaming Libraries**
 
 | **Feature** | **futures-rs** | **tokio-stream** | **async-stream** | **async-std** | **RS2** |
@@ -917,3 +1565,429 @@ fn main() {
 | **Cancellation Safety** | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ✅ **Interrupt-aware**: `interrupt_when` |
 | **Memory Efficiency** | ✅ Good | ✅ Good | ✅ Good | ✅ Good | ✅ **Optimized**: Constant memory with backpressure |
 | **Functional Style** | ⚠️ Partial | ⚠️ Partial | ❌ Imperative | ⚠️ Partial | ✅ **Pure functional**: Inspired by FS2 |
+| **External Connectors** | ❌ None | ❌ None | ❌ None | ❌ None | ✅ **Built-in**: Kafka, custom connectors |
+
+## Pipe: Stream Transformation Functions
+
+A Pipe represents a stream transformation from one type to another. It's a function from Stream[I] to Stream[O] that can be composed with other pipes to create complex stream processing pipelines.
+
+### Pipe Methods
+
+- `Pipe::new(f)` - Create a new pipe from a function
+- `apply(input)` - Apply this pipe to a stream
+- `compose(other)` - Compose this pipe with another pipe
+
+### Utility Functions
+
+- `map(f)` - Create a pipe that applies the given function to each element
+- `filter(predicate)` - Create a pipe that filters elements based on the predicate
+- `compose(p1, p2)` - Compose two pipes together
+- `identity()` - Identity pipe that doesn't transform the stream
+
+### Examples
+
+#### Basic Pipe Usage
+
+```rust
+use rs2::pipe::*;
+use rs2::rs2::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let numbers = from_iter(vec![1, 2, 3, 4, 5]);
+
+        // Create a pipe that doubles each number
+        let double_pipe = map(|x: i32| x * 2);
+
+        // Apply the pipe to the stream
+        let doubled = double_pipe.apply(numbers);
+
+        // Collect the results
+        let result = doubled.collect::<Vec<_>>().await;
+        println!("Doubled: {:?}", result); // [2, 4, 6, 8, 10]
+    });
+}
+```
+
+#### Composing Pipes
+
+```rust
+use rs2::pipe::*;
+use rs2::rs2::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let numbers = from_iter(vec![1, 2, 3, 4, 5, 6]);
+
+        // Create pipes for different transformations
+        let even_filter = filter(|&x: &i32| x % 2 == 0);
+        let double_map = map(|x: i32| x * 2);
+
+        // Compose the pipes using the compose function
+        let even_then_double = compose(even_filter, double_map);
+
+        // Apply the composed pipe to the stream
+        let result_stream = even_then_double.apply(numbers);
+
+        // Collect the results
+        let result = result_stream.collect::<Vec<_>>().await;
+        println!("Even numbers doubled: {:?}", result); // [4, 8, 12]
+
+        // Alternatively, use the compose method on the Pipe
+        let numbers = from_iter(vec![1, 2, 3, 4, 5, 6]);
+        let even_filter = filter(|&x: &i32| x % 2 == 0);
+        let double_map = map(|x: i32| x * 2);
+
+        // Use the compose method
+        let even_then_double = even_filter.compose(double_map);
+
+        // Apply the composed pipe to the stream
+        let result_stream = even_then_double.apply(numbers);
+
+        // Collect the results
+        let result = result_stream.collect::<Vec<_>>().await;
+        println!("Even numbers doubled (using compose method): {:?}", result); // [4, 8, 12]
+    });
+}
+```
+
+#### Real-World Example: User Data Processing Pipeline
+
+```rust
+use rs2::pipe::*;
+use rs2::rs2::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+use std::collections::HashMap;
+
+// Define our User type
+#[derive(Debug, Clone, PartialEq)]
+struct User {
+    id: u64,
+    name: String,
+    email: String,
+    active: bool,
+    role: String,
+    login_count: u32,
+}
+
+// Define a UserStats type
+#[derive(Debug, Clone, PartialEq)]
+struct UserStats {
+    id: u64,
+    name: String,
+    role: String,
+    is_active: bool,
+    login_frequency: &'static str,
+}
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of users
+        let users = vec![
+            User { id: 1, name: "Alice".to_string(), email: "alice@example.com".to_string(), active: true, role: "admin".to_string(), login_count: 120 },
+            User { id: 2, name: "Bob".to_string(), email: "bob@example.com".to_string(), active: true, role: "user".to_string(), login_count: 45 },
+            User { id: 3, name: "Charlie".to_string(), email: "charlie@example.com".to_string(), active: false, role: "user".to_string(), login_count: 5 },
+            User { id: 4, name: "Diana".to_string(), email: "diana@example.com".to_string(), active: true, role: "moderator".to_string(), login_count: 80 },
+            User { id: 5, name: "Eve".to_string(), email: "eve@example.com".to_string(), active: true, role: "user".to_string(), login_count: 30 },
+        ];
+
+        // Create pipes for different transformations
+
+        // 1. Filter active users
+        let active_filter = filter(|user: &User| user.active);
+
+        // 2. Transform User to UserStats
+        let stats_transform = map(|user: User| {
+            let frequency = match user.login_count {
+                0..=10 => "Low",
+                11..=50 => "Medium",
+                _ => "High",
+            };
+
+            UserStats {
+                id: user.id,
+                name: user.name,
+                role: user.role,
+                is_active: user.active,
+                login_frequency: frequency,
+            }
+        });
+
+        // 3. Compose the pipes
+        let process_users = active_filter.compose(stats_transform);
+
+        // Apply the processing pipeline to the stream
+        let user_stream = from_iter(users);
+        let stats_stream = process_users.apply(user_stream);
+
+        // Collect the results
+        let user_stats = stats_stream.collect::<Vec<_>>().await;
+
+        // Print the results
+        println!("User Statistics:");
+        for stats in user_stats {
+            println!("  - {} ({}): {} usage", stats.name, stats.role, stats.login_frequency);
+        }
+
+        // Group users by login frequency using another pipe
+        let group_by_frequency = map(|stats: UserStats| {
+            (stats.login_frequency, stats)
+        });
+
+        // Apply the grouping pipe to the stats stream
+        let user_stream = from_iter(users);
+        let stats_stream = process_users.apply(user_stream);
+        let grouped_stream = group_by_frequency.apply(stats_stream);
+
+        // Collect and organize by frequency
+        let mut frequency_groups: HashMap<&str, Vec<UserStats>> = HashMap::new();
+        let grouped_stats = grouped_stream.collect::<Vec<_>>().await;
+
+        for (frequency, stats) in grouped_stats {
+            frequency_groups.entry(frequency).or_insert_with(Vec::new).push(stats);
+        }
+
+        // Print the grouped results
+        println!("\nUsers by Login Frequency:");
+        for (frequency, users) in &frequency_groups {
+            println!("  {} Usage ({} users):", frequency, users.len());
+            for user in users {
+                println!("    - {} ({})", user.name, user.role);
+            }
+        }
+    });
+}
+```
+
+## Queue: Concurrent Queue with Stream Interface
+
+A Queue represents a concurrent queue with a Stream interface for dequeuing and async methods for enqueuing. It supports both bounded and unbounded queues.
+
+### Queue Types
+
+- `Queue::bounded(capacity)` - Create a new bounded queue with the given capacity
+- `Queue::unbounded()` - Create a new unbounded queue
+
+### Queue Methods
+
+- `enqueue(item)` - Enqueue an item into the queue
+- `try_enqueue(item)` - Try to enqueue an item without blocking
+- `dequeue()` - Get a stream for dequeuing items
+- `close()` - Close the queue, preventing further enqueues
+- `capacity()` - Get the capacity of the queue (None for unbounded)
+- `is_empty()` - Check if the queue is empty
+- `len()` - Get the current number of items in the queue
+
+### Examples
+
+#### Basic Queue Usage
+
+```rust
+use rs2::queue::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a bounded queue with capacity 5
+        let queue = Queue::bounded(5);
+
+        // Enqueue some items
+        for i in 1..=3 {
+            queue.enqueue(i).await.unwrap();
+            println!("Enqueued: {}", i);
+        }
+
+        // Get the current queue length
+        let len = queue.len().await;
+        println!("Queue length: {}", len); // 3
+
+        // Get a stream for dequeuing
+        let mut dequeue_stream = queue.dequeue();
+
+        // Dequeue and process items
+        while let Some(item) = dequeue_stream.next().await {
+            println!("Dequeued: {}", item);
+        }
+    });
+}
+```
+
+#### Producer-Consumer Pattern
+
+```rust
+use rs2::queue::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+use tokio::time::{sleep, Duration};
+use std::sync::Arc;
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a shared queue
+        let queue = Arc::new(Queue::bounded(10));
+
+        // Clone for producer and consumer
+        let producer_queue = Arc::clone(&queue);
+        let consumer_queue = Arc::clone(&queue);
+
+        // Spawn producer task
+        let producer = tokio::spawn(async move {
+            for i in 1..=20 {
+                // Simulate some work
+                sleep(Duration::from_millis(100)).await;
+
+                // Enqueue item
+                match producer_queue.enqueue(i).await {
+                    Ok(_) => println!("Producer: Enqueued {}", i),
+                    Err(e) => println!("Producer: Failed to enqueue {}: {:?}", i, e),
+                }
+            }
+
+            // Close the queue when done
+            producer_queue.close().await;
+            println!("Producer: Done, queue closed");
+        });
+
+        // Spawn consumer task
+        let consumer = tokio::spawn(async move {
+            // Get dequeue stream
+            let mut items = consumer_queue.dequeue();
+
+            // Process items as they arrive
+            while let Some(item) = items.next().await {
+                println!("Consumer: Processing {}", item);
+
+                // Simulate slower processing
+                sleep(Duration::from_millis(200)).await;
+
+                println!("Consumer: Finished processing {}", item);
+            }
+
+            println!("Consumer: Queue exhausted");
+        });
+
+        // Wait for both tasks to complete
+        let _ = tokio::join!(producer, consumer);
+    });
+}
+```
+
+#### Real-World Example: Message Processing System
+
+```rust
+use rs2::queue::*;
+use rs2::rs2::*;
+use futures_util::stream::StreamExt;
+use tokio::runtime::Runtime;
+use tokio::time::{sleep, Duration};
+use std::sync::Arc;
+use std::error::Error;
+
+// Define our Message type
+#[derive(Debug, Clone)]
+struct Message {
+    id: u64,
+    content: String,
+    priority: Priority,
+    timestamp: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Priority {
+    Low,
+    Medium,
+    High,
+}
+
+// Simulate message processing
+async fn process_message(msg: Message) -> Result<(), Box<dyn Error + Send + Sync>> {
+    println!("Processing message {}: '{}'", msg.id, msg.content);
+
+    // Simulate processing time based on priority
+    let delay = match msg.priority {
+        Priority::High => 50,
+        Priority::Medium => 100,
+        Priority::Low => 200,
+    };
+
+    sleep(Duration::from_millis(delay)).await;
+    println!("Completed message {}", msg.id);
+    Ok(())
+}
+
+fn main() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create queues for different priority levels
+        let high_priority_queue = Arc::new(Queue::bounded(5));
+        let medium_priority_queue = Arc::new(Queue::bounded(10));
+        let low_priority_queue = Arc::new(Queue::bounded(20));
+
+        // Create some test messages
+        let messages = vec![
+            Message { id: 1, content: "Critical system alert".to_string(), priority: Priority::High, timestamp: 1000 },
+            Message { id: 2, content: "User login".to_string(), priority: Priority::Medium, timestamp: 1001 },
+            Message { id: 3, content: "Log rotation".to_string(), priority: Priority::Low, timestamp: 1002 },
+            Message { id: 4, content: "Security breach detected".to_string(), priority: Priority::High, timestamp: 1003 },
+            Message { id: 5, content: "New user registration".to_string(), priority: Priority::Medium, timestamp: 1004 },
+            Message { id: 6, content: "Daily report".to_string(), priority: Priority::Low, timestamp: 1005 },
+        ];
+
+        // Distribute messages to appropriate queues
+        for msg in messages {
+            let queue = match msg.priority {
+                Priority::High => Arc::clone(&high_priority_queue),
+                Priority::Medium => Arc::clone(&medium_priority_queue),
+                Priority::Low => Arc::clone(&low_priority_queue),
+            };
+
+            println!("Enqueueing message {}: '{}' with {:?} priority", 
+                     msg.id, msg.content, msg.priority);
+            queue.enqueue(msg).await.unwrap();
+        }
+
+        // Process messages from queues with priority
+        let high_stream = high_priority_queue.dequeue();
+        let medium_stream = medium_priority_queue.dequeue();
+        let low_stream = low_priority_queue.dequeue();
+
+        // Create a prioritized stream by merging the queues
+        // High priority messages are processed first, then medium, then low
+        let prioritized_stream = high_stream
+            .chain(medium_stream)
+            .chain(low_stream);
+
+        // Process messages with bounded concurrency
+        let results = prioritized_stream
+            .par_eval_map_rs2(2, |msg| async move {
+                let result = process_message(msg.clone()).await;
+                (msg, result)
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        // Report results
+        println!("\nProcessing Summary:");
+        println!("Total messages processed: {}", results.len());
+
+        let successes = results.iter().filter(|(_, result)| result.is_ok()).count();
+        let failures = results.len() - successes;
+
+        println!("Successful: {}", successes);
+        println!("Failed: {}", failures);
+    });
+}
+```
