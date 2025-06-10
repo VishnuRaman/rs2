@@ -1,3 +1,4 @@
+
 use crate::connectors::{ConnectorError, StreamConnector};
 use crate::rs2::RS2Stream;
 use async_stream::stream;
@@ -9,7 +10,9 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::{Message, TopicPartitionList};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex; // ← Use Tokio Mutex!
 
 /// Kafka connector for RS2 streams
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,7 +114,6 @@ impl KafkaConnector {
             client_config.set("auto.offset.reset", "latest");
         }
 
-        // Apply additional configuration
         if let Some(kafka_config) = &config.kafka_config {
             for (key, value) in kafka_config {
                 client_config.set(key, value);
@@ -131,7 +133,6 @@ impl KafkaConnector {
                 &config.message_timeout_ms.unwrap_or(30000).to_string(),
             );
 
-        // Apply additional configuration
         if let Some(kafka_config) = &config.kafka_config {
             for (key, value) in kafka_config {
                 client_config.set(key, value);
@@ -157,13 +158,11 @@ where
             .create()
             .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
-        // Subscribe to topic
         let topics = vec![config.topic.as_str()];
         consumer
             .subscribe(&topics)
             .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
 
-        // If specific partition is requested, assign it
         if let Some(partition) = config.partition {
             let mut tpl = TopicPartitionList::new();
             tpl.add_partition(&config.topic, partition);
@@ -212,14 +211,18 @@ where
             .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
         let start = Instant::now();
-        let mut messages_produced = 0u64;
-        let mut bytes_sent = 0u64;
+
+        // Use Arc<tokio::sync::Mutex<>> for async contexts
+        let messages_produced = Arc::new(Mutex::new(0u64));
+        let bytes_sent = Arc::new(Mutex::new(0u64));
 
         stream
             .for_each(|item| {
                 let producer = producer.clone();
                 let topic = config.topic.clone();
                 let partition = config.partition;
+                let messages_counter = Arc::clone(&messages_produced);
+                let bytes_counter = Arc::clone(&bytes_sent);
 
                 async move {
                     match serde_json::to_vec(&item) {
@@ -233,8 +236,8 @@ where
 
                             match producer.send(record, Duration::from_secs(30)).await {
                                 Ok(_) => {
-                                    messages_produced += 1;
-                                    bytes_sent += payload.len() as u64;
+                                    *messages_counter.lock().await += 1; // ← .await here!
+                                    *bytes_counter.lock().await += payload.len() as u64; // ← .await here!
                                     log::debug!("Sent message to Kafka topic: {}", topic);
                                 }
                                 Err((e, _)) => {
@@ -251,18 +254,21 @@ where
             .await;
 
         let elapsed = start.elapsed();
+        let final_messages_produced = *messages_produced.lock().await; // ← .await here!
+        let final_bytes_sent = *bytes_sent.lock().await; // ← .await here!
+
         let throughput = if elapsed.as_secs_f64() > 0.0 {
-            messages_produced as f64 / elapsed.as_secs_f64()
+            final_messages_produced as f64 / elapsed.as_secs_f64()
         } else {
             0.0
         };
 
         Ok(KafkaMetadata {
             topic: config.topic,
-            partition_count: 1, // This would need metadata API call to get actual count
-            messages_produced,
+            partition_count: 1,
+            messages_produced: final_messages_produced,
             messages_consumed: 0,
-            bytes_sent,
+            bytes_sent: final_bytes_sent,
             bytes_received: 0,
             last_offset: None,
             consumer_lag: None,
@@ -279,7 +285,6 @@ where
             .create()
             .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
-        // Try to get metadata to check connection
         match consumer.fetch_metadata(Some("__consumer_offsets"), Duration::from_secs(5)) {
             Ok(_) => Ok(true),
             Err(_) => Ok(false),
