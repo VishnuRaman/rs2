@@ -1,0 +1,18 @@
+[package]
+name = "rs2"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The core futures traits, StreamExt, FuturesUnordered, mpsc channels, etc.
+futures = "0.3"
+
+# Provides the rs2_stream! { … } macro
+async-stream = "0.3"
+
+# Tokio runtime, spawning tasks and timers
+tokio = { version = "1", features = ["full"] }
+
+# Core futures traits
+futures-core = "0.3"
+futures-util = "0.3"
