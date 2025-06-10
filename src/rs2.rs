@@ -17,9 +17,7 @@ use std::sync::Arc;
 use tokio::{spawn, time::sleep};
 use tokio::sync::Mutex;
 
-// Import our error types
 use crate::error::{StreamError, StreamResult, RetryPolicy};
-// Import metrics from the performance module
 use crate::stream_performance_metrics::StreamMetrics;
 
 /// A boxed, heap-allocated Rust Stream analogous to RS2's Stream[F, O]
@@ -229,23 +227,18 @@ where
 
             match &current_key {
                 Some(k) if *k == key => {
-                    // Same key, add to current group
                     current_group.push(item);
                 },
                 _ => {
-                    // Different key (or first element)
                     if !current_group.is_empty() {
-                        // Emit the current group if it's not empty
                         yield (current_key.clone().unwrap(), std::mem::take(&mut current_group));
                     }
-                    // Start a new group
                     current_key = Some(key);
                     current_group.push(item);
                 }
             }
         }
 
-        // Emit the last group if it's not empty
         if !current_group.is_empty() {
             yield (current_key.clone().unwrap(), std::mem::take(&mut current_group));
         }
@@ -351,16 +344,12 @@ where
 {
     async move {
         pin_mut!(s);
-
-        // Get the first item to use as the initial accumulator
         let first = match s.next().await {
             Some(item) => item,
             None => return None, // Return None for empty streams
         };
 
         let mut acc = first;
-
-        // Process the rest of the stream
         while let Some(item) = s.next().await {
             acc = f(acc, item).await;
         }
@@ -446,14 +435,11 @@ where
     stream! {
         pin_mut!(s);
 
-        // Skip elements while predicate is true
         let mut found_false = false;
         while let Some(item) = s.next().await {
             if !found_false && predicate(&item).await {
-                // Skip this item
                 continue;
             } else {
-                // Predicate returned false, yield this item and all remaining items
                 found_false = true;
                 yield item;
             }
@@ -494,23 +480,18 @@ where
 
             match &current_key {
                 Some(k) if *k == key => {
-                    // Same key, add to current group
                     current_group.push(item);
                 },
                 _ => {
-                    // Different key (or first element)
                     if !current_group.is_empty() {
-                        // Emit the current group if it's not empty
                         yield (current_key.clone().unwrap(), std::mem::take(&mut current_group));
                     }
-                    // Start a new group
                     current_key = Some(key);
                     current_group.push(item);
                 }
             }
         }
 
-        // Emit the last group if it's not empty
         if !current_group.is_empty() {
             yield (current_key.clone().unwrap(), std::mem::take(&mut current_group));
         }
@@ -813,18 +794,14 @@ where
         loop {
             tokio::select! {
                 biased;
-
-                // Wait for the interrupt signal
                 _ = &mut signal => {
-                    // Signal received, stop processing the rs2_stream
                     break;
                 },
 
-                // Wait for the next item from the source rs2_stream
                 maybe_item = s.next() => {
                     match maybe_item {
                         Some(item) => yield item,
-                        None => break, // Source rs2_stream is done
+                        None => break,
                     }
                 },
             }
@@ -983,20 +960,16 @@ where
         pin_mut!(s1);
         pin_mut!(s2);
 
-        // Track which rs2_stream is active (if any has completed)
         let mut s1_done = false;
         let mut s2_done = false;
 
-        // For test_either, we need to select the first rs2_stream by default
-        // This is a special case for when both streams are ready immediately
         let mut using_s1 = true;
 
         loop {
-            // If one rs2_stream is done, just use the other one
             if s1_done {
                 match s2.next().await {
                     Some(item) => yield item,
-                    None => break, // Both streams are done
+                    None => break,
                 }
                 continue;
             }
@@ -1004,41 +977,31 @@ where
             if s2_done {
                 match s1.next().await {
                     Some(item) => yield item,
-                    None => break, // Both streams are done
+                    None => break,
                 }
                 continue;
             }
 
-            // For test_either_with_different_timing, we need to select between streams
-            // based on which one produces a value first
             if using_s1 {
-                // Try to get a value from s1 first
                 match s1.next().await {
                     Some(item) => {
                         yield item;
-                        // Continue using s1 for the next value
                     },
                     None => {
-                        // s1 is done, switch to s2 exclusively
                         s1_done = true;
                     }
                 }
             } else {
-                // Try to get a value from s2 first
                 match s2.next().await {
                     Some(item) => {
                         yield item;
-                        // Continue using s2 for the next value
                     },
                     None => {
-                        // s2 is done, switch to s1 exclusively
                         s2_done = true;
                     }
                 }
             }
-
-            // For test_either_with_different_timing, we need to switch streams
-            // when the current rs2_stream is waiting longer than the other rs2_stream
+            
             tokio::select! {
                 biased;
 
@@ -1049,7 +1012,6 @@ where
                             using_s1 = true;
                         },
                         None => {
-                            // s1 is done, switch to s2 exclusively
                             s1_done = true;
                         }
                     }
@@ -1061,7 +1023,6 @@ where
                             using_s1 = false;
                         },
                         None => {
-                            // s2 is done, switch to s1 exclusively
                             s2_done = true;
                         }
                     }
@@ -1092,28 +1053,22 @@ where
     stream! {
         pin_mut!(s);
 
-        // Track the latest item and whether it's been emitted
         let mut latest_item: Option<O> = None;
         let mut timer_handle: Option<tokio::task::JoinHandle<()>> = None;
 
-        // Use a channel to signal when the quiet period has elapsed
         let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
 
         loop {
             tokio::select! {
-                // Wait for the next item from the source rs2_stream
                 maybe_item = s.next() => {
                     match maybe_item {
                         Some(item) => {
-                            // Cancel any pending timer
                             if let Some(handle) = timer_handle.take() {
                                 handle.abort();
                             }
 
-                            // Store the latest item
                             latest_item = Some(item);
 
-                            // Start a new timer
                             let tx_clone = tx.clone();
                             timer_handle = Some(tokio::spawn(async move {
                                 tokio::time::sleep(duration).await;
@@ -1121,7 +1076,6 @@ where
                             }));
                         },
                         None => {
-                            // Source rs2_stream is done, emit any pending item and exit
                             if let Some(item) = latest_item.take() {
                                 yield item;
                             }
@@ -1129,7 +1083,6 @@ where
                         }
                     }
                 },
-                // Timer elapsed, emit the latest item
                 _ = rx.recv() => {
                     if let Some(item) = latest_item.take() {
                         yield item;
@@ -1169,10 +1122,8 @@ where
         while let Some(item) = s.next().await {
             match &prev {
                 Some(p) if p == &item => {
-                    // Skip this item as it's the same as the previous one
                 },
                 _ => {
-                    // This item is different from the previous one (or there is no previous item)
                     yield item.clone();
                     prev = Some(item);
                 }
@@ -1226,27 +1177,21 @@ where
     stream! {
         pin_mut!(s);
 
-        // Track the most recent value and whether it's new
         let mut latest_item: Option<O> = None;
         let mut has_new_value = false;
 
-        // Create a timer that fires at regular intervals
         let mut timer = tokio::time::interval(interval);
-        // The first tick completes immediately, so we need to skip it
         timer.tick().await;
 
         loop {
             tokio::select! {
-                // Wait for the next item from the source rs2_stream
                 maybe_item = s.next() => {
                     match maybe_item {
                         Some(item) => {
-                            // Store the latest item and mark that we have a new value
                             latest_item = Some(item);
                             has_new_value = true;
                         },
                         None => {
-                            // Source rs2_stream is done, emit any pending item and exit
                             if has_new_value {
                                 if let Some(item) = latest_item.take() {
                                     yield item;
@@ -1256,16 +1201,13 @@ where
                         }
                     }
                 },
-                // Timer elapsed, emit the latest item if we have a new value
                 _ = timer.tick() => {
                     if has_new_value {
-                        // Clone the item, yield the clone, and reset has_new_value
                         if let Some(ref item) = latest_item {
                             yield item.clone();
                             has_new_value = false;
                         }
                     }
-                    // If no new value has arrived, skip this interval
                 }
             }
         }
@@ -1303,10 +1245,8 @@ where
         while let Some(item) = s.next().await {
             match &prev {
                 Some(p) if eq(p, &item) => {
-                    // Skip this item as it's the same as the previous one according to the equality function
                 },
                 _ => {
-                    // This item is different from the previous one (or there is no previous item)
                     yield item.clone();
                     prev = Some(item);
                 }
@@ -1456,53 +1396,38 @@ where
     stream! {
         pin_mut!(buffered_stream);
 
-        // Store active streams in a vector
         let mut active_streams: Vec<S> = Vec::with_capacity(concurrency);
 
-        // This flag tracks whether we're still receiving new streams from the source
         let mut outer_stream_done = false;
 
         loop {
-            // Try to fill up to concurrency limit if we have capacity and outer rs2_stream isn't done
             while active_streams.len() < concurrency && !outer_stream_done {
                 match buffered_stream.next().await {
                     Some(inner_stream) => {
-                        // Add the new rs2_stream to our active set
                         active_streams.push(inner_stream);
                     },
                     None => {
-                        // The outer rs2_stream is done, no more streams will be added
                         outer_stream_done = true;
                         break;
                     }
                 }
             }
-
-            // If we have no active streams and the outer rs2_stream is done, we're completely done
             if active_streams.is_empty() && outer_stream_done {
                 break;
             }
 
-            // Process all active streams, collecting items and removing completed streams
             let mut i = 0;
             while i < active_streams.len() {
                 match active_streams[i].next().await {
                     Some(item) => {
-                        // Emit the item and move to the next rs2_stream
                         yield item;
                         i += 1;
                     },
                     None => {
-                        // This rs2_stream is done, remove it
                         active_streams.swap_remove(i);
-                        // Don't increment i since we now have a new rs2_stream at this index
                     }
                 }
             }
-
-            // If we processed all streams and none yielded items, they might all be done
-            // In that case, we'll try to get more streams on the next loop iteration
-            // If outer_stream_done is true and active_streams is empty, we'll exit
         }
     }
     .boxed()
@@ -1762,7 +1687,6 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
                     break;
                 }
 
-                // Apply delay based on policy
                 match &policy {
                     RetryPolicy::None => {},
                     RetryPolicy::Immediate { .. } => {},
