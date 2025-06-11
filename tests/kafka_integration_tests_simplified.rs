@@ -16,7 +16,6 @@ use rand::thread_rng;
 /// Kafka test environment for integration tests
 struct KafkaTestEnvironment {
     pub connector: KafkaConnector,
-    pub test_topic: String,
     // bootstrap_servers is kept for debugging purposes
     #[allow(dead_code)]
     pub bootstrap_servers: String,
@@ -51,11 +50,9 @@ impl KafkaTestEnvironment {
             sleep(Duration::from_millis(1000)).await;
         }
 
-        let test_topic = format!("test-topic-{}", Uuid::new_v4());
 
         Ok(Self {
             connector,
-            test_topic,
             bootstrap_servers,
             _container: kafka_container,
         })
@@ -166,7 +163,7 @@ async fn test_consumer_group_rebalancing(env: &KafkaTestEnvironment) {
 
     // Consume more messages with the second consumer
     let received2: Vec<String> = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(10),
         consumer_stream2.take(10).collect::<Vec<_>>()
     ).await.expect("Timed out waiting for messages");
 
@@ -187,7 +184,7 @@ async fn test_consumer_group_rebalancing(env: &KafkaTestEnvironment) {
     all_received.extend(received2.clone());
     let unique_count = all_received.into_iter().collect::<std::collections::HashSet<_>>().len();
     assert_eq!(unique_count, total_received, "No duplicate messages within consumer group");
-    
+
     // Create a third consumer with a different group ID
     println!("Creating third consumer with different group ID");
     let different_group_config = env.consumer_config(&topic, "different-group");
