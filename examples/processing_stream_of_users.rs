@@ -80,10 +80,7 @@ fn main() {
                 user.name = format!("{} (Processed)", user.name);
 
                 // Update the user in the database
-                match update_user(user.clone()).await {
-                    Ok(updated_user) => updated_user,
-                    Err(_) => user,
-                }
+                update_user(user.clone()).await.unwrap_or_else(|_| user)
             })
             .collect::<Vec<_>>()
             .await;
