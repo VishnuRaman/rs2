@@ -98,19 +98,22 @@ async fn update_user(user: User) -> Result<User, Box<dyn Error + Send + Sync>> {
 fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        // Create a stream of users
-        let users = eval(fetch_users()).flat_map(|users| from_iter(users));
+        // Function to create a stream of active users
+        async fn get_active_users() -> RS2Stream<User> {
+            // Create a stream of users
+            let users = eval(fetch_users()).flat_map(|users| from_iter(users));
 
-        // Apply backpressure to avoid overwhelming downstream systems
-        let users_with_backpressure = users.auto_backpressure_rs2();
+            // Apply backpressure to avoid overwhelming downstream systems
+            let users_with_backpressure = users.auto_backpressure_rs2();
 
-        // Process active users only
-        let active_users = users_with_backpressure
-            .filter_rs2(|user| user.active)
-            .prefetch_rs2(2);  // Prefetch to improve performance
+            // Process active users only
+            users_with_backpressure
+                .filter_rs2(|user| user.active)
+                .prefetch_rs2(2)  // Prefetch to improve performance
+        }
 
         // Group users by role
-        let users_by_role = active_users
+        let users_by_role = get_active_users().await
             .group_by_rs2(|user| user.role.clone())
             .collect::<Vec<_>>()
             .await;
@@ -124,7 +127,7 @@ fn main() {
         }
 
         // Process users in parallel with bounded concurrency
-        let processed_users = active_users
+        let processed_users = get_active_users().await
             .par_eval_map_rs2(3, |mut user| async move {
                 // Simulate some processing
                 user.name = format!("{} (Processed)", user.name);
@@ -141,7 +144,7 @@ fn main() {
         println!("\nProcessed {} users", processed_users.len());
 
         // Send emails to users with timeout
-        let email_results = active_users
+        let email_results = get_active_users().await
             .eval_map_rs2(|user| async move {
                 // Add timeout to email sending
                 match tokio::time::timeout(
@@ -829,20 +832,31 @@ use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use std::fs::File;
 use std::io::{self, BufReader, BufRead};
+use std::path::PathBuf;
 
-// Acquire a resource
-async fn acquire_resource() -> io::Result<BufReader<File>> {
-    let file = File::open("data.txt")?;
-    Ok(BufReader::new(file))
+// Acquire a resource - returns a path to the file
+async fn acquire_resource() -> PathBuf {
+    println!("Resource acquired: data.txt");
+    PathBuf::from("data.txt")
 }
 
 // Release a resource
-async fn release_resource(_reader: BufReader<File>) {
-    println!("Resource released");
+async fn release_resource(path: PathBuf) {
+    println!("Resource released: {}", path.display());
 }
 
 // Use a resource
-fn use_resource(reader: BufReader<File>) -> RS2Stream<String> {
+fn use_resource(path: PathBuf) -> RS2Stream<String> {
+    // Open the file and create a reader
+    let file = match File::open(&path) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("Error opening file: {}", e);
+            return empty();
+        }
+    };
+
+    let reader = BufReader::new(file);
     let lines = reader.lines().filter_map(Result::ok);
     from_iter(lines)
 }
@@ -1360,7 +1374,8 @@ where
 RS2 includes a Kafka connector that allows you to create streams from Kafka topics and send streams to Kafka topics:
 
 ```rust
-use rs2::connectors::{KafkaConnector, CommonConfig};
+use rs2::connectors::{KafkaConnector, StreamConnector};
+use rs2::connectors::kafka_connector::KafkaConfig;
 use rs2::rs2::*;
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
@@ -1377,51 +1392,54 @@ fn main() {
         // Create a Kafka configuration
         let config = KafkaConfig {
             topic: "my-topic".to_string(),
+            group_id: None, // Use the connector's consumer group
             partition: None, // All partitions
-            key: None,
-            headers: HashMap::new(),
-            auto_commit: true,
-            auto_offset_reset: "earliest".to_string(),
-            common: CommonConfig::default(),
+            from_beginning: true,
+            kafka_config: None,
+            enable_auto_commit: true,
+            auto_commit_interval_ms: Some(5000),
+            session_timeout_ms: Some(30000),
+            message_timeout_ms: Some(30000),
         };
 
         // Check if the connector is healthy
-        let healthy = connector.health_check().await.unwrap();
+        let healthy = <KafkaConnector as StreamConnector<String>>::health_check(&connector).await.unwrap();
         if !healthy {
             println!("Kafka connector is not healthy!");
             return;
         }
 
         // Create a stream from Kafka
-        let stream = connector.from_source(config).await.unwrap();
+        let stream = <KafkaConnector as StreamConnector<String>>::from_source(&connector, config).await.unwrap();
 
         // Process the stream with RS2 transformations
         let processed_stream = stream
-            .map_rs2(|msg| {
+            .map_rs2(|msg: String| {
                 println!("Received message: {}", msg);
                 format!("Processed: {}", msg)
             })
-            .filter_rs2(|msg| !msg.contains("ignore"))
+            .filter_rs2(|msg: &String| !msg.contains("ignore"))
             .throttle_rs2(Duration::from_millis(100));
 
         // Send the processed stream back to a different Kafka topic
         let sink_config = KafkaConfig {
             topic: "output-topic".to_string(),
+            group_id: None,
             partition: Some(0),
-            key: Some("processed".to_string()),
-            headers: HashMap::new(),
-            auto_commit: true,
-            auto_offset_reset: "latest".to_string(),
-            common: CommonConfig {
-                batch_size: 100,
-                timeout_ms: 30000,
-                retry_attempts: 3,
-                compression: true,
-            },
+            from_beginning: false,
+            kafka_config: Some({
+                let mut config = HashMap::new();
+                config.insert("compression.type".to_string(), "gzip".to_string());
+                config
+            }),
+            enable_auto_commit: true,
+            auto_commit_interval_ms: Some(5000),
+            session_timeout_ms: Some(30000),
+            message_timeout_ms: Some(30000),
         };
 
         // Send to sink
-        let metadata = connector.to_sink(processed_stream, sink_config).await.unwrap();
+        let metadata = <KafkaConnector as StreamConnector<String>>::to_sink(&connector, processed_stream, sink_config).await.unwrap();
         println!("Processed messages sent to Kafka: {:?}", metadata);
     });
 }
