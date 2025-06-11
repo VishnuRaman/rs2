@@ -317,24 +317,6 @@ You can create your own connectors by implementing the `StreamConnector` trait. 
 // See the full code at examples/connector_custom.rs
 ```
 
-## **Feature Comparison with Other Rust Streaming Libraries**
-
-| **Feature** | **futures-rs** | **tokio-stream** | **async-stream** | **async-std** | **RS2** |
-|-------------|----------------|------------------|------------------|---------------|---------|
-| **Backpressure Strategies** | ❌ None | ⚠️ Basic buffering | ❌ None | ❌ None | ✅ **4 strategies**: Block, DropOldest, DropNewest, Error |
-| **Parallel Processing** | ⚠️ `buffer_unordered` only | ⚠️ Limited buffering | ❌ None | ⚠️ Basic | ✅ **Advanced**: `par_eval_map`, `par_join`, ordered/unordered |
-| **Error Recovery** | ⚠️ Manual `Result` handling | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ✅ **Automatic**: `recover`, `retry_with_policy`, `on_error_resume_next` |
-| **Time Operations** | ❌ None | ⚠️ `throttle`, `timeout` | ❌ None | ⚠️ Basic intervals | ✅ **Rich set**: `debounce`, `sample`, `sliding_window`, `emit_after` |
-| **Resource Management** | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual | ✅ **Bracket patterns**: Guaranteed cleanup on success/failure |
-| **Stream Combinators** | ✅ Standard set | ✅ Extended set | ⚠️ Manual creation | ✅ Standard set | ✅ **Enhanced**: All standard + advanced grouping |
-| **Prefetching & Buffering** | ⚠️ Basic `buffered` | ⚠️ Basic buffering | ❌ None | ⚠️ Basic | ✅ **Intelligent**: `prefetch`, `rate_limit_backpressure` |
-| **Stream Creation** | ✅ `iter`, `once`, `empty` | ✅ Extended creation | ✅ `stream!` macro | ✅ Standard | ✅ **Rich**: `eval`, `unfold`, `emit_after`, `repeat` |
-| **Metrics & Monitoring** | ❌ None | ❌ None | ❌ None | ❌ None | ✅ **Built-in**: `with_metrics`, throughput tracking |
-| **Cancellation Safety** | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ✅ **Interrupt-aware**: `interrupt_when` |
-| **Memory Efficiency** | ✅ Good | ✅ Good | ✅ Good | ✅ Good | ✅ **Optimized**: Constant memory with backpressure |
-| **Functional Style** | ⚠️ Partial | ⚠️ Partial | ❌ Imperative | ⚠️ Partial | ✅ **Pure functional**: Inspired by FS2 |
-| **External Connectors** | ❌ None | ❌ None | ❌ None | ❌ None | ✅ **Built-in**: Kafka, custom connectors |
-
 ## Pipe: Stream Transformation Functions
 
 A Pipe represents a stream transformation from one type to another. It's a function from Stream[I] to Stream[O] that can be composed with other pipes to create complex stream processing pipelines.
@@ -446,3 +428,21 @@ For a more complex example of using queues to build a message processing system,
 // - Handling different message types
 // See the full code at examples/queue_message_processing.rs
 ```
+
+## **Feature Comparison with Other Rust Streaming Libraries**
+
+| **Feature** | **futures-rs** | **tokio-stream** | **async-stream** | **async-std** | **RS2** |
+|-------------|----------------|------------------|------------------|---------------|---------|
+| **Backpressure Strategies** | ❌ None | ⚠️ Basic buffering | ❌ None | ❌ None | ✅ **4 strategies**: Block, DropOldest, DropNewest, Error |
+| **Parallel Processing** | ⚠️ `buffer_unordered` only | ⚠️ Limited buffering | ❌ None | ⚠️ Basic | ✅ **Advanced**: `par_eval_map`, `par_join`, ordered/unordered |
+| **Error Recovery** | ⚠️ Manual `Result` handling | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ✅ **Automatic**: `recover`, `retry_with_policy`, `on_error_resume_next` |
+| **Time Operations** | ❌ None | ⚠️ `throttle`, `timeout` | ❌ None | ⚠️ Basic intervals | ✅ **Rich set**: `debounce`, `sample`, `sliding_window`, `emit_after` |
+| **Resource Management** | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual | ✅ **Bracket patterns**: Guaranteed cleanup on success/failure |
+| **Stream Combinators** | ✅ Standard set | ✅ Extended set | ⚠️ Manual creation | ✅ Standard set | ✅ **Enhanced**: All standard + advanced grouping |
+| **Prefetching & Buffering** | ⚠️ Basic `buffered` | ⚠️ Basic buffering | ❌ None | ⚠️ Basic | ✅ **Intelligent**: `prefetch`, `rate_limit_backpressure` |
+| **Stream Creation** | ✅ `iter`, `once`, `empty` | ✅ Extended creation | ✅ `stream!` macro | ✅ Standard | ✅ **Rich**: `eval`, `unfold`, `emit_after`, `repeat` |
+| **Metrics & Monitoring** | ❌ None | ❌ None | ❌ None | ❌ None | ✅ **Built-in**: `with_metrics`, throughput tracking |
+| **Cancellation Safety** | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ✅ **Interrupt-aware**: `interrupt_when` |
+| **Memory Efficiency** | ✅ Good | ✅ Good | ✅ Good | ✅ Good | ✅ **Optimized**: Constant memory with backpressure |
+| **Functional Style** | ⚠️ Partial | ⚠️ Partial | ❌ Imperative | ⚠️ Partial | ✅ **Pure functional**: Inspired by FS2 |
+| **External Connectors** | ❌ None | ❌ None | ❌ None | ❌ None | ✅ **Built-in**: Kafka, custom connectors |
