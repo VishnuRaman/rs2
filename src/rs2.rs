@@ -1581,7 +1581,7 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
     }
 
     /// Map errors to a different type
-    fn map_error<E2, F>(self, mut f: F) -> RS2Stream<Result<T, E2>>
+    fn map_error_rs2<E2, F>(self, mut f: F) -> RS2Stream<Result<T, E2>>
     where
         F: FnMut(E) -> E2 + Send + 'static,
         T: Send + 'static,
@@ -1600,7 +1600,7 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
     }
 
     /// Replace errors with fallback values
-    fn or_else<F>(self, mut f: F) -> RS2Stream<T>
+    fn or_else_rs2<F>(self, mut f: F) -> RS2Stream<T>
     where
         F: FnMut(E) -> T + Send + 'static,
         T: Send + 'static,
@@ -1618,7 +1618,7 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
     }
 
     /// Collect only successful values into a Vec
-    fn collect_ok(self) -> RS2Stream<Vec<T>>
+    fn collect_ok_rs2(self) -> RS2Stream<Vec<T>>
     where
         T: Send + 'static,
     {
@@ -1636,7 +1636,7 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
     }
 
     /// Collect only errors into a Vec
-    fn collect_err(self) -> RS2Stream<Vec<E>>
+    fn collect_err_rs2(self) -> RS2Stream<Vec<E>>
     where
         E: Send + 'static,
     {
@@ -1654,7 +1654,7 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
     }
 
     /// Retry with policy
-    fn retry_with_policy<F>(self, policy: RetryPolicy, mut factory: F) -> RS2Stream<Result<T, E>>
+    fn retry_with_policy_rs2<F>(self, policy: RetryPolicy, mut factory: F) -> RS2Stream<Result<T, E>>
     where
         F: FnMut() -> Self + Send + 'static,
         T: Clone + Send + 'static,
@@ -1704,6 +1704,35 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
                 stream = factory();
             }
         }.boxed()
+    }
+
+    /// Apply back-pressure-aware rate limiting via bounded channel
+    fn rate_limit_backpressure_rs2(self, capacity: usize) -> RS2Stream<Result<T, E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        rate_limit_backpressure(self.boxed(), capacity)
+    }
+
+    /// BracketCase with exit case semantics for streams of Result<O,E>
+    fn bracket_case_rs2<A, St, FAcq, FUse, FRel, R>(
+        self,
+        acquire: FAcq,
+        use_fn: FUse,
+        release: FRel,
+    ) -> RS2Stream<Result<T, E>>
+    where
+        FAcq: Future<Output = A> + Send + 'static,
+        FUse: FnOnce(A) -> St + Send + 'static,
+        St: Stream<Item = Result<T, E>> + Send + 'static,
+        FRel: FnOnce(A, ExitCase<E>) -> R + Send + 'static,
+        R: Future<Output = ()> + Send + 'static,
+        T: Send + 'static,
+        E: Clone + Send + 'static,
+        A: Clone + Send + 'static,
+    {
+        bracket_case(acquire, use_fn, release)
     }
 }
 
@@ -2154,6 +2183,52 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         let mut all_streams = vec![self.boxed()];
         all_streams.extend(streams.into_iter().map(|s| s.boxed()));
         interleave(all_streams)
+    }
+
+    /// Chunk the stream into vectors of the specified size
+    ///
+    /// This combinator collects elements from the stream into vectors of the specified size.
+    /// If the stream ends before a chunk is filled, the final chunk may contain fewer elements.
+    fn chunk_rs2(self, size: usize) -> RS2Stream<Vec<Self::Item>>
+    where
+        Self::Item: Send + 'static,
+    {
+        chunk(self.boxed(), size)
+    }
+
+    /// Create a stream that emits values at a fixed rate
+    ///
+    /// This combinator creates a stream that emits the provided item at a fixed rate.
+    fn tick_rs<O>(self, period: Duration, item: O) -> RS2Stream<O>
+    where
+        O: Clone + Send + 'static,
+    {
+        tick(period, item)
+    }
+
+    /// Bracket for resource management
+    ///
+    /// This combinator ensures that a resource is properly released after use.
+    /// It takes three parameters:
+    /// 1. A future that acquires a resource
+    /// 2. A function that uses the resource and returns a stream
+    /// 3. A function that releases the resource
+    fn bracket_rs<A, O, St, FAcq, FUse, FRel, R>(
+        self,
+        acquire: FAcq,
+        use_fn: FUse,
+        release: FRel,
+    ) -> RS2Stream<O>
+    where
+        FAcq: Future<Output = A> + Send + 'static,
+        FUse: FnOnce(A) -> St + Send + 'static,
+        St: Stream<Item = O> + Send + 'static,
+        FRel: FnOnce(A) -> R + Send + 'static,
+        R: Future<Output = ()> + Send + 'static,
+        O: Send + 'static,
+        A: Clone + Send + 'static,
+    {
+        bracket(acquire, use_fn, release)
     }
 }
 

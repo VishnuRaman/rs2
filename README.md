@@ -108,6 +108,7 @@ For examples of creating infinite streams, see [examples/stream_creation_infinit
 - `filter_rs2(predicate)` - Keep only elements that satisfy the predicate
 - `flat_map_rs2(f)` - Apply a function that returns a stream to each element and flatten the results
 - `eval_map_rs2(f)` - Map elements with an async function
+- `chunk_rs2(size)` - Collect elements into chunks of the specified size
 - `take_rs2(n)` - Take the first n elements
 - `skip_rs2(n)` - Skip the first n elements
 - `distinct_rs2()` - Remove duplicate elements
@@ -167,13 +168,14 @@ For examples of interleaving streams, see [examples/interleave_example.rs](examp
 
 ##### Grouping Elements
 
-For examples of grouping elements, see [examples/transformations_grouping.rs](examples/transformations_grouping.rs).
+For examples of grouping elements, see [examples/transformations_grouping.rs](examples/transformations_grouping.rs) and [examples/chunk_rs2_example.rs](examples/chunk_rs2_example.rs).
 
 ```rust
 // This example demonstrates:
 // - Grouping elements by key using group_by_rs2()
 // - Grouping elements into chunks using chunks_rs2()
-// See the full code at examples/transformations_grouping.rs
+// - Collecting elements into chunks of specified size using chunk_rs2()
+// See the full code at examples/transformations_grouping.rs and examples/chunk_rs2_example.rs
 ```
 
 ##### Slicing and Windowing
@@ -246,12 +248,13 @@ For examples of accumulating values, see [examples/accumulating_values.rs](examp
 - `debounce_rs2(duration)` - Emit an element after a quiet period
 - `sample_rs2(interval)` - Sample at regular intervals
 - `timeout_rs2(duration)` - Add timeout to operations
+- `tick_rs(period, item)` - Create a stream that emits a value at a fixed rate
 
 #### Examples
 
 ##### Time-based Operations
 
-For examples of time-based operations, see [examples/timeout_operations.rs](examples/timeout_operations.rs).
+For examples of time-based operations, see [examples/timeout_operations.rs](examples/timeout_operations.rs) and [examples/tick_rs_example.rs](examples/tick_rs_example.rs).
 
 ```rust
 // This example demonstrates:
@@ -260,7 +263,8 @@ For examples of time-based operations, see [examples/timeout_operations.rs](exam
 // - Debouncing a stream using debounce_rs2()
 // - Sampling a stream at regular intervals using sample_rs2()
 // - Creating a delayed stream using emit_after()
-// See the full code at examples/timeout_operations.rs
+// - Creating a stream that emits values at a fixed rate using tick_rs()
+// See the full code at examples/timeout_operations.rs and examples/tick_rs_example.rs
 ```
 
 ##### Processing Elements in Parallel
@@ -284,18 +288,21 @@ For examples of processing elements in parallel, see [examples/processing_elemen
 ### Resource Management
 
 - `bracket_rs2(acquire, use_fn, release)` - Safely acquire and release resources
+- `bracket_case(acquire, use_fn, release)` - Safely acquire and release resources with exit case semantics for streams of Result
 
 #### Examples
 
-##### Resource Management with `bracket_rs2`
+##### Resource Management with `bracket_rs2` and `bracket_case`
 
-For examples of resource management, see [examples/resource_management_bracket.rs](examples/resource_management_bracket.rs).
+For examples of resource management, see [examples/resource_management_bracket.rs](examples/resource_management_bracket.rs), [examples/bracket_rs_example.rs](examples/bracket_rs_example.rs), and [examples/bracket_case_example.rs](examples/bracket_case_example.rs).
 
 ```rust
 // This example demonstrates:
-// - Safely acquiring and releasing resources using bracket_rs2()
+// - Safely acquiring and releasing resources using bracket() function
+// - Safely acquiring and releasing resources using bracket_rs() extension method
+// - Safely acquiring and releasing resources with exit case semantics using bracket_case() extension method
 // - Ensuring resources are released even if an error occurs
-// See the full code at examples/resource_management_bracket.rs
+// See the full code at examples/resource_management_bracket.rs, examples/bracket_rs_example.rs, and examples/bracket_case_example.rs
 ```
 
 ### Backpressure
@@ -303,19 +310,21 @@ For examples of resource management, see [examples/resource_management_bracket.r
 - `auto_backpressure_rs2()` - Apply automatic backpressure
 - `auto_backpressure_with_rs2(config)` - Apply automatic backpressure with custom configuration
 - `rate_limit_backpressure_rs2(rate)` - Apply rate-limited backpressure
+- `rate_limit_backpressure(capacity)` - Apply back-pressure-aware rate limiting via bounded channel for streams of Result
 
 #### Examples
 
 ##### Custom Backpressure
 
-For examples of custom backpressure, see [examples/custom_backpressure.rs](examples/custom_backpressure.rs).
+For examples of custom backpressure, see [examples/custom_backpressure.rs](examples/custom_backpressure.rs) and [examples/rate_limit_backpressure_example.rs](examples/rate_limit_backpressure_example.rs).
 
 ```rust
 // This example demonstrates:
 // - Applying automatic backpressure using auto_backpressure_rs2()
 // - Configuring custom backpressure strategies using auto_backpressure_with_rs2()
 // - Applying rate-limited backpressure using rate_limit_backpressure_rs2()
-// See the full code at examples/custom_backpressure.rs
+// - Applying back-pressure-aware rate limiting to streams of Result using rate_limit_backpressure()
+// See the full code at examples/custom_backpressure.rs and examples/rate_limit_backpressure_example.rs
 ```
 
 ### Metrics and Monitoring

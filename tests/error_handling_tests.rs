@@ -22,7 +22,7 @@ fn test_retry_with_policy_immediate() {
 
         // Apply the retry policy with a rs2_stream factory
         let result = stream
-            .retry_with_policy(policy, || from_iter(vec![
+            .retry_with_policy_rs2(policy, || from_iter(vec![
                 Ok(1),
                 Err("error1"),
                 Ok(3),
@@ -63,7 +63,7 @@ fn test_retry_with_policy_fixed_delay() {
         // Measure the time it takes to process the rs2_stream with retries
         let start = Instant::now();
         let result = stream
-            .retry_with_policy(policy, || from_iter(vec![
+            .retry_with_policy_rs2(policy, || from_iter(vec![
                 Ok(1),
                 Err("error1"),
                 Ok(3),
@@ -99,7 +99,7 @@ fn test_map_error() {
 
         // Map errors to a different type
         let result = stream
-            .map_error(|e| format!("Mapped: {}", e))
+            .map_error_rs2(|e| format!("Mapped: {}", e))
             .collect::<Vec<_>>()
             .await;
 
@@ -126,7 +126,7 @@ fn test_or_else() {
 
         // Replace errors with fallback values
         let result = stream
-            .or_else(|e| {
+            .or_else_rs2(|e| {
                 match e {
                     "error1" => 42,
                     "error2" => 43,
@@ -155,7 +155,7 @@ fn test_collect_ok() {
 
         // Collect only successful values
         let result = stream
-            .collect_ok()
+            .collect_ok_rs2()
             .collect::<Vec<_>>()
             .await;
 
@@ -179,7 +179,7 @@ fn test_collect_err() {
 
         // Collect only errors
         let result = stream
-            .collect_err()
+            .collect_err_rs2()
             .collect::<Vec<_>>()
             .await;
 

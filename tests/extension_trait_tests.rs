@@ -978,3 +978,236 @@ fn test_interleave_rs2_all_empty() {
         assert_eq!(result, Vec::<i32>::new());
     });
 }
+
+#[test]
+fn test_tick_rs() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream that emits a value at a fixed rate
+        let stream = empty::<i32>()
+            .tick_rs(Duration::from_millis(50), 42);
+
+        // Take only 3 items to keep the test short
+        let result = stream
+            .take(3)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that the stream emits the expected value
+        assert_eq!(result, vec![42, 42, 42]);
+    });
+}
+
+#[test]
+fn test_bracket_rs() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Track resource acquisition and release
+        let acquired = Arc::new(std::sync::Mutex::new(false));
+        let released = Arc::new(std::sync::Mutex::new(false));
+
+        let acquired_clone = Arc::clone(&acquired);
+        let released_clone = Arc::clone(&released);
+
+        // Create a stream using bracket_rs
+        let stream = empty::<i32>()
+            .bracket_rs(
+                async move {
+                    *acquired_clone.lock().unwrap() = true;
+                    "resource"
+                },
+                |resource| {
+                    assert_eq!(resource, "resource");
+                    from_iter(vec![1, 2, 3])
+                },
+                move |resource| async move {
+                    assert_eq!(resource, "resource");
+                    *released_clone.lock().unwrap() = true;
+                }
+            );
+
+        // Collect the stream
+        let result = stream.collect::<Vec<_>>().await;
+
+        // Verify the stream produced the expected values
+        assert_eq!(result, vec![1, 2, 3]);
+
+        // Verify resource was acquired and released
+        assert!(*acquired.lock().unwrap());
+        assert!(*released.lock().unwrap());
+    });
+}
+
+#[test]
+fn test_rate_limit_backpressure() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of results with explicit error type
+        let stream = from_iter(vec![Ok::<i32, &str>(1), Ok(2), Ok(3), Ok(4), Ok(5)]);
+
+        // Apply rate_limit_backpressure
+        let result = stream
+            .rate_limit_backpressure_rs2(2)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Verify the stream produced the expected values
+        assert_eq!(result, vec![Ok(1), Ok(2), Ok(3), Ok(4), Ok(5)]);
+    });
+}
+
+#[test]
+fn test_bracket_case_extension() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Track resource acquisition and release
+        let acquired = Arc::new(std::sync::Mutex::new(false));
+        let released = Arc::new(std::sync::Mutex::new(false));
+        let exit_case = Arc::new(std::sync::Mutex::new(None));
+
+        let acquired_clone = Arc::clone(&acquired);
+        let released_clone = Arc::clone(&released);
+        let exit_case_clone = Arc::clone(&exit_case);
+
+        // Create a stream using bracket_case extension method
+        let stream = from_iter(vec![Ok(1), Ok(2), Ok(3)])
+            .bracket_case_rs2(
+                async move {
+                    *acquired_clone.lock().unwrap() = true;
+                    "resource"
+                },
+                |resource| {
+                    assert_eq!(resource, "resource");
+                    from_iter(vec![Ok(4), Ok(5), Ok(6)])
+                },
+                move |resource, case: ExitCase<&str>| async move {
+                    assert_eq!(resource, "resource");
+                    *released_clone.lock().unwrap() = true;
+                    *exit_case_clone.lock().unwrap() = Some(format!("{:?}", case));
+                }
+            );
+
+        // Collect the stream
+        let result = stream.collect::<Vec<_>>().await;
+
+        // Verify the stream produced the expected values
+        assert_eq!(result, vec![Ok(4), Ok(5), Ok(6)]);
+
+        // Verify resource was acquired and released
+        assert!(*acquired.lock().unwrap());
+        assert!(*released.lock().unwrap());
+
+        // Verify exit case was Completed
+        let case = exit_case.lock().unwrap().clone().unwrap();
+        assert!(case.contains("Completed"));
+    });
+}
+
+#[test]
+fn test_bracket_case_extension_with_error() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Track resource acquisition and release
+        let acquired = Arc::new(std::sync::Mutex::new(false));
+        let released = Arc::new(std::sync::Mutex::new(false));
+        let exit_case = Arc::new(std::sync::Mutex::new(None));
+
+        let acquired_clone = Arc::clone(&acquired);
+        let released_clone = Arc::clone(&released);
+        let exit_case_clone = Arc::clone(&exit_case);
+
+        // Create a stream using bracket_case extension method with an error
+        let stream = from_iter(vec![Ok(1), Ok(2), Ok(3)])
+            .bracket_case_rs2(
+                async move {
+                    *acquired_clone.lock().unwrap() = true;
+                    "resource"
+                },
+                |resource| {
+                    assert_eq!(resource, "resource");
+                    from_iter(vec![Ok(4), Err("error"), Ok(6)])
+                },
+                move |resource, case: ExitCase<&str>| async move {
+                    assert_eq!(resource, "resource");
+                    *released_clone.lock().unwrap() = true;
+                    *exit_case_clone.lock().unwrap() = Some(format!("{:?}", case));
+                }
+            );
+
+        // Collect the stream
+        let result = stream.collect::<Vec<_>>().await;
+
+        // Verify the stream produced the expected values (including the error)
+        assert_eq!(result, vec![Ok(4), Err("error"), Ok(6)]);
+
+        // Verify resource was acquired and released
+        assert!(*acquired.lock().unwrap());
+        assert!(*released.lock().unwrap());
+
+        // Verify exit case was Completed (even with an error in the stream)
+        let case = exit_case.lock().unwrap().clone().unwrap();
+        assert!(case.contains("Completed"));
+    });
+}
+
+#[test]
+fn test_chunk_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let stream = from_iter(vec![1, 2, 3, 4, 5, 6]);
+
+        // Apply chunking with size 2
+        let result = stream
+            .chunk_rs2(2)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that the chunks are correct
+        assert_eq!(result, vec![
+            vec![1, 2],
+            vec![3, 4],
+            vec![5, 6],
+        ]);
+    });
+}
+
+#[test]
+fn test_chunk_rs2_uneven_chunks() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream with a number of elements not divisible by the chunk size
+        let stream = from_iter(vec![1, 2, 3, 4, 5]);
+
+        // Apply chunking with size 2
+        let result = stream
+            .chunk_rs2(2)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that the chunks are correct, including the last uneven chunk
+        assert_eq!(result, vec![
+            vec![1, 2],
+            vec![3, 4],
+            vec![5],
+        ]);
+    });
+}
+
+#[test]
+fn test_chunk_rs2_empty_stream() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create an empty stream
+        let stream: RS2Stream<i32> = from_iter(vec![]);
+
+        // Apply chunking with size 2
+        let result = stream
+            .chunk_rs2(2)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that no chunks are emitted
+        assert_eq!(result, Vec::<Vec<i32>>::new());
+    });
+}
