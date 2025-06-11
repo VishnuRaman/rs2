@@ -1001,7 +1001,7 @@ where
                     }
                 }
             }
-            
+
             tokio::select! {
                 biased;
 
@@ -2105,6 +2105,55 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
             }
             collection
         }
+    }
+
+    /// Create a sliding window of elements from the stream
+    ///
+    /// This combinator creates a sliding window of the specified size over the stream.
+    /// It yields a vector of items for each window position.
+    fn sliding_window_rs2(self, size: usize) -> RS2Stream<Vec<Self::Item>>
+    where
+        Self::Item: Clone + Send + 'static,
+    {
+        sliding_window(self.boxed(), size)
+    }
+
+    /// Process items in batches for better throughput
+    ///
+    /// This combinator processes items in batches of the specified size,
+    /// applying the processor function to each batch.
+    fn batch_process_rs2<U, F>(self, batch_size: usize, processor: F) -> RS2Stream<U>
+    where
+        F: FnMut(Vec<Self::Item>) -> Vec<U> + Send + 'static,
+        Self::Item: Send + 'static,
+        U: Send + 'static,
+    {
+        batch_process(self.boxed(), batch_size, processor)
+    }
+
+    /// Collect metrics while processing the stream
+    ///
+    /// This combinator collects metrics while processing the stream,
+    /// returning both the stream and the metrics.
+    fn with_metrics_rs2(self, name: String) -> (RS2Stream<Self::Item>, Arc<Mutex<StreamMetrics>>)
+    where
+        Self::Item: Send + 'static,
+    {
+        with_metrics(self.boxed(), name)
+    }
+
+    /// Interleave multiple streams in a round-robin fashion
+    ///
+    /// This combinator takes a vector of streams and interleaves their elements
+    /// in a round-robin fashion.
+    fn interleave_rs2<S>(self, streams: Vec<S>) -> RS2Stream<Self::Item>
+    where
+        S: Stream<Item = Self::Item> + Send + 'static + Unpin,
+        Self::Item: Send + 'static,
+    {
+        let mut all_streams = vec![self.boxed()];
+        all_streams.extend(streams.into_iter().map(|s| s.boxed()));
+        interleave(all_streams)
     }
 }
 

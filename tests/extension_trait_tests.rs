@@ -714,3 +714,267 @@ fn test_collect_rs2_empty_stream() {
         assert_eq!(result, Vec::<i32>::new());
     });
 }
+
+#[test]
+fn test_sliding_window_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let stream = from_iter(vec![1, 2, 3, 4, 5]);
+
+        // Apply sliding window with size 3
+        let result = stream
+            .sliding_window_rs2(3)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that the sliding windows are correct
+        assert_eq!(result, vec![
+            vec![1, 2, 3],
+            vec![2, 3, 4],
+            vec![3, 4, 5],
+        ]);
+    });
+}
+
+#[test]
+fn test_sliding_window_rs2_small_stream() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream with fewer elements than the window size
+        let stream = from_iter(vec![1, 2]);
+
+        // Apply sliding window with size 3
+        let result = stream
+            .sliding_window_rs2(3)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that no windows are emitted
+        assert_eq!(result, Vec::<Vec<i32>>::new());
+    });
+}
+
+#[test]
+fn test_sliding_window_rs2_empty_stream() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create an empty stream
+        let stream: RS2Stream<i32> = from_iter(vec![]);
+
+        // Apply sliding window with size 3
+        let result = stream
+            .sliding_window_rs2(3)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that no windows are emitted
+        assert_eq!(result, Vec::<Vec<i32>>::new());
+    });
+}
+
+#[test]
+fn test_sliding_window_rs2_size_zero() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let stream = from_iter(vec![1, 2, 3, 4, 5]);
+
+        // Apply sliding window with size 0
+        let result = stream
+            .sliding_window_rs2(0)
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that no windows are emitted
+        assert_eq!(result, Vec::<Vec<i32>>::new());
+    });
+}
+
+#[test]
+fn test_batch_process_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let stream = from_iter(vec![1, 2, 3, 4, 5, 6]);
+
+        // Apply batch processing with batch size 2
+        let result: Vec<i32> = stream
+            .batch_process_rs2(2, |batch| {
+                // Process each batch by summing its elements
+                vec![batch.iter().sum::<i32>()]
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that the batches are processed correctly
+        assert_eq!(result, vec![3, 7, 11]);
+    });
+}
+
+#[test]
+fn test_batch_process_rs2_uneven_batches() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream with a number of elements not divisible by the batch size
+        let stream = from_iter(vec![1, 2, 3, 4, 5]);
+
+        // Apply batch processing with batch size 2
+        let result: Vec<i32> = stream
+            .batch_process_rs2(2, |batch| {
+                // Process each batch by summing its elements
+                vec![batch.iter().sum::<i32>()]
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that the batches are processed correctly, including the last uneven batch
+        assert_eq!(result, vec![3, 7, 5]);
+    });
+}
+
+#[test]
+fn test_batch_process_rs2_empty_stream() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create an empty stream
+        let stream: RS2Stream<i32> = from_iter(vec![]);
+
+        // Apply batch processing with batch size 2
+        let result: Vec<i32> = stream
+            .batch_process_rs2(2, |batch| {
+                // Process each batch by summing its elements
+                vec![batch.iter().sum::<i32>()]
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that no batches are processed
+        assert_eq!(result, Vec::<i32>::new());
+    });
+}
+
+#[test]
+fn test_with_metrics_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let stream = from_iter(vec![1, 2, 3, 4, 5]);
+
+        // Apply with_metrics
+        let (metrics_stream, metrics) = stream.with_metrics_rs2("test_stream".to_string());
+
+        // Collect the stream to ensure all items are processed
+        let result = metrics_stream.collect::<Vec<_>>().await;
+
+        // Check that the stream items are unchanged
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+
+        // Check that metrics were collected
+        let metrics_data = metrics.lock().await;
+        assert_eq!(metrics_data.items_processed, 5);
+        assert!(metrics_data.throughput_items_per_sec() > 0.0);
+    });
+}
+
+#[test]
+fn test_with_metrics_rs2_empty_stream() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create an empty stream
+        let stream: RS2Stream<i32> = from_iter(vec![]);
+
+        // Apply with_metrics
+        let (metrics_stream, metrics) = stream.with_metrics_rs2("empty_stream".to_string());
+
+        // Collect the stream to ensure all items are processed
+        let result = metrics_stream.collect::<Vec<_>>().await;
+
+        // Check that the stream is empty
+        assert_eq!(result, Vec::<i32>::new());
+
+        // Check that metrics were collected
+        let metrics_data = metrics.lock().await;
+        assert_eq!(metrics_data.items_processed, 0);
+    });
+}
+
+#[test]
+fn test_interleave_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a main stream and additional streams to interleave
+        let main_stream = from_iter(vec![1, 4, 7]);
+        let stream1 = from_iter(vec![2, 5, 8]);
+        let stream2 = from_iter(vec![3, 6, 9]);
+
+        // Apply interleave
+        let result = main_stream
+            .interleave_rs2(vec![stream1, stream2])
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that the streams are interleaved in round-robin fashion
+        assert_eq!(result, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    });
+}
+
+#[test]
+fn test_interleave_rs2_different_lengths() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create streams of different lengths
+        let main_stream = from_iter(vec![1, 4]);
+        let stream1 = from_iter(vec![2, 5, 8]);
+        let stream2 = from_iter(vec![3]);
+
+        // Apply interleave
+        let result = main_stream
+            .interleave_rs2(vec![stream1, stream2])
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that the streams are interleaved until all are exhausted
+        assert_eq!(result, vec![1, 2, 3, 4, 5, 8]);
+    });
+}
+
+#[test]
+fn test_interleave_rs2_empty_streams() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a main stream and empty additional streams
+        let main_stream = from_iter(vec![1, 2, 3]);
+        let empty_stream1: RS2Stream<i32> = from_iter(vec![]);
+        let empty_stream2: RS2Stream<i32> = from_iter(vec![]);
+
+        // Apply interleave
+        let result = main_stream
+            .interleave_rs2(vec![empty_stream1, empty_stream2])
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that only the main stream's items are emitted
+        assert_eq!(result, vec![1, 2, 3]);
+    });
+}
+
+#[test]
+fn test_interleave_rs2_all_empty() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create all empty streams
+        let main_stream: RS2Stream<i32> = from_iter(vec![]);
+        let empty_stream1: RS2Stream<i32> = from_iter(vec![]);
+        let empty_stream2: RS2Stream<i32> = from_iter(vec![]);
+
+        // Apply interleave
+        let result = main_stream
+            .interleave_rs2(vec![empty_stream1, empty_stream2])
+            .collect::<Vec<_>>()
+            .await;
+
+        // Check that no items are emitted
+        assert_eq!(result, Vec::<i32>::new());
+    });
+}
