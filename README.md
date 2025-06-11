@@ -107,6 +107,7 @@ For examples of creating infinite streams, see [examples/stream_creation_infinit
 - `map_rs2(f)` - Apply a function to each element
 - `filter_rs2(predicate)` - Keep only elements that satisfy the predicate
 - `flat_map_rs2(f)` - Apply a function that returns a stream to each element and flatten the results
+- `eval_map_rs2(f)` - Map elements with an async function
 - `take_rs2(n)` - Take the first n elements
 - `skip_rs2(n)` - Skip the first n elements
 - `distinct_rs2()` - Remove duplicate elements
