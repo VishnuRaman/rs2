@@ -152,6 +152,19 @@ For examples of combining streams, see [examples/transformations_combining.rs](e
 // See the full code at examples/transformations_combining.rs
 ```
 
+##### Interleaving Streams
+
+For examples of interleaving streams, see [examples/interleave_example.rs](examples/interleave_example.rs).
+
+```rust
+// This example demonstrates:
+// - Interleaving multiple streams in round-robin fashion using interleave_rs2()
+// - Interleaving streams with different lengths
+// - Interleaving streams that emit items at different rates
+// - Using interleaving for multiplexing data sources
+// See the full code at examples/interleave_example.rs
+```
+
 ##### Grouping Elements
 
 For examples of grouping elements, see [examples/transformations_grouping.rs](examples/transformations_grouping.rs).
@@ -165,14 +178,38 @@ For examples of grouping elements, see [examples/transformations_grouping.rs](ex
 
 ##### Slicing and Windowing
 
-For examples of slicing and windowing, see [examples/transformations_slicing.rs](examples/transformations_slicing.rs).
+For examples of slicing operations, see [examples/transformations_slicing.rs](examples/transformations_slicing.rs).
 
 ```rust
 // This example demonstrates:
 // - Taking elements using take_rs2()
 // - Skipping elements using skip_rs2()
-// - Creating sliding windows using sliding_window_rs2()
 // See the full code at examples/transformations_slicing.rs
+```
+
+##### Sliding Windows
+
+For examples of sliding windows, see [examples/sliding_window_example.rs](examples/sliding_window_example.rs).
+
+```rust
+// This example demonstrates:
+// - Creating sliding windows of elements using sliding_window_rs2()
+// - Using sliding windows for time series analysis
+// - Creating phrases from sliding windows of words
+// See the full code at examples/sliding_window_example.rs
+```
+
+##### Batch Processing
+
+For examples of batch processing, see [examples/batch_process_example.rs](examples/batch_process_example.rs).
+
+```rust
+// This example demonstrates:
+// - Processing elements in batches using batch_process_rs2()
+// - Transforming batches of elements
+// - Using batch processing for database operations
+// - Combining batch processing with async operations
+// See the full code at examples/batch_process_example.rs
 ```
 
 ### Accumulation
@@ -279,6 +316,27 @@ For examples of custom backpressure, see [examples/custom_backpressure.rs](examp
 // - Configuring custom backpressure strategies using auto_backpressure_with_rs2()
 // - Applying rate-limited backpressure using rate_limit_backpressure_rs2()
 // See the full code at examples/custom_backpressure.rs
+```
+
+### Metrics and Monitoring
+
+RS2 provides built-in support for collecting metrics while processing streams, allowing you to monitor throughput, processing time, and other performance metrics.
+
+- `with_metrics_rs2(name)` - Collect metrics while processing the stream
+
+#### Examples
+
+##### Stream Metrics Collection
+
+For examples of collecting metrics from streams, see [examples/with_metrics_example.rs](examples/with_metrics_example.rs).
+
+```rust
+// This example demonstrates:
+// - Collecting metrics from streams using with_metrics_rs2()
+// - Monitoring throughput and processing time
+// - Comparing metrics for different stream transformations
+// - Collecting metrics for async operations
+// See the full code at examples/with_metrics_example.rs
 ```
 
 ## Connectors: External System Integration
