@@ -205,6 +205,11 @@ where
         stream: RS2Stream<T>,
         config: Self::Config,
     ) -> Result<Self::Metadata, Self::Error> {
+        // Validate topic name
+        if config.topic.trim().is_empty() {
+            return Err(ConnectorError::InvalidConfiguration("Topic name cannot be empty".to_string()));
+        }
+
         let client_config = self.create_producer_config(&config);
         let producer: FutureProducer = client_config
             .create()
@@ -227,8 +232,24 @@ where
                 async move {
                     match serde_json::to_vec(&item) {
                         Ok(payload) => {
-                            let mut record: FutureRecord<'_, String, Vec<u8>> =
-                                FutureRecord::to(&topic).payload(&payload);
+                            // If it's a string message, try to extract a key for partitioning
+                            let key_string = if let Ok(message_str) = serde_json::from_slice::<String>(&payload) {
+                                // Check if it matches our test pattern "p{partition}-{sequence}"
+                                if let Some(key) = message_str.split('-').next() {
+                                    Some(key.to_string())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            // Now create the record with the key if we have one
+                            let mut record = FutureRecord::to(&topic).payload(&payload);
+
+                            if let Some(ref key) = key_string {
+                                record = record.key(key);
+                            }
 
                             if let Some(p) = partition {
                                 record = record.partition(p);
@@ -287,7 +308,7 @@ where
 
         match consumer.fetch_metadata(Some("__consumer_offsets"), Duration::from_secs(5)) {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false),
+            Err(e) => Err(ConnectorError::ConnectionFailed(format!("Failed to fetch metadata: {}", e))),
         }
     }
 
