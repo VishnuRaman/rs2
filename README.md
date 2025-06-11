@@ -211,6 +211,20 @@ For examples of accumulating values, see [examples/accumulating_values.rs](examp
 
 #### Examples
 
+##### Time-based Operations
+
+For examples of time-based operations, see [examples/timeout_operations.rs](examples/timeout_operations.rs).
+
+```rust
+// This example demonstrates:
+// - Adding timeouts to operations using timeout_rs2()
+// - Throttling a stream using throttle_rs2()
+// - Debouncing a stream using debounce_rs2()
+// - Sampling a stream at regular intervals using sample_rs2()
+// - Creating a delayed stream using emit_after()
+// See the full code at examples/timeout_operations.rs
+```
+
 ##### Processing Elements in Parallel
 
 For examples of processing elements in parallel, see [examples/processing_elements.rs](examples/processing_elements.rs).
