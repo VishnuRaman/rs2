@@ -8,7 +8,8 @@ use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures_core::Stream;
 use futures_util::pin_mut;
 use futures_util::{
-    stream::{BoxStream, FuturesUnordered, StreamExt},
+    future,
+    stream::{self, BoxStream, FuturesUnordered, StreamExt},
     SinkExt,
 };
 use std::future::Future;
@@ -72,7 +73,7 @@ pub fn emit<O>(item: O) -> RS2Stream<O>
 where
     O: Send + 'static,
 {
-    stream! { yield item; }.boxed()
+    stream::once(future::ready(item)).boxed()
 }
 
 /// Create an empty rs2_stream that completes immediately
@@ -80,13 +81,7 @@ pub fn empty<O>() -> RS2Stream<O>
 where
     O: Send + 'static,
 {
-    stream! {
-        #[allow(unreachable_code)]
-        if false {
-            yield panic!("unreachable");
-        }
-    }
-        .boxed()
+    stream::empty().boxed()
 }
 
 /// Create a rs2_stream from an iterator
@@ -96,12 +91,7 @@ where
     <I as IntoIterator>::IntoIter: Send,
     O: Send + 'static,
 {
-    stream! {
-        for item in iter {
-            yield item;
-        }
-    }
-        .boxed()
+    stream::iter(iter).boxed()
 }
 
 /// Evaluate a Future and emit its output
@@ -110,11 +100,7 @@ where
     F: Future<Output = O> + Send + 'static,
     O: Send + 'static,
 {
-    stream! {
-        let out = fut.await;
-        yield out;
-    }
-        .boxed()
+    stream::once(fut).boxed()
 }
 
 /// Repeat a value indefinitely
@@ -122,10 +108,7 @@ pub fn repeat<O>(item: O) -> RS2Stream<O>
 where
     O: Clone + Send + 'static,
 {
-    stream! {
-        loop { yield item.clone(); }
-    }
-        .boxed()
+    stream::repeat(item).boxed()
 }
 
 /// Create a rs2_stream that emits a single value after a delay
@@ -133,11 +116,10 @@ pub fn emit_after<O>(item: O, duration: Duration) -> RS2Stream<O>
 where
     O: Send + 'static,
 {
-    stream! {
+    stream::once(async move {
         sleep(duration).await;
-        yield item;
-    }
-        .boxed()
+        item
+    }).boxed()
 }
 
 /// Generate a rs2_stream from a seed value and a function
@@ -359,21 +341,14 @@ where
 }
 
 /// Filter and map elements of a stream in one operation
-pub fn filter_map<T, U, F, Fut>(s: RS2Stream<T>, mut f: F) -> RS2Stream<U>
+pub fn filter_map<T, U, F, Fut>(s: RS2Stream<T>, f: F) -> RS2Stream<U>
 where
     F: FnMut(T) -> Fut + Send + 'static,
     Fut: Future<Output = Option<U>> + Send + 'static,
     T: Send + 'static,
     U: Send + 'static,
 {
-    stream! {
-        pin_mut!(s);
-        while let Some(item) = s.next().await {
-            if let Some(mapped_item) = f(item).await {
-                yield mapped_item;
-            }
-        }
-    }.boxed()
+    s.filter_map(f).boxed()
 }
 
 /// Take elements from a stream while a predicate returns true
@@ -1781,16 +1756,7 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         F: FnMut(&Self::Item) -> bool + Send + 'static,
         Self::Item: Send + 'static,
     {
-        stream! {
-            let s = self;
-            pin_mut!(s);
-            while let Some(item) = s.next().await {
-                if f(&item) {
-                    yield item;
-                }
-            }
-        }
-            .boxed()
+        self.filter(move |item| future::ready(f(item))).boxed()
     }
 
     /// Flat map elements of the rs2_stream with a function that returns a rs2_stream

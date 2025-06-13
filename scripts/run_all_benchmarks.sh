@@ -1,3 +1,4 @@
+
 #!/bin/bash
 
 set -euo pipefail
@@ -102,6 +103,7 @@ run_benchmark_with_clean_output() {
     local description="$4"
 
     echo -e "${BLUE}📊 Running $display_name...${NC}"
+    echo -e "${BLUE}   $description${NC}"
 
     # Run benchmark with timeout protection
     local exit_code=0
@@ -153,6 +155,7 @@ run_benchmark_with_clean_output() {
             echo -e "${RED}❌ $display_name failed to run${NC}"
         fi
     fi
+    echo ""
 }
 
 # Pre-flight checks
@@ -175,45 +178,57 @@ echo ""
 echo -e "${BLUE}Running benchmarks (this may take a while)...${NC}"
 echo ""
 
-run_benchmark_with_clean_output "stream_operations" "$RESULTS_DIR/stream_operations_output.txt" \
+# Core stream operations
+run_benchmark_with_clean_output "stream_operations" "$RESULTS_DIR/stream_operations.txt" \
     "Stream Operations Benchmarks" \
     "Core stream operations including map, filter, fold, chunk, and async operations."
 
-run_benchmark_with_clean_output "vs_futures" "$RESULTS_DIR/vs_futures_output.txt" \
-    "Library Comparison (vs futures-rs)" \
-    "Direct performance comparison between RS2 and futures-rs for equivalent operations."
-
-# Longer timeout for parallel processing
-BENCHMARK_TIMEOUT=1800  # 30 minutes for parallel processing
-run_benchmark_with_clean_output "parallel_processing" "$RESULTS_DIR/parallel_processing_output.txt" \
-    "Parallel Processing Benchmarks" \
-    "Comprehensive parallel processing evaluation including scaling behavior and optimal concurrency levels."
-
-# Reset timeout for remaining benchmarks
-BENCHMARK_TIMEOUT=600
-run_benchmark_with_clean_output "backpressure_comparison" "$RESULTS_DIR/backpressure_comparison_output.txt" \
+# Backpressure strategies
+run_benchmark_with_clean_output "backpressure_comparison" "$RESULTS_DIR/backpressure_comparison.txt" \
     "Backpressure Comparison" \
     "Evaluation of different backpressure strategies under various load conditions."
 
-run_benchmark_with_clean_output "memory_usage" "$RESULTS_DIR/memory_usage_output.txt" \
+# Ecosystem comparison
+run_benchmark_with_clean_output "ecosystem_comparison" "$RESULTS_DIR/ecosystem_comparison.txt" \
+    "Ecosystem Comparison" \
+    "Performance comparison with other Rust streaming libraries and frameworks."
+
+# Memory usage analysis
+run_benchmark_with_clean_output "memory_usage" "$RESULTS_DIR/memory_usage.txt" \
     "Memory Usage Analysis" \
     "Memory consumption analysis for different stream operations and configurations."
 
-echo ""
+# Parallel processing (longer timeout)
+BENCHMARK_TIMEOUT=1800  # 30 minutes for parallel processing
+run_benchmark_with_clean_output "parallel_processing" "$RESULTS_DIR/parallel_processing.txt" \
+    "Parallel Processing Benchmarks" \
+    "Comprehensive parallel processing evaluation including scaling behavior and optimal concurrency levels."
+
+# Reset timeout
+BENCHMARK_TIMEOUT=600
 
 # Move HTML reports after all benchmarks complete
 move_html_reports
 
 echo ""
 echo -e "${GREEN}🎉 Benchmark suite completed!${NC}"
-echo -e "${GREEN}📂 Text outputs: $RESULTS_DIR/*.txt${NC}"
-echo -e "${GREEN}📊 HTML reports: $RESULTS_DIR/criterion/*/index.html${NC}"
-echo -e "${GREEN}🔗 Direct links: $RESULTS_DIR/*_report.html${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}📂 Text outputs saved to:${NC}"
+echo -e "   - ${YELLOW}$RESULTS_DIR/stream_operations.txt${NC}"
+echo -e "   - ${YELLOW}$RESULTS_DIR/backpressure_comparison.txt${NC}"
+echo -e "   - ${YELLOW}$RESULTS_DIR/ecosystem_comparison.txt${NC}"
+echo -e "   - ${YELLOW}$RESULTS_DIR/memory_usage.txt${NC}"
+echo -e "   - ${YELLOW}$RESULTS_DIR/parallel_processing.txt${NC}"
 echo ""
-echo -e "${BLUE}To view text results:${NC}"
+echo -e "${GREEN}📊 HTML reports available at:${NC}"
+echo -e "   - ${YELLOW}$RESULTS_DIR/criterion/*/index.html${NC}"
+echo -e "   - ${YELLOW}$RESULTS_DIR/*_report.html${NC}"
+echo ""
+echo -e "${BLUE}Quick commands:${NC}"
+echo -e "   ${YELLOW}# View all text results${NC}"
 echo -e "   ${YELLOW}ls $RESULTS_DIR/*.txt${NC}"
 echo ""
-echo -e "${BLUE}To view HTML reports:${NC}"
+echo -e "   ${YELLOW}# Open HTML reports${NC}"
 echo -e "   ${YELLOW}open $RESULTS_DIR/criterion/*/index.html${NC}"
 echo ""
-echo -e "${GREEN}✨ Clean output - no .md files, all results in $RESULTS_DIR/${NC}"
+echo -e "${GREEN}✨ All results organized in $RESULTS_DIR/ directory${NC}"

@@ -9,7 +9,7 @@ use serde_json::Value;
 async fn light_cpu_task(x: i32) -> i32 {
     // Just some basic arithmetic - very fast
     let mut result = x;
-    for _ in 0..50 {
+    for _ in 0..5 {
         result = result.wrapping_mul(17).wrapping_add(1);
     }
     black_box(result)
@@ -22,7 +22,7 @@ async fn medium_cpu_task(x: i32) -> String {
     let input = format!("data-{}-{}", x, x * x);
 
     // Hash multiple times to increase CPU work
-    for i in 0..500 {
+    for i in 0..10 {
         hasher.update(format!("{}-{}", input, i).as_bytes());
     }
 
@@ -48,14 +48,14 @@ async fn heavy_cpu_task(x: i32) -> (String, f64) {
 
     // Heavy mathematical computation
     let mut result = 0.0f64;
-    for i in 0..5000 {
+    for i in 0..50 {
         result += (x as f64 * i as f64).sin().cos().tan().abs();
     }
 
     // String processing with multiple hashing rounds
     let hash = {
         let mut hasher = Sha256::new();
-        for _ in 0..100 {
+        for _ in 0..50 {
             hasher.update(parsed.to_string().as_bytes());
             hasher.update(result.to_string().as_bytes());
         }
