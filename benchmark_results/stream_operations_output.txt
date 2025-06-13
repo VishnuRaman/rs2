@@ -1,0 +1,100 @@
+basic_operations/map_filter/1000
+                        time:   [6.9089 µs 6.9349 µs 6.9667 µs]
+                        change: [-5.8521% -3.6313% -1.5770%] (p = 0.00 < 0.05)
+                        Performance has improved.
+Found 5 outliers among 100 measurements (5.00%)
+  1 (1.00%) low mild
+  4 (4.00%) high severe
+basic_operations/fold/1000
+                        time:   [4.0657 µs 4.0743 µs 4.0849 µs]
+                        change: [+0.6982% +0.9440% +1.2423%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 17 outliers among 100 measurements (17.00%)
+  2 (2.00%) low mild
+  3 (3.00%) high mild
+  12 (12.00%) high severe
+basic_operations/chunk_and_process/1000
+                        time:   [6.5215 µs 6.5330 µs 6.5452 µs]
+                        change: [+1.6856% +1.9316% +2.1778%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+basic_operations/map_filter/10000
+                        time:   [65.264 µs 65.453 µs 65.644 µs]
+                        change: [+0.8926% +1.1052% +1.3272%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+basic_operations/fold/10000
+                        time:   [40.288 µs 40.410 µs 40.542 µs]
+                        change: [+0.4851% +0.6853% +0.8813%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 11 outliers among 100 measurements (11.00%)
+  4 (4.00%) high mild
+  7 (7.00%) high severe
+basic_operations/chunk_and_process/10000
+                        time:   [63.893 µs 64.076 µs 64.239 µs]
+                        change: [+0.8296% +1.1893% +1.5507%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+basic_operations/map_filter/100000
+                        time:   [651.68 µs 652.90 µs 654.24 µs]
+                        change: [+0.5931% +0.8561% +1.1594%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 15 outliers among 100 measurements (15.00%)
+  9 (9.00%) high mild
+  6 (6.00%) high severe
+basic_operations/fold/100000
+                        time:   [402.21 µs 403.21 µs 404.43 µs]
+                        change: [+0.7557% +0.9902% +1.2839%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 15 outliers among 100 measurements (15.00%)
+  4 (4.00%) high mild
+  11 (11.00%) high severe
+basic_operations/chunk_and_process/100000
+                        time:   [628.84 µs 630.11 µs 631.36 µs]
+                        change: [+0.6050% +0.8760% +1.1421%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+basic_operations/map_filter/1000000
+                        time:   [6.5417 ms 6.5663 ms 6.6019 ms]
+                        change: [-0.1208% +0.3740% +0.9552%] (p = 0.20 > 0.05)
+                        No change in performance detected.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high severe
+basic_operations/fold/1000000
+                        time:   [4.0075 ms 4.0095 ms 4.0116 ms]
+                        change: [+0.3837% +0.4608% +0.5296%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) low mild
+  1 (1.00%) high severe
+basic_operations/chunk_and_process/1000000
+                        time:   [6.2985 ms 6.3086 ms 6.3193 ms]
+                        change: [+0.7051% +0.9983% +1.2895%] (p = 0.00 < 0.05)
+                        Change within noise threshold.
+
+async_operations/eval_map/1000
+                        time:   [21.408 µs 21.424 µs 21.441 µs]
+                        change: [+1.5616% +1.7257% +1.8840%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 15 outliers among 100 measurements (15.00%)
+  1 (1.00%) low severe
+  4 (4.00%) high mild
+  10 (10.00%) high severe
+async_operations/eval_map/10000
+                        time:   [210.28 µs 210.55 µs 210.94 µs]
+                        change: [+1.6134% +1.7926% +1.9788%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 8 outliers among 100 measurements (8.00%)
+  2 (2.00%) low severe
+  2 (2.00%) low mild
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+async_operations/eval_map/50000
+                        time:   [1.2929 ms 1.2958 ms 1.2982 ms]
+                        change: [+18.140% +19.718% +21.440%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 24 outliers among 100 measurements (24.00%)
+  20 (20.00%) low severe
+  2 (2.00%) low mild
+  2 (2.00%) high severe
+

@@ -241,6 +241,9 @@ For examples of accumulating values, see [examples/accumulating_values.rs](examp
 - `par_eval_map_rs2(concurrency, f)` - Process elements in parallel with bounded concurrency, preserving order
 - `par_eval_map_unordered_rs2(concurrency, f)` - Process elements in parallel without preserving order
 - `par_join_rs2(concurrency)` - Run multiple streams concurrently and combine their outputs
+- `par_eval_map_work_stealing_rs2(f)` - Process elements in parallel using work stealing for optimal CPU utilization
+- `par_eval_map_work_stealing_with_config_rs2(config, f)` - Process elements with custom work stealing configuration
+- `par_eval_map_cpu_intensive_rs2(f)` - Process CPU-intensive tasks with work stealing optimized for CPU workloads
 
 ### Time-based Operations
 
@@ -269,7 +272,7 @@ For examples of time-based operations, see [examples/timeout_operations.rs](exam
 
 ##### Processing Elements in Parallel
 
-For examples of processing elements in parallel, see [examples/processing_elements.rs](examples/processing_elements.rs).
+For examples of processing elements in parallel, see [examples/processing_elements.rs](examples/processing_elements.rs) and [examples/work_stealing_example.rs](examples/work_stealing_example.rs).
 
 ```rust
 // This example demonstrates:
@@ -278,6 +281,52 @@ For examples of processing elements in parallel, see [examples/processing_elemen
 // - Running multiple streams concurrently using par_join_rs2()
 // See the full code at examples/processing_elements.rs
 ```
+
+##### Work Stealing for Parallel Processing [NOT READY/ EXPERIMENTAL]
+
+For examples of work stealing for parallel processing, see [examples/work_stealing_example.rs](examples/work_stealing_example.rs).
+
+```rust
+// This example demonstrates:
+// - Processing elements in parallel using work stealing with default configuration
+// - Processing elements with custom work stealing configuration
+// - Processing CPU-intensive tasks with work stealing optimized for CPU workloads
+// - Comparing work stealing with regular parallel processing
+// See the full code at examples/work_stealing_example.rs
+```
+
+#### WorkStealingConfig
+
+The `WorkStealingConfig` struct allows you to customize how work stealing is implemented for parallel processing:
+
+```rust
+pub struct WorkStealingConfig {
+    pub num_workers: Option<usize>,
+    pub local_queue_size: usize,
+    pub steal_interval_ms: u64,
+    pub use_blocking: bool,
+}
+```
+
+##### Parameters
+
+- **num_workers**: Number of worker threads to use for parallel processing. If `None` (the default), the number of workers will be set to the number of logical CPU cores available on the system. Setting this explicitly allows you to control the level of parallelism.
+
+- **local_queue_size**: Maximum number of items each worker can queue locally before sharing with the global queue. This controls the "work stealing" behavior. A smaller value leads to more frequent sharing of work with other workers, which can improve load balancing but may increase synchronization overhead. A larger value allows workers to process more items locally before sharing.
+
+- **steal_interval_ms**: How often workers attempt to steal tasks from other workers' queues, in milliseconds. This controls how frequently idle workers will check other workers' queues for tasks to steal. A smaller value leads to more aggressive stealing and potentially better load balancing, but may increase contention. A larger value reduces stealing attempts but may lead to idle workers not finding work quickly enough.
+
+- **use_blocking**: Whether to use `spawn_blocking` for CPU-intensive tasks. When set to `true`, tasks will be executed using Tokio's `spawn_blocking`, which is optimized for CPU-bound work. This prevents CPU-intensive tasks from blocking the async runtime's thread pool. Set to `false` for I/O-bound or lightweight tasks that don't need dedicated threads.
+
+##### Default Configuration
+
+The default configuration uses:
+- Number of workers equal to the number of logical CPU cores
+- Local queue size of 16 items
+- Steal interval of 1 millisecond
+- `use_blocking` set to true
+
+This creates a system optimized for CPU-bound tasks with good load balancing across all available cores.
 
 ### Error Handling
 
@@ -311,6 +360,43 @@ For examples of resource management, see [examples/resource_management_bracket.r
 - `auto_backpressure_with_rs2(config)` - Apply automatic backpressure with custom configuration
 - `rate_limit_backpressure_rs2(rate)` - Apply rate-limited backpressure
 - `rate_limit_backpressure(capacity)` - Apply back-pressure-aware rate limiting via bounded channel for streams of Result
+
+#### BackpressureConfig
+
+The `BackpressureConfig` struct allows you to customize how backpressure is handled in your streams:
+
+```rust
+pub struct BackpressureConfig {
+    pub strategy: BackpressureStrategy,
+    pub buffer_size: usize,
+    pub low_watermark: Option<usize>,  // Resume at this level
+    pub high_watermark: Option<usize>, // Pause at this level
+}
+```
+
+##### Parameters
+
+- **strategy**: Defines the behavior when the buffer reaches capacity:
+  - `BackpressureStrategy::DropOldest` - Discards the oldest items in the buffer when it's full
+  - `BackpressureStrategy::DropNewest` - Discards the newest incoming items when the buffer is full
+  - `BackpressureStrategy::Block` - Blocks the producer until the consumer catches up (default strategy)
+  - `BackpressureStrategy::Error` - Fails immediately when the buffer is full
+
+- **buffer_size**: The maximum number of items that can be held in the buffer. Default is 100 items.
+
+- **low_watermark**: The buffer level at which to resume processing after being paused. When the buffer level drops below this threshold, a paused producer can resume sending data. Optional, with a default value of 25 (25% of the default buffer size).
+
+- **high_watermark**: The buffer level at which to pause processing. When the buffer level exceeds this threshold, the producer may be paused to allow the consumer to catch up. Optional, with a default value of 75 (75% of the default buffer size).
+
+##### Default Configuration
+
+The default configuration uses:
+- `Block` strategy
+- Buffer size of 100 items
+- Low watermark of 25 items
+- High watermark of 75 items
+
+This creates a system that blocks producers when the buffer is full, pauses when it reaches 75% capacity, and resumes when it drops to 25% capacity.
 
 #### Examples
 

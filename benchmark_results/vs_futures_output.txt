@@ -1,0 +1,11 @@
+vs_futures/rs2_map_filter
+                        time:   [857.37 µs 872.89 µs 889.63 µs]
+Found 10 outliers among 100 measurements (10.00%)
+  7 (7.00%) high mild
+  3 (3.00%) high severe
+vs_futures/futures_map_filter
+                        time:   [225.61 µs 227.02 µs 228.47 µs]
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) low mild
+  2 (2.00%) high mild
+
