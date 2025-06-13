@@ -734,7 +734,3 @@ RS2 excels at parallel processing with near-linear scaling:
 | **Batching** | ❌ | Limited | ❌ | ✅ |
 | Chunking | ❌ | ✅ | ❌ | ✅ `chunk_rs2` |
 | Batch processing | ❌ | ❌ | ❌ | ✅ `batch_process_rs2` |
-
-### When to Use Each Library
-
-#### **futures-rs**
