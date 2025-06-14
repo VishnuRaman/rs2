@@ -1,5 +1,6 @@
 use rs2::rs2::*;
 use rs2::error::StreamError;
+use rs2::stream_configuration::{BufferConfig, GrowthStrategy};
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use async_stream::stream;
@@ -712,6 +713,28 @@ fn test_collect_rs2_empty_stream() {
 
         // Check that the result is an empty vector
         assert_eq!(result, Vec::<i32>::new());
+    });
+}
+
+#[test]
+fn test_collect_with_config_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream of numbers
+        let stream = from_iter(vec![1, 2, 3, 4, 5]);
+
+        // Create a custom buffer configuration with a small initial capacity
+        let config = BufferConfig {
+            initial_capacity: 2,
+            max_capacity: Some(10),
+            growth_strategy: GrowthStrategy::Exponential(2.0),
+        };
+
+        // Collect into a Vec with custom buffer configuration
+        let result = stream.collect_with_config_rs2::<Vec<_>>(config).await;
+
+        // Check that all items were collected correctly
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
     });
 }
 

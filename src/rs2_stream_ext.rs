@@ -11,6 +11,7 @@ use num_cpus;
 
 use crate::error::StreamResult;
 use crate::stream_performance_metrics::StreamMetrics;
+use crate::stream_configuration::{BufferConfig, GrowthStrategy};
 use crate::rs2::{
     RS2Stream, BackpressureConfig, auto_backpressure, merge, zip_with, throttle, debounce, sample,
     par_eval_map, par_eval_map_unordered, par_join, timeout, prefetch, distinct_until_changed,
@@ -497,13 +498,73 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         B: Default + Extend<Self::Item> + Send + 'static,
         Self::Item: Send + 'static,
     {
+        self.collect_with_config_rs2(BufferConfig::default())
+    }
+
+    /// Collect all items from the stream into a collection with custom buffer configuration
+    ///
+    /// This combinator collects all items from the stream into a collection of type B.
+    /// It returns a Future that resolves to the collection.
+    /// The buffer configuration allows for optimized memory allocation and growth strategies.
+    // Enhanced version that uses all BufferConfig fields
+    fn collect_with_config_rs2<B>(self, config: BufferConfig) -> impl Future<Output = B>
+    where
+        B: Default + Extend<Self::Item> + Send + 'static,
+        Self::Item: Send + 'static,
+    {
         let mut stream = self.boxed();
         async move {
-            let mut collection = B::default();
-            while let Some(item) = stream.next().await {
-                collection.extend(std::iter::once(item));
+            if std::any::TypeId::of::<B>() == std::any::TypeId::of::<Vec<Self::Item>>() {
+                // Create Vec with smart capacity management
+                let mut vec = Vec::with_capacity(config.initial_capacity);
+                let mut items_collected = 0;
+
+                while let Some(item) = stream.next().await {
+                    // Check max_capacity limit
+                    if let Some(max_cap) = config.max_capacity {
+                        if items_collected >= max_cap {
+                            break; // Respect size limit
+                        }
+                    }
+
+                    // Apply growth strategy when needed
+                    if vec.len() == vec.capacity() {
+                        let new_capacity = match config.growth_strategy {
+                            GrowthStrategy::Linear(step) => vec.capacity() + step,
+                            GrowthStrategy::Exponential(factor) =>
+                                (vec.capacity() as f64 * factor) as usize,
+                            GrowthStrategy::Fixed => vec.capacity(), // No growth
+                        };
+
+                        let capped_capacity = if let Some(max_cap) = config.max_capacity {
+                            new_capacity.min(max_cap)
+                        } else {
+                            new_capacity
+                        };
+
+                        vec.reserve(capped_capacity - vec.capacity());
+                    }
+
+                    vec.push(item);
+                    items_collected += 1;
+                }
+
+                // Safe transmute back to B
+                let result = unsafe {
+                    let ptr = &vec as *const Vec<Self::Item> as *const B;
+                    let result = std::ptr::read(ptr);
+                    std::mem::forget(vec);
+                    result
+                };
+                result
+            } else {
+                // Fallback for other collection types
+                let mut collection = B::default();
+                while let Some(item) = stream.next().await {
+                    collection.extend(std::iter::once(item));
+                }
+                collection
             }
-            collection
         }
     }
 

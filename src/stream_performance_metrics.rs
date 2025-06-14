@@ -16,9 +16,9 @@ pub struct BufferConfig {
 impl Default for BufferConfig {
     fn default() -> Self {
         Self {
-            initial_capacity: 1024,
-            max_capacity: Some(65536),
-            growth_strategy: GrowthStrategy::Exponential(2.0),
+            initial_capacity: 8192,
+            max_capacity: Some(1048576),
+            growth_strategy: GrowthStrategy::Exponential(1.5),
         }
     }
 }
