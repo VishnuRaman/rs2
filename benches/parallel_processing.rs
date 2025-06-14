@@ -535,11 +535,332 @@ fn bench_concurrency_optimization(c: &mut Criterion) {
     group.finish();
 }
 
+// Benchmark map_parallel_rs2 and map_parallel_with_concurrency_rs2 functions
+fn bench_map_parallel_functions(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("map_parallel_functions");
+    group.measurement_time(Duration::from_secs(15));
+    group.sample_size(20);
+
+    // Test configurations: (task_name, data_size, description)
+    let test_configs = vec![
+        ("light_cpu", 2000, "Light CPU work - minimal parallel benefit expected"),
+        ("medium_cpu", 500, "Medium CPU work - good parallel benefits"),
+        ("heavy_cpu", 100, "Heavy CPU work - significant parallel benefits"),
+        ("io_simulation", 200, "I/O simulation - excellent parallel benefits"),
+        ("variable_workload", 400, "Variable workload - tests load balancing"),
+    ];
+
+    // Synchronous versions of the async tasks for map_parallel_rs2
+    let light_cpu_sync = |x: i32| -> i32 {
+        let mut result = x;
+        for _ in 0..5 {
+            result = result.wrapping_mul(17).wrapping_add(1);
+        }
+        black_box(result)
+    };
+
+    let medium_cpu_sync = |x: i32| -> String {
+        let mut hasher = Sha256::new();
+        let input = format!("data-{}-{}", x, x * x);
+
+        for i in 0..10 {
+            hasher.update(format!("{}-{}", input, i).as_bytes());
+        }
+
+        let result = hasher.finalize();
+        black_box(format!("{:x}", result))
+    };
+
+    let heavy_cpu_sync = |x: i32| -> (String, f64) {
+        let json_data = format!(r#"{{
+            "id": {},
+            "data": [{}],
+            "metadata": {{
+                "processed": true,
+                "timestamp": {},
+                "values": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            }}
+        }}"#, x, (0..50).map(|i| (i * x).to_string()).collect::<Vec<_>>().join(","), x * 1000);
+
+        let parsed: Value = serde_json::from_str(&json_data).unwrap();
+
+        let mut result = 0.0f64;
+        for i in 0..50 {
+            result += (x as f64 * i as f64).sin().cos().tan().abs();
+        }
+
+        let hash = {
+            let mut hasher = Sha256::new();
+            for _ in 0..50 {
+                hasher.update(parsed.to_string().as_bytes());
+                hasher.update(result.to_string().as_bytes());
+            }
+            format!("{:x}", hasher.finalize())
+        };
+
+        black_box((hash, result))
+    };
+
+    // Note: We can't directly use io_simulation_task and variable_workload_task with map_parallel_rs2
+    // because they're async functions. For benchmarking purposes, we'll use medium_cpu_sync instead.
+
+    for (task_name, data_size, _description) in test_configs {
+        // Skip I/O and variable workload tasks for map_parallel_rs2 since they require async
+        if task_name == "io_simulation" || task_name == "variable_workload" {
+            continue;
+        }
+
+        // Sequential baseline (using map_rs2)
+        group.bench_with_input(
+            BenchmarkId::new(format!("{}_sequential", task_name), data_size),
+            &(task_name, data_size),
+            |b, &(task_type, size)| {
+                b.to_async(&rt).iter(|| async {
+                    let result = match task_type {
+                        "light_cpu" => {
+                            from_iter(0..size)
+                                .map_rs2(light_cpu_sync)
+                                .map_rs2(|_| 1) // Normalize result type
+                                .collect_rs2::<Vec<_>>()
+                                .await
+                        },
+                        "medium_cpu" => {
+                            from_iter(0..size)
+                                .map_rs2(medium_cpu_sync)
+                                .map_rs2(|_| 1)
+                                .collect_rs2::<Vec<_>>()
+                                .await
+                        },
+                        "heavy_cpu" => {
+                            from_iter(0..size)
+                                .map_rs2(heavy_cpu_sync)
+                                .map_rs2(|_| 1)
+                                .collect_rs2::<Vec<_>>()
+                                .await
+                        },
+                        _ => vec![],
+                    };
+                    black_box(result)
+                });
+            },
+        );
+
+        // map_parallel_rs2 (automatic concurrency)
+        group.bench_with_input(
+            BenchmarkId::new(format!("{}_map_parallel", task_name), data_size),
+            &(task_name, data_size),
+            |b, &(task_type, size)| {
+                b.to_async(&rt).iter(|| async {
+                    let result = match task_type {
+                        "light_cpu" => {
+                            from_iter(0..size)
+                                .map_parallel_rs2(light_cpu_sync)
+                                .map_rs2(|_| 1) // Normalize result type
+                                .collect_rs2::<Vec<_>>()
+                                .await
+                        },
+                        "medium_cpu" => {
+                            from_iter(0..size)
+                                .map_parallel_rs2(medium_cpu_sync)
+                                .map_rs2(|_| 1)
+                                .collect_rs2::<Vec<_>>()
+                                .await
+                        },
+                        "heavy_cpu" => {
+                            from_iter(0..size)
+                                .map_parallel_rs2(heavy_cpu_sync)
+                                .map_rs2(|_| 1)
+                                .collect_rs2::<Vec<_>>()
+                                .await
+                        },
+                        _ => vec![],
+                    };
+                    black_box(result)
+                });
+            },
+        );
+
+        // Optimal concurrency levels per task type for map_parallel_with_concurrency_rs2
+        let concurrency_levels = match task_name {
+            "light_cpu" => vec![2, 4], // Lower concurrency for light tasks
+            "medium_cpu" => vec![2, 4, 8], // Moderate concurrency
+            "heavy_cpu" => vec![2, 4, 8, num_cpus::get()], // Up to CPU count
+            _ => vec![4],
+        };
+
+        for concurrency in concurrency_levels {
+            // map_parallel_with_concurrency_rs2 (custom concurrency)
+            group.bench_with_input(
+                BenchmarkId::new(format!("{}_map_parallel_with_concurrency", task_name), format!("{}_{}", data_size, concurrency)),
+                &(task_name, data_size, concurrency),
+                |b, &(task_type, size, conc)| {
+                    b.to_async(&rt).iter(|| async {
+                        let result = match task_type {
+                            "light_cpu" => {
+                                from_iter(0..size)
+                                    .map_parallel_with_concurrency_rs2(conc, light_cpu_sync)
+                                    .map_rs2(|_| 1) // Normalize result type
+                                    .collect_rs2::<Vec<_>>()
+                                    .await
+                            },
+                            "medium_cpu" => {
+                                from_iter(0..size)
+                                    .map_parallel_with_concurrency_rs2(conc, medium_cpu_sync)
+                                    .map_rs2(|_| 1)
+                                    .collect_rs2::<Vec<_>>()
+                                    .await
+                            },
+                            "heavy_cpu" => {
+                                from_iter(0..size)
+                                    .map_parallel_with_concurrency_rs2(conc, heavy_cpu_sync)
+                                    .map_rs2(|_| 1)
+                                    .collect_rs2::<Vec<_>>()
+                                    .await
+                            },
+                            _ => vec![],
+                        };
+                        black_box(result)
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+// Define a static function for heavy CPU work to avoid lifetime issues
+fn heavy_cpu_work(x: i32) -> (String, f64) {
+    let json_data = format!(r#"{{
+        "id": {},
+        "data": [{}],
+        "metadata": {{
+            "processed": true,
+            "timestamp": {},
+            "values": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        }}
+    }}"#, x, (0..50).map(|i| (i * x).to_string()).collect::<Vec<_>>().join(","), x * 1000);
+
+    let parsed: Value = serde_json::from_str(&json_data).unwrap();
+
+    let mut result = 0.0f64;
+    for i in 0..50 {
+        result += (x as f64 * i as f64).sin().cos().tan().abs();
+    }
+
+    let hash = {
+        let mut hasher = Sha256::new();
+        for _ in 0..50 {
+            hasher.update(parsed.to_string().as_bytes());
+            hasher.update(result.to_string().as_bytes());
+        }
+        format!("{:x}", hasher.finalize())
+    };
+
+    black_box((hash, result))
+}
+
+// Compare map_parallel_rs2 with par_eval_map_rs2 for CPU-bound tasks
+fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("map_parallel_vs_par_eval_map");
+    group.measurement_time(Duration::from_secs(15));
+    group.sample_size(20);
+
+    let data_size = 200;
+    let concurrency = num_cpus::get();
+
+    // Sequential baseline
+    group.bench_with_input(
+        BenchmarkId::new("sequential", data_size),
+        &data_size,
+        |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let result = from_iter(0..size)
+                    .map_rs2(heavy_cpu_work)
+                    .map_rs2(|_| 1) // Normalize result type
+                    .collect_rs2::<Vec<_>>()
+                    .await;
+                black_box(result)
+            });
+        },
+    );
+
+    // map_parallel_rs2 (automatic concurrency)
+    group.bench_with_input(
+        BenchmarkId::new("map_parallel_rs2", data_size),
+        &data_size,
+        |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let result = from_iter(0..size)
+                    .map_parallel_rs2(heavy_cpu_work)
+                    .map_rs2(|_| 1) // Normalize result type
+                    .collect_rs2::<Vec<_>>()
+                    .await;
+                black_box(result)
+            });
+        },
+    );
+
+    // map_parallel_with_concurrency_rs2 (explicit concurrency)
+    group.bench_with_input(
+        BenchmarkId::new("map_parallel_with_concurrency_rs2", data_size),
+        &data_size,
+        |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let result = from_iter(0..size)
+                    .map_parallel_with_concurrency_rs2(concurrency, heavy_cpu_work)
+                    .map_rs2(|_| 1) // Normalize result type
+                    .collect_rs2::<Vec<_>>()
+                    .await;
+                black_box(result)
+            });
+        },
+    );
+
+    // par_eval_map_rs2 (for comparison)
+    group.bench_with_input(
+        BenchmarkId::new("par_eval_map_rs2", data_size),
+        &data_size,
+        |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let result = from_iter(0..size)
+                    .par_eval_map_rs2(concurrency, |x| async move { heavy_cpu_work(x) })
+                    .map_rs2(|_| 1) // Normalize result type
+                    .collect_rs2::<Vec<_>>()
+                    .await;
+                black_box(result)
+            });
+        },
+    );
+
+    // par_eval_map_unordered_rs2 (for comparison)
+    group.bench_with_input(
+        BenchmarkId::new("par_eval_map_unordered_rs2", data_size),
+        &data_size,
+        |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let result = from_iter(0..size)
+                    .par_eval_map_unordered_rs2(concurrency, |x| async move { heavy_cpu_work(x) })
+                    .map_rs2(|_| 1) // Normalize result type
+                    .collect_rs2::<Vec<_>>()
+                    .await;
+                black_box(result)
+            });
+        },
+    );
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_parallel_processing_comprehensive,
     bench_parallel_scaling,
     bench_ordered_vs_unordered,
-    bench_concurrency_optimization
+    bench_concurrency_optimization,
+    bench_map_parallel_functions,
+    bench_map_parallel_vs_par_eval_map
 );
 criterion_main!(benches);

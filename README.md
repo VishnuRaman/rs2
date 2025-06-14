@@ -4,21 +4,74 @@
 
 ## 🚀 Why RS2?
 
-**Superior Scaling Performance**: While RS2 has modest sequential overhead (1.6x vs futures-rs, comparable to tokio-stream), it delivers exceptional parallel performance with **near-linear scaling up to 16+ cores** and **8.5x speedup** for I/O-bound workloads. For realistic applications mixing CPU and I/O operations, RS2 consistently outperforms alternatives by **650%** overall.
+**Superior Scaling Performance**: While RS2 has modest sequential overhead (1.6x vs futures-rs, comparable to tokio-stream), it delivers exceptional parallel performance with **near-linear scaling up to 16+ cores** and **7.8-8.5x speedup** for I/O-bound workloads.
 
-**Production-Grade Reliability**: Unlike basic streaming libraries, RS2 includes built-in **automatic backpressure**, **retry policies with exponential backoff**, **circuit breakers**, **timeout handling**, and **resource management** - eliminating the need to manually implement these critical production patterns that tokio-stream and futures-rs lack.
+**Production-Grade Reliability**: Unlike basic streaming libraries, RS2 includes built-in **automatic backpressure**, **retry policies with exponential backoff**, **circuit breakers**, **timeout handling**, and **resource management** - eliminating the need to manually implement these critical production patterns.
 
-**Effortless Parallelization**: Transform any sequential stream into parallel processing with a single method call. RS2's `par_eval_map_rs2()` automatically handles concurrency, ordering, and error propagation - capabilities not available in tokio-stream or futures-rs.
+**Effortless Parallelization**: Transform any sequential stream into parallel processing with a single method call. RS2's `par_eval_map_rs2()` automatically handles concurrency, ordering, and error propagation.
 
-**Enterprise Integration**: First-class connector system for Kafka, Redis, databases, and custom systems with health checks, metrics, and automatic retry logic built-in.
+**Enterprise Integration**: First-class connector system for Kafka, and custom systems with health checks, metrics, and automatic retry logic built-in.
 
-## Performance Characteristics
+### **Perfect For:**
+- **High-throughput data pipelines** processing millions of events per second
+- **Microservices** requiring resilient inter-service communication
+- **ETL workloads** that need automatic parallelization and error recovery
+- **Real-time analytics** with backpressure-aware stream processing
 
-| Library | Sequential (10K items) | Parallel Capability | Production Features |
-|---------|----------------------|-------------------|-------------------|
-| **futures-rs** | 33µs (fastest) | ❌ None | ❌ Manual only |
-| **tokio-stream** | 43µs (1.3x) | ❌ None | ⚠️ Basic timeouts |
-| **RS2** | 43µs (1.3x) | ✅ 8.5x speedup | ✅ Comprehensive |
+### **Get Started**
+
+```rust
+use rs2::prelude::*;
+
+// Transform any iterator into a resilient, parallel stream
+let results = from_iter(data)
+.par_eval_map_rs2(8, |item| async { process(item).await })
+.auto_retry_rs2(RetryPolicy::exponential_backoff())
+.with_timeout_rs2(Duration::from_secs(30))
+.collect_rs2::<Vec<_>>()
+.await?;
+```
+
+### **I/O Scaling Performance**
+
+| **Concurrency** | **Time** | **Speedup** |
+|-----------------|----------|-------------|
+| Sequential | 4.22s | 1x |
+| 8 concurrent | 537ms | **7.8x** |
+| 16 concurrent | 284ms | **14.8x** |
+| 32 concurrent | 161ms | **26x** |
+| 64 concurrent | 99ms | **42x** |
+
+## ⚡ Performance Optimized
+
+RS2 delivers **20-50% faster** stream processing compared to previous versions:
+
+- **Map/Filter chains**: Up to 50% faster
+- **Chunked processing**: Up to 45% faster
+- **Async operations**: Up to 29% faster
+- **Fold operations**: Up to 22% faster
+
+*Performance improvements scale consistently from 1K to 1M+ items*
+
+### **Consistent Scaling Performance**
+The improvements hold steady across different data sizes:
+
+| **Operation** | **1K items** | **10K items** | **100K items** | **1M items** |
+|---------------|--------------|---------------|----------------|--------------|
+| **Map/Filter** | 46% faster | 50% faster | 49% faster | 49% faster |
+| **Chunk Process** | 43% faster | 45% faster | 45% faster | 45% faster |
+
+### **Consistent Scaling Performance**
+The improvements hold steady across different data sizes:
+
+| **Operation** | **1K items** | **10K items** | **100K items** | **1M items** |
+|---------------|--------------|---------------|----------------|--------------|
+| **Map/Filter** | 3.66µs vs 6.78µs | 32.6µs vs 65.2µs | 326µs vs 647µs | 3.30ms vs 6.60ms |
+| **Chunk Process** | 3.59µs vs 6.30µs | 34.9µs vs 63.5µs | 346µs vs 631µs | 3.45ms vs 6.33ms |
+
+*Times shown as: **RS2 time vs Previous time***
+
+**No performance degradation at scale** - RS2 maintains its 46-50% speed advantage from 1,000 to 1,000,000 items.
 
 **Key Metrics:**
 - **Sequential Operations**: Comparable to tokio-stream (43µs vs 43µs for 10K items)
@@ -27,7 +80,6 @@
 - **Real-world Workloads**: 2.2-2.5s for complex data processing pipelines
 - **Memory Efficiency**: Chunked processing for large datasets (2.9ms for 100K items)
 
-**Bottom Line**: RS2 matches tokio-stream's sequential performance while adding parallel processing and production features that neither tokio-stream nor futures-rs provide. The result is **650%+ performance gains** for real-world applications with **zero additional complexity**.
 
 RS2 is optimized for the 95% of use cases where **developer productivity**, **operational reliability**, and **parallel performance** matter more than raw sequential speed. Perfect for microservices, data pipelines, API gateways, and any application requiring robust stream processing.
 
@@ -267,6 +319,8 @@ For examples of accumulating values, see [examples/accumulating_values.rs](examp
 
 ### Parallel Processing
 
+- `map_parallel_rs2(f)` - Transform elements in parallel using all available CPU cores (automatic concurrency)
+- `map_parallel_with_concurrency_rs2(concurrency, f)` - Transform elements in parallel with custom concurrency control
 - `par_eval_map_rs2(concurrency, f)` - Process elements in parallel with bounded concurrency, preserving order
 - `par_eval_map_unordered_rs2(concurrency, f)` - Process elements in parallel without preserving order
 - `par_join_rs2(concurrency)` - Run multiple streams concurrently and combine their outputs
@@ -301,14 +355,16 @@ For examples of time-based operations, see [examples/timeout_operations.rs](exam
 
 ##### Processing Elements in Parallel
 
-For examples of processing elements in parallel, see [examples/processing_elements.rs](examples/processing_elements.rs) and [examples/work_stealing_example.rs](examples/work_stealing_example.rs).
+For examples of processing elements in parallel, see [examples/processing_elements.rs](examples/processing_elements.rs), [examples/work_stealing_example.rs](examples/work_stealing_example.rs), and [examples/parallel_mapping.rs](examples/parallel_mapping.rs).
 
 ```rust
 // This example demonstrates:
 // - Processing elements in parallel with bounded concurrency using par_eval_map_rs2()
 // - Processing elements in parallel without preserving order using par_eval_map_unordered_rs2()
 // - Running multiple streams concurrently using par_join_rs2()
-// See the full code at examples/processing_elements.rs
+// - Transforming elements in parallel using all available CPU cores with map_parallel_rs2()
+// - Transforming elements in parallel with custom concurrency using map_parallel_with_concurrency_rs2()
+// See the full code at examples/processing_elements.rs and examples/parallel_mapping.rs
 ```
 
 ##### Work Stealing for Parallel Processing [NOT READY/ EXPERIMENTAL]
@@ -627,23 +683,14 @@ For a more complex example of using queues to build a message processing system,
 ```
 
 ## **Feature Comparison with Other Rust Streaming Libraries**
-
-| **Feature** | **futures-rs** | **tokio-stream** | **async-stream** | **async-std** | **RS2** |
-|-------------|----------------|------------------|------------------|---------------|---------|
-| **Backpressure Strategies** | ❌ None | ⚠️ Basic buffering | ❌ None | ❌ None | ✅ **4 strategies**: Block, DropOldest, DropNewest, Error |
-| **Parallel Processing** | ⚠️ `buffer_unordered` only | ⚠️ Limited buffering | ❌ None | ⚠️ Basic | ✅ **Advanced**: `par_eval_map`, `par_join`, ordered/unordered |
-| **Error Recovery** | ⚠️ Manual `Result` handling | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ✅ **Automatic**: `recover`, `retry_with_policy`, `on_error_resume_next` |
-| **Time Operations** | ❌ None | ⚠️ `throttle`, `timeout` | ❌ None | ⚠️ Basic intervals | ✅ **Rich set**: `debounce`, `sample`, `sliding_window`, `emit_after` |
-| **Resource Management** | ❌ Manual | ❌ Manual | ❌ Manual | ❌ Manual | ✅ **Bracket patterns**: Guaranteed cleanup on success/failure |
-| **Stream Combinators** | ✅ Standard set | ✅ Extended set | ⚠️ Manual creation | ✅ Standard set | ✅ **Enhanced**: All standard + advanced grouping |
-| **Prefetching & Buffering** | ⚠️ Basic `buffered` | ⚠️ Basic buffering | ❌ None | ⚠️ Basic | ✅ **Intelligent**: `prefetch`, `rate_limit_backpressure` |
-| **Stream Creation** | ✅ `iter`, `once`, `empty` | ✅ Extended creation | ✅ `stream!` macro | ✅ Standard | ✅ **Rich**: `eval`, `unfold`, `emit_after`, `repeat` |
-| **Metrics & Monitoring** | ❌ None | ❌ None | ❌ None | ❌ None | ✅ **Built-in**: `with_metrics`, throughput tracking |
-| **Cancellation Safety** | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual | ✅ **Interrupt-aware**: `interrupt_when` |
-| **Memory Efficiency** | ✅ Good | ✅ Good | ✅ Good | ✅ Good | ✅ **Optimized**: Constant memory with backpressure |
-| **Functional Style** | ⚠️ Partial | ⚠️ Partial | ❌ Imperative | ⚠️ Partial | ✅ **Pure functional**: Inspired by FS2 |
-| **External Connectors** | ❌ None | ❌ None | ❌ None | ❌ None | ✅ **Built-in**: Kafka, custom connectors |
-
+| **Feature** | **futures-rs** | **tokio-stream** | **RS2** |
+|-------------|----------------|------------------|---------|
+| **Backpressure** | ⚠️ `buffered()` only | ⚠️ `buffered()`, basic | ✅ **4 strategies + config** |
+| **Parallel Processing** | ⚠️ `buffer_unordered` | ⚠️ `buffer_unordered`, limited | ✅ **Advanced with ordering** |
+| **Error Recovery** | ⚠️ Manual patterns | ⚠️ Manual patterns | ✅ **Built-in policies** |
+| **External Connectors** | ❌ None | ❌ None | ✅ **Kafka, custom** |
+| **Resource Management** | ⚠️ Manual cleanup | ⚠️ Manual cleanup | ✅ **Bracket patterns** |
+| **Production Features** | ⚠️ Basic | ⚠️ Basic | ✅ **Metrics, monitoring** |
 ## 🚀 Performance & Feature Comparison
 
 RS2 is designed for production applications that prioritize developer productivity and reliability over raw sequential performance. Here's how it compares to the Rust async ecosystem:
@@ -651,12 +698,11 @@ RS2 is designed for production applications that prioritize developer productivi
 ### Sequential Performance
 RS2 has measurable overhead for pure sequential operations but excellent scaling characteristics:
 
-| Library | 1K Items | 10K Items | Per-Item Overhead | Ratio |
-|---------|----------|-----------|-------------------|-------|
-| **tokio-stream** | 778ns | 7.21µs | 0.72ns | 1.0x |
-| **RS2** | 1.25µs | 12.5µs | 1.25ns | 1.6x |
-| **futures-rs** | 3.40µs | 33.0µs | 3.30ns | 1.0x |
-| **RS2 vs futures** | 5.25µs | 43.1µs | 5.25ns | 1.5x |
+| Library | 1K Items | 10K Items | Per-Item Time | Ratio |
+|---------|----------|-----------|---------------|-------|
+| **tokio-stream** | 778ns | 7.21µs | 721ns | 1.0x |
+| **RS2** | 1.25µs | 12.5µs | 1,250ns | 1.7x |
+| **futures-rs** | 3.40µs | 33.0µs | 3,300ns | 4.6x |
 
 **Key Insights:**
 - RS2 adds ~0.5-2ns overhead per item for sequential operations
@@ -678,59 +724,3 @@ RS2 excels at parallel processing with near-linear scaling:
 - **I/O bound**: Near-perfect linear scaling up to 16+ cores
 - **CPU bound**: Scales well up to physical core count
 - **Mixed workloads**: Automatic optimization based on workload type
-
-### Feature Comparison Matrix
-
-#### Core Stream Operations
-
-| Feature | futures-rs | tokio-stream | async-stream | RS2 |
-|---------|------------|--------------|--------------|-----|
-| **Basic Ops** | ✅ | ✅ | ✅ | ✅ |
-| `map`, `filter`, `fold` | ✅ | ✅ | ✅ | ✅ |
-| `collect`, `for_each` | ✅ | ✅ | ✅ | ✅ |
-| **Async Ops** | ✅ | ✅ | ✅ | ✅ |
-| `then`, `and_then` | ✅ | ✅ | ✅ | ✅ `eval_map_rs2` |
-| **Combinators** | ✅ | ✅ | ❌ | ✅ |
-| `zip`, `merge`, `select` | ✅ | ✅ | ❌ | ✅ |
-
-#### Advanced Features
-
-| Feature | futures-rs | tokio-stream | async-stream | RS2 |
-|---------|------------|--------------|--------------|-----|
-| **Parallel Processing** | ❌ | ❌ | ❌ | ✅ |
-| Ordered parallel | ❌ | ❌ | ❌ | ✅ `par_eval_map_rs2` |
-| Unordered parallel | ❌ | ❌ | ❌ | ✅ `par_eval_map_unordered_rs2` |
-| **Backpressure** | Manual | Manual | ❌ | ✅ |
-| Auto backpressure | ❌ | ❌ | ❌ | ✅ `auto_backpressure_rs2` |
-| Multiple strategies | ❌ | ❌ | ❌ | ✅ Drop/Block/Error |
-| **Error Handling** | Basic | Basic | Basic | ✅ |
-| Retry with policies | ❌ | ❌ | ❌ | ✅ `retry_with_policy_rs2` |
-| Error recovery | ✅ | ✅ | ✅ | ✅ `recover_rs2` |
-| Circuit breakers | ❌ | ❌ | ❌ | ✅ |
-
-#### Production Features
-
-| Feature | futures-rs | tokio-stream | async-stream | RS2 |
-|---------|------------|--------------|--------------|-----|
-| **Timeouts** | Manual | ✅ | ❌ | ✅ |
-| Per-operation timeout | ❌ | ✅ | ❌ | ✅ `timeout_rs2` |
-| **Rate Limiting** | ❌ | ❌ | ❌ | ✅ |
-| Throttling | ❌ | ❌ | ❌ | ✅ `throttle_rs2` |
-| Debouncing | ❌ | ❌ | ❌ | ✅ `debounce_rs2` |
-| **Resource Management** | Manual | Manual | ❌ | ✅ |
-| Auto cleanup | ❌ | ❌ | ❌ | ✅ `bracket_rs2` |
-| **Monitoring** | ❌ | ❌ | ❌ | ✅ |
-| Built-in metrics | ❌ | ❌ | ❌ | ✅ `with_metrics_rs2` |
-
-#### Data Processing
-
-| Feature | futures-rs | tokio-stream | async-stream | RS2 |
-|---------|------------|--------------|--------------|-----|
-| **Windowing** | ❌ | ❌ | ❌ | ✅ |
-| Sliding windows | ❌ | ❌ | ❌ | ✅ `sliding_window_rs2` |
-| **Grouping** | ❌ | ❌ | ❌ | ✅ |
-| Group by key | ❌ | ❌ | ❌ | ✅ `group_by_rs2` |
-| Adjacent grouping | ❌ | ❌ | ❌ | ✅ `group_adjacent_by_rs2` |
-| **Batching** | ❌ | Limited | ❌ | ✅ |
-| Chunking | ❌ | ✅ | ❌ | ✅ `chunk_rs2` |
-| Batch processing | ❌ | ❌ | ❌ | ✅ `batch_process_rs2` |

@@ -1211,3 +1211,68 @@ fn test_chunk_rs2_empty_stream() {
         assert_eq!(result, Vec::<Vec<i32>>::new());
     });
 }
+
+#[test]
+fn test_map_parallel_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream with a decent number of items
+        let item_count = 1000;
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        // Apply parallel mapping
+        let stream = from_iter(source_data.clone())
+            .map_parallel_rs2(|x| x * 2);
+
+        // Collect the results
+        let results: Vec<usize> = stream.collect().await;
+
+        // Sort since parallel execution might change order
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+
+        // Verify the results
+        assert_eq!(results.len(), item_count, "Should have processed all items");
+
+        // Create expected results
+        let expected: Vec<usize> = source_data.iter().map(|&x| x * 2).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+
+        // Verify that the results are correctly transformed
+        assert_eq!(sorted_results, sorted_expected, "Results should match expected transformations");
+    });
+}
+
+#[test]
+fn test_map_parallel_with_concurrency_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        // Create a stream with a decent number of items
+        let item_count = 1000;
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        // Apply parallel mapping with custom concurrency
+        let concurrency = 4; // Use a small, fixed concurrency for testing
+        let stream = from_iter(source_data.clone())
+            .map_parallel_with_concurrency_rs2(concurrency, |x| x * 3);
+
+        // Collect the results
+        let results: Vec<usize> = stream.collect().await;
+
+        // Sort since parallel execution might change order
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+
+        // Verify the results
+        assert_eq!(results.len(), item_count, "Should have processed all items");
+
+        // Create expected results
+        let expected: Vec<usize> = source_data.iter().map(|&x| x * 3).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+
+        // Verify that the results are correctly transformed
+        assert_eq!(sorted_results, sorted_expected, "Results should match expected transformations");
+    });
+}

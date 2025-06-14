@@ -8,6 +8,8 @@ pub mod stream_configuration;
 pub mod stream_performance_metrics;
 pub mod connectors;
 pub mod work_stealing;
+pub mod rs2_stream_ext;
+pub mod rs2_result_stream_ext;
 
 // Re-export all items from rs2 module at the crate root
 pub use rs2::*;
