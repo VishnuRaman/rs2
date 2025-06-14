@@ -380,7 +380,12 @@ fn main() {
             .auto_backpressure_rs2()
 
             // Parse JSON into UserActivity objects
-            .map_parallel_with_concurrency_rs2(4, |json: String| {
+            // Using par_eval_map_rs2:
+            // 1. It's designed specifically for async operations and provides better control
+            // 2. It preserves the order of elements, which is important for event processing
+            // 3. It offers more direct control over concurrency without wrapping synchronous functions
+            // 4. It's more efficient for I/O-bound operations like JSON parsing with potential network calls
+            .par_eval_map_rs2(4, |json: String| async move {
                 // Parse the JSON string into a UserActivity
                 match serde_json::from_str::<UserActivity>(&json) {
                     Ok(activity) => {
