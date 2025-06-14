@@ -588,6 +588,26 @@ RS2 includes a Kafka connector that allows you to create streams from Kafka topi
 
 For the complete example, see [examples/connector_kafka.rs](examples/connector_kafka.rs).
 
+#### Kafka Data Streaming Pipeline Example
+
+For a more complex example that demonstrates a complete data streaming pipeline using Kafka and rs2, see [examples/kafka_data_pipeline.rs](examples/kafka_data_pipeline.rs).
+
+```rust
+// This example demonstrates a complex data streaming pipeline using Kafka and rs2:
+// - Data Production: Generate sample user activity data and send it to a Kafka topic
+// - Data Consumption: Consume the data from Kafka using rs2 streams
+// - Data Processing: Process the data using various rs2 transformations
+//   - Parsing and validation
+//   - Enrichment with additional data
+//   - Aggregation and analytics
+//   - Filtering and transformation
+// - Result Publishing: Send the processed results back to different Kafka topics
+// - Parallel Processing: Using par_eval_map_rs2 for efficient processing
+// - Backpressure Handling: Automatic backpressure to handle fast producers
+// - Error Recovery: Fallback mechanisms for when Kafka is not available
+// See the full code at examples/kafka_data_pipeline.rs
+```
+
 ### Creating Custom Connectors
 
 You can create your own connectors by implementing the `StreamConnector` trait. For a complete example of creating a custom connector, see [examples/connector_custom.rs](examples/connector_custom.rs).
