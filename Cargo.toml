@@ -58,9 +58,6 @@ harness = false
 name = "memory_usage"
 harness = false
 
-[[bench]]
-name = "vs_futures"
-harness = false
 
 
 [[bench]]

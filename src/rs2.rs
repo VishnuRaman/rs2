@@ -1750,6 +1750,115 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         self.map(f).boxed()
     }
 
+    /// Transforms each element of the stream in parallel using all available CPU cores.
+    ///
+    /// This method applies the given synchronous function to each element concurrently,
+    /// automatically detecting the number of CPU cores and using that as the concurrency limit.
+    /// Perfect for CPU-bound operations that benefit from parallelization.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - A synchronous function that transforms each stream element. Must be `Send + Sync + Clone`.
+    ///
+    /// # Returns
+    ///
+    /// A new `RS2Stream` containing the transformed elements. Order may not be preserved.
+    ///
+    /// # Performance
+    ///
+    /// - **Concurrency**: Automatically uses `num_cpus::get()` concurrent tasks
+    /// - **Best for**: CPU-intensive computations (math, parsing, compression)
+    /// - **Memory**: Uses one task per CPU core, moderate memory overhead
+    /// - **Backpressure**: Inherits from underlying `par_eval_map_rs2`
+    ///
+    /// # When to Use
+    ///
+    /// - ✅ **CPU-bound work**: Mathematical calculations, data parsing, compression
+    /// - ✅ **Simple parallelization**: Don't want to think about optimal concurrency
+    /// - ✅ **Balanced workloads**: Each task takes roughly the same time
+    /// - ❌ **I/O-bound work**: Use `par_eval_map_rs2` with higher concurrency instead
+    /// - ❌ **Memory-intensive**: May overwhelm system with too many concurrent tasks
+    ///
+    /// # See Also
+    ///
+    /// * [`map_parallel_with_concurrency_rs2`] - For custom concurrency control
+    /// * [`par_eval_map_rs2`] - For async functions and fine-tuned concurrency
+
+    fn map_parallel_rs2<O, F>(self, f: F) -> RS2Stream<O>
+    where
+        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static,
+        Self::Item: Send + 'static,
+        O: Send + 'static,
+    {
+        let concurrency = num_cpus::get();
+        self.par_eval_map_rs2(concurrency, move |x| {
+            let f = f.clone();
+            async move { f(x) }
+        })
+    }
+
+    /// Transforms each element of the stream in parallel with custom concurrency control.
+    ///
+    /// This method applies the given synchronous function to each element concurrently,
+    /// using exactly the specified number of concurrent tasks. Ideal when you need precise
+    /// control over resource usage or when the optimal concurrency differs from CPU count.
+    ///
+    /// # Arguments
+    ///
+    /// * `concurrency` - Maximum number of concurrent tasks (must be > 0)
+    /// * `f` - A synchronous function that transforms each stream element. Must be `Send + Sync + Clone`.
+    ///
+    /// # Returns
+    ///
+    /// A new `RS2Stream` containing the transformed elements. Order may not be preserved.
+    ///
+    /// # Performance
+    ///
+    /// - **Concurrency**: Uses exactly `concurrency` concurrent tasks
+    /// - **Best for**: I/O-bound operations, memory-constrained environments, fine-tuning
+    /// - **Memory**: Scales with concurrency parameter
+    /// - **Backpressure**: Inherits from underlying `par_eval_map_rs2`
+    ///
+    /// # Concurrency Guidelines
+    ///
+    /// | **Workload Type** | **Recommended Concurrency** | **Reasoning** |
+    /// |-------------------|------------------------------|---------------|
+    /// | **CPU-bound** | `num_cpus::get()` | Match CPU cores |
+    /// | **I/O-bound** | `50-200` | Network can handle many concurrent requests |
+    /// | **Memory-heavy** | `1-4` | Prevent out-of-memory errors |
+    /// | **Database queries** | `10-50` | Respect connection pool limits |
+    /// | **File I/O** | `4-16` | Balance throughput vs file handle limits |
+    ///
+    /// # When to Use
+    ///
+    /// - ✅ **I/O-bound operations**: Network requests, file operations, database queries
+    /// - ✅ **Resource constraints**: Limited memory, connection pools, rate limits
+    /// - ✅ **Performance tuning**: Benchmarked optimal concurrency for your workload
+    /// - ✅ **Mixed workloads**: Some tasks much slower/faster than others
+    /// - ❌ **Simple CPU-bound work**: Use `map_parallel_rs2` for automatic optimization
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if `concurrency` is 0. Always use a positive value.
+    ///
+    /// # See Also
+    ///
+    /// * [`map_parallel_rs2`] - For automatic concurrency based on CPU cores
+    /// * [`par_eval_map_rs2`] - For async functions with the same concurrency control
+    fn map_parallel_with_concurrency_rs2<O, F>(self, concurrency: usize, f: F) -> RS2Stream<O>
+    where
+        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static,
+        Self::Item: Send + 'static,
+        O: Send + 'static,
+    {
+        self.par_eval_map_rs2(concurrency, move |x| {
+            let f = f.clone();
+            async move { f(x) }
+        })
+    }
+
+
+
     /// Filter elements of the rs2_stream with a predicate
     fn filter_rs2<F>(self, mut f: F) -> RS2Stream<Self::Item>
     where
@@ -1838,6 +1947,10 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     }
 
     /// Process elements in parallel with bounded concurrency, preserving order
+    /// ### Use when: `par_eval_map_rs2`
+    /// - Already have async functions**
+    /// - Need custom concurrency control**
+    /// - Want maximum control/performance**
     fn par_eval_map_rs2<U, Fut, F>(self, concurrency: usize, f: F) -> RS2Stream<U>
     where
         F: FnMut(Self::Item) -> Fut + Send + 'static,
