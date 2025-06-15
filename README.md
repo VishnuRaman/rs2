@@ -124,6 +124,7 @@ RS2 is optimized for the 95% of use cases where **developer productivity**, **op
 - **Parallel Processing**: Process stream elements in parallel with bounded concurrency
 - **Time-based Operations**: Throttling, debouncing, sampling, and timeouts
 - **Transformations**: Rich set of stream transformation operations
+- **Media Streaming**: Robust media streaming with codec, chunk processing, and priority-based delivery ([documentation](MEDIA_STREAMING.md))
 
 ## Installation
 
@@ -360,6 +361,44 @@ For examples of accumulating values, see [examples/accumulating_values.rs](examp
 - `par_eval_map_work_stealing_with_config_rs2(config, f)` - Process elements with custom work stealing configuration
 - `par_eval_map_cpu_intensive_rs2(f)` - Process CPU-intensive tasks with work stealing optimized for CPU workloads
 
+#### When to Use Each Parallel Processing Method
+
+| Method | Best For | When to Use | Avoid When |
+|--------|----------|-------------|------------|
+| **map_parallel_rs2** | CPU-bound work | • Simple parallelization needs<br>• Balanced workloads (similar processing time)<br>• When optimal concurrency = CPU cores<br>• Mathematical calculations, data parsing | • I/O-bound operations<br>• Memory-intensive tasks<br>• Uneven workloads<br>• When you need fine-tuned concurrency |
+| **map_parallel_with_concurrency_rs2** | I/O-bound work with sync functions | • Resource-constrained environments<br>• Custom concurrency needs<br>• Network requests, file operations<br>• Mixed workloads (varying processing times) | • Simple CPU-bound work<br>• When you already have async functions<br>• When automatic concurrency is sufficient |
+| **par_eval_map_rs2** | Async operations | • Already have async functions<br>• Need custom concurrency control<br>• Want maximum control/performance<br>• API calls, database operations | • Simple synchronous operations<br>• When order doesn't matter<br>• When simpler methods would suffice |
+
+## **Quick Decision Guide:**
+
+**Start here:** Do you have async functions?
+- ✅ **Yes** → Use `par_eval_map_rs2`
+- ❌ **No** → Continue below
+
+**Is your work CPU-bound?**
+- ✅ **Yes** → Use `map_parallel_rs2`
+- ❌ **No (I/O-bound)** → Use `map_parallel_with_concurrency_rs2`
+
+**Need custom concurrency?**
+- ✅ **Yes** → Use `map_parallel_with_concurrency_rs2` or `par_eval_map_rs2`
+- ❌ **No** → Use `map_parallel_rs2`
+
+### **Concurrency Recommendations:**
+
+| **Workload Type** | **Recommended Concurrency** |
+|-------------------|------------------------------|
+| **CPU-bound** | `num_cpus::get()` (automatic in `map_parallel_rs2`) |
+| **Network I/O** | `50-200` |
+| **File I/O** | `4-16` |
+| **Database** | `10-50` (respect connection pool) |
+| **Memory-heavy** | `1-4` |
+
+**Concurrency Guidelines:**
+- **CPU-bound**: Set concurrency to number of CPU cores (`num_cpus::get()`)
+- **I/O-bound**: Use higher concurrency (10-100x CPU cores) to maximize throughput
+- **Database**: Match your connection pool size (typically 10-50)
+- **Network**: Balance between throughput and rate limits (typically 20-200)
+
 ### Time-based Operations
 
 - `throttle_rs2(duration)` - Emit at most one element per duration
@@ -550,6 +589,72 @@ For examples of collecting metrics from streams, see [examples/with_metrics_exam
 // - Collecting metrics for async operations
 // See the full code at examples/with_metrics_example.rs
 ```
+
+### Media Streaming
+
+RS2 includes a comprehensive media streaming system with support for file and live streaming, codec operations, chunk processing, and priority-based delivery.
+
+- **MediaStreamingService**: High-level API for media streaming
+- **MediaCodec**: Encoding and decoding of media data
+- **ChunkProcessor**: Processing pipeline for media chunks
+- **MediaPriorityQueue**: Priority-based delivery of media chunks
+
+#### Examples
+
+##### Basic File Streaming
+
+For examples of streaming media from a file, see [examples/media_streaming/basic_file_streaming.rs](examples/basic_file_streaming.rs).
+
+```rust
+// This example demonstrates:
+// - Creating a MediaStreamingService
+// - Configuring a media stream
+// - Starting streaming from a file
+// - Processing and displaying the media chunks
+// See the full code at examples/media_streaming/basic_file_streaming.rs
+```
+
+##### Live Streaming
+
+For examples of setting up a live stream, see [examples/media_streaming/live_streaming.rs](examples/live_streaming.rs).
+
+```rust
+// This example demonstrates:
+// - Creating a MediaStreamingService for live streaming
+// - Configuring a live media stream
+// - Starting a live stream
+// - Processing and displaying the media chunks
+// - Monitoring stream metrics in real-time
+// See the full code at examples/media_streaming/live_streaming.rs
+```
+
+##### Custom Codec Configuration
+
+For examples of configuring a custom codec, see [examples/media_streaming/custom_codec.rs](examples/custom_codec.rs).
+
+```rust
+// This example demonstrates:
+// - Creating a custom codec configuration
+// - Creating a MediaCodec with the custom configuration
+// - Using the codec to encode and decode media data
+// - Monitoring codec performance
+// See the full code at examples/media_streaming/custom_codec.rs
+```
+
+##### Handling Stream Events
+
+For examples of handling media stream events, see [examples/media_streaming/stream_events.rs](examples/stream_events.rs).
+
+```rust
+// This example demonstrates:
+// - Creating and handling MediaStreamEvent objects
+// - Converting events to UserActivity for analytics
+// - Processing events in a stream
+// - Implementing a simple event handler
+// See the full code at examples/media_streaming/stream_events.rs
+```
+
+For comprehensive documentation on the media streaming components, see the [Media Streaming README](docs/media_streaming_readme.md).
 
 ## Connectors: External System Integration
 
