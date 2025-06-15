@@ -124,6 +124,7 @@ RS2 is optimized for the 95% of use cases where **developer productivity**, **op
 - **Parallel Processing**: Process stream elements in parallel with bounded concurrency
 - **Time-based Operations**: Throttling, debouncing, sampling, and timeouts
 - **Transformations**: Rich set of stream transformation operations
+- **Media Streaming**: Robust media streaming with codec, chunk processing, and priority-based delivery ([documentation](MEDIA_STREAMING.md))
 
 ## Installation
 
@@ -550,6 +551,72 @@ For examples of collecting metrics from streams, see [examples/with_metrics_exam
 // - Collecting metrics for async operations
 // See the full code at examples/with_metrics_example.rs
 ```
+
+### Media Streaming
+
+RS2 includes a comprehensive media streaming system with support for file and live streaming, codec operations, chunk processing, and priority-based delivery.
+
+- **MediaStreamingService**: High-level API for media streaming
+- **MediaCodec**: Encoding and decoding of media data
+- **ChunkProcessor**: Processing pipeline for media chunks
+- **MediaPriorityQueue**: Priority-based delivery of media chunks
+
+#### Examples
+
+##### Basic File Streaming
+
+For examples of streaming media from a file, see [examples/media_streaming/basic_file_streaming.rs](examples/basic_file_streaming.rs).
+
+```rust
+// This example demonstrates:
+// - Creating a MediaStreamingService
+// - Configuring a media stream
+// - Starting streaming from a file
+// - Processing and displaying the media chunks
+// See the full code at examples/media_streaming/basic_file_streaming.rs
+```
+
+##### Live Streaming
+
+For examples of setting up a live stream, see [examples/media_streaming/live_streaming.rs](examples/live_streaming.rs).
+
+```rust
+// This example demonstrates:
+// - Creating a MediaStreamingService for live streaming
+// - Configuring a live media stream
+// - Starting a live stream
+// - Processing and displaying the media chunks
+// - Monitoring stream metrics in real-time
+// See the full code at examples/media_streaming/live_streaming.rs
+```
+
+##### Custom Codec Configuration
+
+For examples of configuring a custom codec, see [examples/media_streaming/custom_codec.rs](examples/custom_codec.rs).
+
+```rust
+// This example demonstrates:
+// - Creating a custom codec configuration
+// - Creating a MediaCodec with the custom configuration
+// - Using the codec to encode and decode media data
+// - Monitoring codec performance
+// See the full code at examples/media_streaming/custom_codec.rs
+```
+
+##### Handling Stream Events
+
+For examples of handling media stream events, see [examples/media_streaming/stream_events.rs](examples/stream_events.rs).
+
+```rust
+// This example demonstrates:
+// - Creating and handling MediaStreamEvent objects
+// - Converting events to UserActivity for analytics
+// - Processing events in a stream
+// - Implementing a simple event handler
+// See the full code at examples/media_streaming/stream_events.rs
+```
+
+For comprehensive documentation on the media streaming components, see the [Media Streaming README](docs/media_streaming_readme.md).
 
 ## Connectors: External System Integration
 
