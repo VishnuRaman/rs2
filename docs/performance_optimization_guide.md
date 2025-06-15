@@ -24,10 +24,9 @@ let buffer_config = BufferConfig {
 ### Parallel Processing Configuration
 
 Optimize parallel processing based on your workload type:
-
+Work stealing is still experimental and unstable
 ```rust
-// For CPU-bound workloads
-stream.par_eval_map_cpu_intensive_rs2(process_item)
+
 
 // For I/O-bound workloads with custom concurrency
 stream.par_eval_map_rs2(32, process_item)
