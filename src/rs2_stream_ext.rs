@@ -18,7 +18,7 @@ use serde::Serialize;
 use crate::error::StreamResult;
 use crate::stream_performance_metrics::StreamMetrics;
 use crate::stream_configuration::{BufferConfig, GrowthStrategy};
-use crate::rs2::{
+use crate::{
     RS2Stream, BackpressureConfig, auto_backpressure, merge, zip_with, throttle, debounce, sample,
     par_eval_map, par_eval_map_unordered, par_join, timeout, prefetch, distinct_until_changed,
     distinct_until_changed_by, interrupt_when, take_while, drop_while, group_adjacent_by, group_by,
@@ -492,7 +492,7 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     ///
     /// # Examples
     /// ```
-    /// use rs2::rs2::*;
+    /// use rs2_stream::rs2::*;
     /// use futures_util::stream::StreamExt;
     ///
     /// # async fn example() {

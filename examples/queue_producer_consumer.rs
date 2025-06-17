@@ -1,4 +1,4 @@
-use rs2::queue::*;
+use rs2_stream::queue::*;
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use tokio::time::{sleep, Duration};

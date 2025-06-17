@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use rs2::rs2::*;
+use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
 use std::time::Duration;
 use sha2::{Sha256, Digest};

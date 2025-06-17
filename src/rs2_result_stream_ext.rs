@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::error::{RetryPolicy, StreamResult};
-use crate::rs2::{RS2Stream, ExitCase, bracket_case, rate_limit_backpressure};
+use crate::{RS2Stream, ExitCase, bracket_case, rate_limit_backpressure};
 
 /// Extension trait for streams containing Result types
 pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:

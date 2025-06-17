@@ -6,7 +6,7 @@
 use super::codec::{CodecError, MediaCodec};
 use super::types::*;
 use crate::queue::Queue;
-use crate::rs2::*;
+use crate::*;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;

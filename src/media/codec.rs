@@ -4,7 +4,7 @@
 //! and quality levels. Uses async processing to integrate with RS2Stream.
 
 use super::types::*;
-use crate::rs2::*;
+use crate::*;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::Duration;

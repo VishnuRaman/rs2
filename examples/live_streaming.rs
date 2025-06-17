@@ -7,9 +7,9 @@
 //! 4. Process and display the media chunks
 //! 5. Monitor stream metrics in real-time
 
-use rs2::media::streaming::{MediaStreamingService, StreamingServiceFactory};
-use rs2::media::types::{MediaStream, MediaType, QualityLevel, MediaChunk, StreamMetrics};
-use rs2::rs2::*;
+use rs2_stream::media::streaming::{MediaStreamingService, StreamingServiceFactory};
+use rs2_stream::media::types::{MediaStream, MediaType, QualityLevel, MediaChunk, StreamMetrics};
+use rs2_stream::rs2::*;
 use futures_util::StreamExt;
 use tokio::time::{sleep, Duration};
 use chrono::Utc;

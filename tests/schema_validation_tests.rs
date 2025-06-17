@@ -1,4 +1,4 @@
-use rs2::schema_validation::{JsonSchemaValidator, SchemaValidator, SchemaError};
+use rs2_stream::schema_validation::{JsonSchemaValidator, SchemaValidator, SchemaError};
 use serde_json::json;
 
 #[tokio::test]

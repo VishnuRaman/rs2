@@ -3,7 +3,7 @@
 use super::priority_queue::MediaPriorityQueue;
 use super::types::*;
 use crate::queue::Queue;
-use crate::rs2::*;
+use crate::*;
 use futures_core::Stream;
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
-use rs2::rs2::*;
+use rs2_stream::rs2::*;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use futures::StreamExt as FuturesStreamExt;

@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 use std::time::Duration;
-use crate::rs2::RS2Stream;
+use crate::RS2Stream;
 
 /// Common configuration for all connectors
 #[derive(Debug, Clone, Serialize, Deserialize)]

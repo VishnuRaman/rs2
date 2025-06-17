@@ -6,9 +6,9 @@
 //! 3. Use the codec to encode and decode media data
 //! 4. Monitor codec performance
 
-use rs2::media::codec::{MediaCodec, CodecFactory, CodecError, RawMediaData, EncodingConfig};
-use rs2::media::types::{QualityLevel, MediaChunk, ChunkType, MediaPriority, MediaType};
-use rs2::rs2::*;
+use rs2_stream::media::codec::{MediaCodec, CodecFactory, CodecError, RawMediaData, EncodingConfig};
+use rs2_stream::media::types::{QualityLevel, MediaChunk, ChunkType, MediaPriority, MediaType};
+use rs2_stream::rs2::*;
 use futures_util::StreamExt;
 use std::time::Duration;
 use std::sync::Arc;

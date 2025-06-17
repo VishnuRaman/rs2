@@ -1,6 +1,6 @@
-use rs2::connectors::{KafkaConnector, StreamConnector};
-use rs2::connectors::kafka_connector::KafkaConfig;
-use rs2::rs2::*;
+use rs2_stream::connectors::{KafkaConnector, StreamConnector};
+use rs2_stream::connectors::kafka_connector::KafkaConfig;
+use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use std::collections::HashMap;

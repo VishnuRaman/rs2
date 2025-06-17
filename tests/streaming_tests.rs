@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use tokio::runtime::Runtime;
-use rs2::media::streaming::{MediaStreamingService, StreamingServiceFactory};
-use rs2::media::types::{MediaStream, MediaChunk, ChunkType, MediaPriority, MediaType, QualityLevel};
+use rs2_stream::media::streaming::{MediaStreamingService, StreamingServiceFactory};
+use rs2_stream::media::types::{MediaStream, MediaChunk, ChunkType, MediaPriority, MediaType, QualityLevel};
 use std::path::PathBuf;
 use std::time::Duration;
 use std::collections::HashMap;

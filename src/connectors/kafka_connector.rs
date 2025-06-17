@@ -1,6 +1,5 @@
-
 use crate::connectors::{ConnectorError, StreamConnector};
-use crate::rs2::RS2Stream;
+use crate::RS2Stream;
 use async_stream::stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;

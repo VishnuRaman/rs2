@@ -1,5 +1,5 @@
-use rs2::rs2::*;
-use rs2::error::StreamError;
+use rs2_stream::rs2::*;
+use rs2_stream::error::StreamError;
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use std::time::{Duration, Instant};

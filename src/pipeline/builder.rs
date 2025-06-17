@@ -1,11 +1,10 @@
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use futures_util::StreamExt;
 use tokio::sync::broadcast;
 use async_stream::stream;
-use crate::rs2::RS2Stream;
+use crate::RS2Stream;
 
 #[derive(Debug)]
 pub enum PipelineError {

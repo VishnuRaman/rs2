@@ -2,7 +2,7 @@
 //!
 //! Provides time-based windowed aggregations and advanced stream joins for building sophisticated real-time analytics.
 
-use crate::rs2::*;
+use crate::*;
 use async_stream::stream;
 use futures_util::stream::StreamExt;
 use futures_util::pin_mut;

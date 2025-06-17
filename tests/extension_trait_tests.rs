@@ -1,6 +1,6 @@
-use rs2::rs2::*;
-use rs2::error::StreamError;
-use rs2::stream_configuration::{BufferConfig, GrowthStrategy};
+use rs2_stream::rs2::*;
+use rs2_stream::error::StreamError;
+use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use async_stream::stream;

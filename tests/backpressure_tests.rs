@@ -2,7 +2,7 @@ use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use std::time::{Duration, Instant};
 use std::sync::{Arc, Mutex};
-use rs2::rs2::*;
+use rs2_stream::rs2::*;
 
 #[test]
 fn test_backpressure_under_load() {

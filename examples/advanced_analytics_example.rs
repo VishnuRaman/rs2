@@ -7,8 +7,8 @@
 //! This example shows real-world scenarios like user behavior analysis
 //! and system monitoring.
 
-use rs2::rs2::*;
-use rs2::advanced_analytics::*;
+use rs2_stream::rs2::*;
+use rs2_stream::advanced_analytics::*;
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use std::time::{Duration, SystemTime};

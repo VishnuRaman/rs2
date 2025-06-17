@@ -1,5 +1,5 @@
-use rs2::connectors::{ConnectorError, StreamConnector, CommonConfig};
-use rs2::rs2::*;
+use rs2_stream::connectors::{ConnectorError, StreamConnector, CommonConfig};
+use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use std::time::Duration;

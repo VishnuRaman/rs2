@@ -61,11 +61,11 @@
 //! ---
 //! This example is intended as a real-world, extensible template for streaming pipelines using `rs2` and the new Pipeline builder.
 
-use rs2::connectors::{KafkaConnector, StreamConnector};
-use rs2::connectors::kafka_connector::KafkaConfig;
-use rs2::rs2::*;
-use rs2::stream_configuration::{BufferConfig, GrowthStrategy};
-use rs2::error::{RetryPolicy, StreamError, StreamResult};
+use rs2_stream::connectors::{KafkaConnector, StreamConnector};
+use rs2_stream::connectors::kafka_connector::KafkaConfig;
+use rs2_stream::rs2::*;
+use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
+use rs2_stream::error::{RetryPolicy, StreamError, StreamResult};
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use std::collections::HashMap;
@@ -78,12 +78,12 @@ use chrono::{DateTime, Utc};
 use async_stream::stream;
 use rdkafka::consumer::Consumer;
 use rdkafka::producer::Producer;
-use rs2::pipeline::builder::{Pipeline, PipelineNode};
+use rs2_stream::pipeline::builder::{Pipeline, PipelineNode};
 use tokio::sync::broadcast;
 use futures_util::stream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use futures_util::FutureExt;
-use rs2::schema_validation::{JsonSchemaValidator, SchemaValidator, SchemaError};
+use rs2_stream::schema_validation::{JsonSchemaValidator, SchemaValidator, SchemaError};
 
 // ================================
 // Data Models
@@ -344,7 +344,7 @@ async fn kafka_sink<T: Serialize + std::fmt::Debug>(
     mut stream: RS2Stream<T>,
     metrics: Arc<SinkMetrics>,
 ) {
-    use rs2::connectors::StreamConnector;
+    use rs2_stream::connectors::StreamConnector;
     use futures_util::stream;
     use tokio::time::sleep;
     while let Some(item) = stream.next().await {

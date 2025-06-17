@@ -1,5 +1,5 @@
-use rs2::rs2::*;
-use rs2::advanced_analytics::*;
+use rs2_stream::rs2::*;
+use rs2_stream::advanced_analytics::*;
 use futures_util::stream::StreamExt;
 use std::time::{Duration, SystemTime};
 

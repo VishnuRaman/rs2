@@ -1,5 +1,5 @@
-use rs2::rs2::*;
-use rs2::error::{StreamError, StreamResult};
+use rs2_stream::rs2::*;
+use rs2_stream::error::{StreamError, StreamResult};
 use futures_util::stream::StreamExt;
 use tokio::runtime::Runtime;
 use tokio::sync::{Mutex, Semaphore};

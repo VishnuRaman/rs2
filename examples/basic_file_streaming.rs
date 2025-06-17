@@ -6,9 +6,9 @@
 //! 3. Start streaming from a file
 //! 4. Process and display the media chunks
 
-use rs2::media::streaming::{MediaStreamingService, StreamingServiceFactory};
-use rs2::media::types::{MediaStream, MediaType, QualityLevel, MediaChunk};
-use rs2::rs2::*;
+use rs2_stream::media::streaming::{MediaStreamingService, StreamingServiceFactory};
+use rs2_stream::media::types::{MediaStream, MediaType, QualityLevel, MediaChunk};
+use rs2_stream::rs2::*;
 use futures_util::StreamExt;
 use std::path::PathBuf;
 use chrono::Utc;

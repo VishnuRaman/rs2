@@ -1,10 +1,10 @@
 use futures_util::StreamExt;
 use tokio::runtime::Runtime;
-use rs2::media::chunk_processor::{ChunkProcessor, ChunkProcessorConfig, ChunkProcessingError};
-use rs2::media::codec::{MediaCodec, EncodingConfig};
-use rs2::media::types::{MediaChunk, ChunkType, MediaPriority};
-use rs2::queue::Queue;
-use rs2::rs2::*;
+use rs2_stream::media::chunk_processor::{ChunkProcessor, ChunkProcessorConfig, ChunkProcessingError};
+use rs2_stream::media::codec::{MediaCodec, EncodingConfig};
+use rs2_stream::media::types::{MediaChunk, ChunkType, MediaPriority};
+use rs2_stream::queue::Queue;
+use rs2_stream::rs2::*;
 use std::sync::Arc;
 use std::time::Duration;
 use std::collections::VecDeque;

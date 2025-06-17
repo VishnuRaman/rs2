@@ -129,7 +129,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
 /// 
 /// # async fn example() {
@@ -184,7 +184,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
 ///
 /// # async fn example() {
@@ -358,7 +358,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
 ///
 /// # async fn example() {
@@ -392,7 +392,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
 ///
 /// # async fn example() {
@@ -430,7 +430,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
 ///
 /// # async fn example() {
@@ -734,7 +734,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use std::time::Duration;
 /// use tokio::time::sleep;
 /// use async_stream::stream;
@@ -892,7 +892,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use std::time::Duration;
 /// use async_stream::stream;
 /// use tokio::time::sleep;
@@ -1077,7 +1077,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
 ///
 /// # async fn example() {
@@ -1116,7 +1116,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
 /// use std::time::Duration;
 /// use tokio::time::sleep;
@@ -1198,7 +1198,7 @@ where
 ///
 /// # Examples
 /// ```
-/// use rs2::rs2::*;
+/// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
 /// 
 /// # async fn example() {

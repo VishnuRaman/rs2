@@ -1,4 +1,4 @@
-use crate::rs2::RS2Stream;
+use crate::RS2Stream;
 use futures_util::StreamExt;
 use std::sync::Arc;
 use async_stream::stream;

@@ -6,9 +6,9 @@
 //! 3. Process events in a stream
 //! 4. Implement a simple event handler
 
-use rs2::media::events::MediaStreamEvent;
-use rs2::media::types::{QualityLevel, UserActivity};
-use rs2::rs2::*;
+use rs2_stream::media::events::MediaStreamEvent;
+use rs2_stream::media::types::{QualityLevel, UserActivity};
+use rs2_stream::rs2::*;
 use futures_util::StreamExt;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
