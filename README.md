@@ -132,7 +132,7 @@ Add RS2 to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rs2-stream = "1.0.1"
+rs2-stream = "1.0.2"
 ```
 
 ## Basic Usage
