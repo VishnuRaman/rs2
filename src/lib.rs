@@ -12,6 +12,10 @@ pub mod media;
 pub mod work_stealing;
 pub mod rs2_stream_ext;
 pub mod rs2_result_stream_ext;
+
+pub mod pipeline;
+
+pub use pipeline::*;
 // Re-export all items from rs2 module at the crate root
 pub use rs2::*;
 pub use work_stealing::{
