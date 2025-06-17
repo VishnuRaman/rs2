@@ -357,10 +357,6 @@ For examples of accumulating values, see [examples/accumulating_values.rs](examp
 - `par_eval_map_rs2(concurrency, f)` - Process elements in parallel with bounded concurrency, preserving order
 - `par_eval_map_unordered_rs2(concurrency, f)` - Process elements in parallel without preserving order
 - `par_join_rs2(concurrency)` - Run multiple streams concurrently and combine their outputs
-- `par_eval_map_work_stealing_rs2(f)` - Process elements in parallel using work stealing for optimal CPU utilization
-- `par_eval_map_work_stealing_with_config_rs2(config, f)` - Process elements with custom work stealing configuration
-- `par_eval_map_cpu_intensive_rs2(f)` - Process CPU-intensive tasks with work stealing optimized for CPU workloads
-
 #### When to Use Each Parallel Processing Method
 
 | Method | Best For | When to Use | Avoid When |
@@ -426,7 +422,7 @@ For examples of time-based operations, see [examples/timeout_operations.rs](exam
 
 ##### Processing Elements in Parallel
 
-For examples of processing elements in parallel, see [examples/processing_elements.rs](examples/processing_elements.rs), [examples/work_stealing_example.rs](examples/work_stealing_example.rs), and [examples/parallel_mapping.rs](examples/parallel_mapping.rs).
+For examples of processing elements in parallel, see [examples/processing_elements.rs](examples/processing_elements.rs), and [examples/parallel_mapping.rs](examples/parallel_mapping.rs).
 
 ```rust
 // This example demonstrates:
@@ -437,52 +433,6 @@ For examples of processing elements in parallel, see [examples/processing_elemen
 // - Transforming elements in parallel with custom concurrency using map_parallel_with_concurrency_rs2()
 // See the full code at examples/processing_elements.rs and examples/parallel_mapping.rs
 ```
-
-##### Work Stealing for Parallel Processing [NOT READY/ EXPERIMENTAL]
-
-For examples of work stealing for parallel processing, see [examples/work_stealing_example.rs](examples/work_stealing_example.rs).
-
-```rust
-// This example demonstrates:
-// - Processing elements in parallel using work stealing with default configuration
-// - Processing elements with custom work stealing configuration
-// - Processing CPU-intensive tasks with work stealing optimized for CPU workloads
-// - Comparing work stealing with regular parallel processing
-// See the full code at examples/work_stealing_example.rs
-```
-
-#### WorkStealingConfig [EXPERIMENTAL - STILL NEED WORK]
-
-The `WorkStealingConfig` struct allows you to customize how work stealing is implemented for parallel processing:
-
-```rust
-pub struct WorkStealingConfig {
-    pub num_workers: Option<usize>,
-    pub local_queue_size: usize,
-    pub steal_interval_ms: u64,
-    pub use_blocking: bool,
-}
-```
-
-##### Parameters
-
-- **num_workers**: Number of worker threads to use for parallel processing. If `None` (the default), the number of workers will be set to the number of logical CPU cores available on the system. Setting this explicitly allows you to control the level of parallelism.
-
-- **local_queue_size**: Maximum number of items each worker can queue locally before sharing with the global queue. This controls the "work stealing" behavior. A smaller value leads to more frequent sharing of work with other workers, which can improve load balancing but may increase synchronization overhead. A larger value allows workers to process more items locally before sharing.
-
-- **steal_interval_ms**: How often workers attempt to steal tasks from other workers' queues, in milliseconds. This controls how frequently idle workers will check other workers' queues for tasks to steal. A smaller value leads to more aggressive stealing and potentially better load balancing, but may increase contention. A larger value reduces stealing attempts but may lead to idle workers not finding work quickly enough.
-
-- **use_blocking**: Whether to use `spawn_blocking` for CPU-intensive tasks. When set to `true`, tasks will be executed using Tokio's `spawn_blocking`, which is optimized for CPU-bound work. This prevents CPU-intensive tasks from blocking the async runtime's thread pool. Set to `false` for I/O-bound or lightweight tasks that don't need dedicated threads.
-
-##### Default Configuration
-
-The default configuration uses:
-- Number of workers equal to the number of logical CPU cores
-- Local queue size of 16 items
-- Steal interval of 1 millisecond
-- `use_blocking` set to true
-
-This creates a system optimized for CPU-bound tasks with good load balancing across all available cores.
 
 ### Error Handling
 
@@ -727,6 +677,58 @@ You can create your own connectors by implementing the `StreamConnector` trait. 
 // See the full code at examples/connector_custom.rs
 ```
 
+## Pipelines and Schema Validation
+
+RS2 makes it easy to build robust, production-grade streaming pipelines with ergonomic composition and strong data validation guarantees.
+
+### Pipeline Builder
+
+The pipeline builder lets you compose sources, transforms, and sinks in a clear, modular way:
+
+```rust
+let pipeline = Pipeline::new()
+    .source(my_source)
+    .transform(my_transform)
+    .sink(my_sink)
+    .build();
+```
+
+You can branch, window, aggregate, and combine streams with ergonomic combinators. See [examples/kafka_data_pipeline.rs](examples/kafka_data_pipeline.rs) for a real-world, multi-branch pipeline.
+
+### Schema Validation
+
+**Production-grade schema validation** is built in. RS2 provides:
+- The `SchemaValidator` trait for pluggable validation (JSON Schema, Avro, Protobuf, custom)
+- A `JsonSchemaValidator` for validating JSON data using [JSON Schema](https://json-schema.org/)
+- The `.with_schema_validation_rs2(validator)` combinator to filter out invalid items and log errors
+- Clear error types: `SchemaError::ValidationFailed`, `SchemaError::ParseError`, etc.
+
+#### Example: Validating JSON in a Pipeline
+
+```rust
+use rs2::schema_validation::JsonSchemaValidator;
+use serde_json::json;
+
+let schema = json!({
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "value": {"type": "integer"}
+    },
+    "required": ["id", "value"]
+});
+let validator = JsonSchemaValidator::new("my-schema", schema);
+
+let validated_stream = raw_stream
+    .with_schema_validation_rs2(validator)
+    .filter_map(|json| async move { serde_json::from_str::<MyType>(&json).ok() })
+    .boxed();
+```
+
+See [examples/kafka_data_pipeline.rs](examples/kafka_data_pipeline.rs) for a full production pipeline with schema validation, branching, analytics, and error handling.
+
+**Extensibility:** You can implement your own `SchemaValidator` for Avro, Protobuf, or custom formats. The system is async-friendly and ready for integration with schema registries.
+
 ## Pipe: Stream Transformation Functions
 
 A Pipe represents a stream transformation from one type to another. It's a function from Stream[I] to Stream[O] that can be composed with other pipes to create complex stream processing pipelines.
@@ -855,6 +857,48 @@ RS2 excels at parallel processing with near-linear scaling:
 - **CPU bound**: Scales well up to physical core count
 - **Mixed workloads**: Automatic optimization based on workload type
 
+## Advanced Analytics (Production-Ready)
+
+RS2 provides robust, production-grade advanced analytics features:
+
+- **Time-based windowed aggregations**: Tumbling and sliding windows with custom time semantics, for real-time stats, metrics, and summaries.
+- **Keyed, time-windowed joins**: Join two streams on a key (e.g., user_id) within a time window, for enrichment and correlation.
+
+### Available Methods
+
+- `window_by_time_rs2(config, timestamp_fn)` - Apply time-based windowing to the stream, grouping elements into windows based on their timestamps
+- `join_with_time_window_rs2(other, config, timestamp_fn1, timestamp_fn2, join_fn, key_selector)` - Join with another stream using time windows, optionally matching on keys
+
+**Caveat:**
+> In time-windowed joins, deduplication is performed by timestamp pairs. If your events have identical timestamps and you require deduplication by other keys, you may need to extend the join logic. Most users will not need to change this, but advanced users can open an issue or PR for more control.
+
+#### Examples
+
+##### Time-based Windowed Aggregations
+
+For examples of time-based windowed aggregations, see [examples/advanced_analytics_example.rs](examples/advanced_analytics_example.rs).
+
+```rust
+// This example demonstrates:
+// - Creating time-based windows of user events
+// - Calculating statistics for each window (event count, unique users, event types)
+// - Configuring window size, slide interval, and watermark delay
+// See the full code at examples/advanced_analytics_example.rs
+```
+
+##### Stream Joins with Time Windows
+
+For examples of joining streams with time windows, see [examples/advanced_analytics_example.rs](examples/advanced_analytics_example.rs).
+
+```rust
+// This example demonstrates:
+// - Joining user events with user profiles using time windows
+// - Enriching events with profile information
+// - Configuring time join parameters
+// - Optional key-based matching
+// See the full code at examples/advanced_analytics_example.rs
+```
+
 ## Performance Optimization Guide
 
 This section provides guidance on configuring RS2 for optimal performance based on your specific workload characteristics.
@@ -869,17 +913,6 @@ Buffer configurations significantly impact throughput and memory usage. Key para
 | `max_capacity` | Maximum buffer size | Limits memory usage. Default: 1MB |
 | `growth_strategy` | How buffers grow | Exponential growth (default 1.5-2.0x) balances allocation frequency and memory usage |
 
-### Parallel Processing Configuration
-
-Optimize parallel processing based on your workload type with these parameters:
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `num_workers` | Number of worker threads | Set to available CPU cores for CPU-bound work; can be higher (2-4x cores) for I/O-bound work |
-| `local_queue_size` | Size of worker-local queues | Smaller (4-8) for better load balancing; larger (16-32) for reducing synchronization overhead |
-| `steal_interval_ms` | How often workers check for stealing | Lower values (1ms) improve responsiveness; higher values reduce contention |
-| `use_blocking` | Whether to use blocking threads | Enable for CPU-intensive tasks; disable for I/O-bound tasks |
-
 ### Backpressure Configuration
 
 Configure backpressure to balance throughput and resource usage:
@@ -921,135 +954,13 @@ Enable metrics to identify bottlenecks:
 | `enabled` | Whether metrics are collected | Minimal overhead (1-2%) when enabled |
 | `sample_rate` | Fraction of operations to measure | Lower values reduce overhead; 0.1 (10%) provides good balance |
 
-## Performance Optimization Guide
 
-This section provides guidance on configuring RS2 for optimal performance based on your specific workload characteristics.
+## Roadmap / Planned Features
 
-### Buffer Configuration
+The following features are planned for future releases. If you need them, please open an issue or contribute!
 
-Buffer configurations significantly impact throughput and memory usage:
+- **Complex Event Processing (CEP)**: Sequence-aware, stateful pattern matching (e.g., fraud detection, sessionization).
+- **Work stealing scheduler**: Dynamic, adaptive parallelism for maximum throughput and resource utilization.
+- **Deduplicated/sequence-aware joins**: SQL-like, deduped, or "first match" joins for advanced analytics.
 
-```rust
-// Optimize buffer settings for high-throughput processing
-let buffer_config = BufferConfig {
-    initial_capacity: 8192,                // Start with larger buffers
-    max_capacity: Some(1048576),           // Allow growth up to 1MB
-    growth_strategy: GrowthStrategy::Exponential(1.5), // Grow by 50% each time
-};
-```
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `initial_capacity` | Initial buffer size | Higher values reduce allocations but increase memory usage. Default: 1024 (general) or 8192 (performance) |
-| `max_capacity` | Maximum buffer size | Limits memory usage. Default: 1MB |
-| `growth_strategy` | How buffers grow | Exponential growth (default 1.5-2.0x) balances allocation frequency and memory usage |
-
-### Parallel Processing Configuration
-
-Optimize parallel processing based on your workload type:
-
-```rust
-// For CPU-bound workloads
-stream.par_eval_map_cpu_intensive_rs2(process_item)
-
-// For I/O-bound workloads with custom concurrency
-stream.par_eval_map_rs2(32, process_item)
-
-// For fine-tuned work stealing
-let config = WorkStealingConfig {
-    num_workers: Some(16),         // Explicit worker count
-    local_queue_size: 4,           // Smaller queues for better load balancing
-    steal_interval_ms: 1,          // Aggressive stealing
-    use_blocking: true,            // Use blocking threads for CPU work
-};
-stream.par_eval_map_work_stealing_with_config_rs2(config, process_item)
-```
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `num_workers` | Number of worker threads | Set to available CPU cores for CPU-bound work; can be higher (2-4x cores) for I/O-bound work |
-| `local_queue_size` | Size of worker-local queues | Smaller (4-8) for better load balancing; larger (16-32) for reducing synchronization overhead |
-| `steal_interval_ms` | How often workers check for stealing | Lower values (1ms) improve responsiveness; higher values reduce contention |
-| `use_blocking` | Whether to use blocking threads | Enable for CPU-intensive tasks; disable for I/O-bound tasks |
-
-### Backpressure Configuration
-
-Configure backpressure to balance throughput and resource usage:
-
-```rust
-// High-throughput configuration with controlled memory usage
-let backpressure_config = BackpressureConfig {
-    strategy: BackpressureStrategy::Block,  // Block when full for lossless processing
-    buffer_size: 1000,                      // Larger buffer for higher throughput
-    low_watermark: Some(250),               // Resume at 25% capacity
-    high_watermark: Some(750),              // Pause at 75% capacity
-};
-stream.auto_backpressure_with_rs2(backpressure_config)
-```
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `strategy` | How to handle buffer overflow | `Block` (default) for lossless processing; `DropOldest`/`DropNewest` for higher throughput with data loss |
-| `buffer_size` | Maximum items in buffer | Larger values increase throughput but use more memory. Default: 100 |
-| `low_watermark` | When to resume processing | Lower values reduce stop/start frequency. Default: 25% of buffer_size |
-| `high_watermark` | When to pause processing | Higher values increase throughput but risk overflow. Default: 75% of buffer_size |
-
-### File I/O Configuration
-
-Optimize file operations for different workloads:
-
-```rust
-// High-throughput file processing
-let file_config = FileConfig {
-    buffer_size: 65536,           // 64KB buffers for large files
-    read_ahead: true,             // Enable read-ahead for sequential access
-    sync_on_write: false,         // Disable sync for maximum throughput
-    compression: None,            // No compression for raw speed
-};
-```
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `buffer_size` | Size of I/O buffers | Larger values (32KB-128KB) improve throughput for sequential access. Default: 8KB |
-| `read_ahead` | Whether to prefetch data | Enable for sequential access; disable for random access |
-| `sync_on_write` | Whether to sync after writes | Disable for maximum throughput; enable for durability |
-| `compression` | Optional compression | Disable for maximum throughput; enable to reduce I/O at CPU cost |
-
-### Advanced Throughput Techniques
-
-Additional methods to optimize throughput:
-
-```rust
-// Prefetch elements ahead of consumption
-stream.prefetch_rs2(100)
-
-// Process in batches for better efficiency
-stream.batch_process_rs2(64, process_batch)
-
-// Chunk items for more efficient processing
-stream.chunk_rs2(128).map_rs2(process_chunks)
-```
-
-| Technique | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `prefetch_rs2(n)` | Eagerly evaluate n elements ahead | Improves throughput by 10-30% for I/O-bound workloads |
-| `batch_process_rs2(size, fn)` | Process items in batches | Can improve throughput 2-5x for database or network operations |
-| `chunk_rs2(size)` | Group items into chunks | Reduces per-item overhead; optimal sizes typically 32-128 |
-
-### Metrics Collection
-
-Enable metrics to identify bottlenecks:
-
-```rust
-// Collect performance metrics
-let (stream, metrics) = stream.with_metrics_rs2("processing_pipeline");
-
-// Process stream normally, then analyze metrics
-let throughput = metrics.lock().await.throughput_items_per_sec();
-println!("Throughput: {} items/sec", throughput);
-```
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `enabled` | Whether metrics are collected | Minimal overhead (1-2%) when enabled |
-| `sample_rate` | Fraction of operations to measure | Lower values reduce overhead; 0.1 (10%) provides good balance |
+---

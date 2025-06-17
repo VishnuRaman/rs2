@@ -8,6 +8,12 @@ use std::time::Duration;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use num_cpus;
+use serde;
+use serde_json;
+use log;
+use async_trait;
+use std::pin::Pin;
+use serde::Serialize;
 
 use crate::error::StreamResult;
 use crate::stream_performance_metrics::StreamMetrics;
@@ -19,6 +25,8 @@ use crate::rs2::{
     fold, scan, take, drop, either, sliding_window, batch_process, with_metrics, interleave, chunk,
     tick, bracket
 };
+use crate::schema_validation::SchemaValidator;
+use crate::schema_validation::SchemaError;
 
 /// Extension trait providing RS2-like combinators on Streams
 pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
@@ -661,6 +669,35 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         A: Clone + Send + 'static,
     {
         bracket(acquire, use_fn, release)
+    }
+
+    fn with_schema_validation_rs2<V, T>(self, validator: V) -> Pin<Box<dyn futures_util::Stream<Item = T> + Send>>
+    where
+        V: SchemaValidator + 'static,
+        T: serde::de::DeserializeOwned + Serialize + Send + 'static,
+        Self: futures_util::Stream<Item = T> + Send + 'static,
+    {
+        use futures_util::StreamExt;
+        let validator = std::sync::Arc::new(validator);
+        self.filter_map(move |item| {
+            let validator = validator.clone();
+            async move {
+                let bytes = match serde_json::to_vec(&item) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        log::error!("Schema validation: failed to serialize item: {}", e);
+                        return None;
+                    }
+                };
+                match validator.validate(&bytes).await {
+                    Ok(()) => Some(item),
+                    Err(e) => {
+                        log::warn!("Schema validation failed: {}", e);
+                        None
+                    }
+                }
+            }
+        }).boxed()
     }
 }
 

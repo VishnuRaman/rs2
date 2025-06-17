@@ -83,6 +83,7 @@ use tokio::sync::broadcast;
 use futures_util::stream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use futures_util::FutureExt;
+use rs2::schema_validation::{JsonSchemaValidator, SchemaValidator, SchemaError};
 
 // ================================
 // Data Models
@@ -412,14 +413,30 @@ async fn main() {
     let analytics_metrics = Arc::new(SinkMetrics { processed: AtomicUsize::new(0), errors: AtomicUsize::new(0) });
     let alert_metrics = Arc::new(SinkMetrics { processed: AtomicUsize::new(0), errors: AtomicUsize::new(0) });
 
-    // --- Kafka source and validation ---
+    // --- Example JSON schema for UserActivity ---
+    let user_activity_schema = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "user_id": {"type": "integer"},
+            "activity_type": {"type": "string"},
+            "timestamp": {"type": "string"},
+            "metadata": {"type": "object"}
+        },
+        "required": ["id", "user_id", "activity_type", "timestamp", "metadata"]
+    });
+    let schema_validator = JsonSchemaValidator::new("user-activity-v1", user_activity_schema);
+
+    // --- Kafka source and schema validation ---
     let raw_activity_stream = <KafkaConnector as StreamConnector<String>>::from_source(
         &*connector,
         source_config.clone(),
     ).await.expect("Failed to connect to Kafka source");
-    let validated_stream = raw_activity_stream
+    let schema_validated_stream = raw_activity_stream
+        .with_schema_validation_rs2(schema_validator)
         .filter_map(|json| async move { serde_json::from_str::<UserActivity>(&json).ok() })
-        .boxed()
+        .boxed();
+    let validated_stream = schema_validated_stream
         .map_rs2(validate_activity)
         .boxed();
 

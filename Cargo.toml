@@ -2,7 +2,14 @@
 name = "rs2"
 version = "0.1.0"
 edition = "2021"
-
+authors = ["Vishnu Raman <vishnu310592@gmail.com>"]
+description = "A high-performance, production-ready async streaming library for Rust."
+repository = "https://github.com/VishnuRaman/rs2"
+homepage = "https://github.com/VishnuRaman/rs2"
+documentation = "https://docs.rs/rs2"
+readme = "README.md"
+keywords = ["stream", "async", "pipeline", "analytics", "kafka"]
+categories = ["asynchronous", "data-structures", "network-programming", "concurrency"]
 [dependencies]
 # The core futures traits, StreamExt, FuturesUnordered, mpsc channels, etc.
 futures = "0.3"
@@ -20,9 +27,6 @@ futures-util = "0.3.31"
 async-trait = "0.1.88"
 serde = { version = "1.0.219", features = ["derive"] }
 rdkafka = { version = "0.37.0"}
-redis = { version = "0.24"}
-lapin = { version = "2.5.3"}
-google-cloud-pubsub = { version = "0.20"}
 serde_json = "1.0.140"
 log = "0.4.27"
 uuid = { version = "1.17.0", features = ["v4"] }
@@ -30,11 +34,12 @@ chrono = { version = "0.4.41", features = ["serde"] }
 quickcheck = "1.0.3"
 sha2 = "0.10.9"
 num_cpus = "1.17.0"
-flume = "0.11.1"
 rand = "0.8.5"
 thiserror = "1.0.69"
-tokio-tungstenite = "0.27.0"
 base64 = "0.21.7"
+jsonschema = "0.30.0"
+
+
 
 [dev-dependencies]
 testcontainers = { version = "0.24.0", features = ["blocking"] }
