@@ -10,7 +10,7 @@ documentation = "https://docs.rs/rs2"
 readme = "README.md"
 keywords = ["stream", "async", "pipeline", "analytics", "kafka"]
 categories = ["asynchronous", "data-structures", "network-programming", "concurrency"]
-license = "SEE LICENSE IN LICENSE"
+license = "Apache-2.0"
 [dependencies]
 # The core futures traits, StreamExt, FuturesUnordered, mpsc channels, etc.
 futures = "0.3"
