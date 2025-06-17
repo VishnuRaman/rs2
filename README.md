@@ -50,20 +50,6 @@
 - **ETL workloads** that need automatic parallelization and error recovery
 - **Real-time analytics** with backpressure-aware stream processing
 
-### **Get Started**
-
-```rust
-use rs2::prelude::*;
-
-// Transform any iterator into a resilient, parallel stream
-let results = from_iter(data)
-.par_eval_map_rs2(8, |item| async { process(item).await })
-.auto_retry_rs2(RetryPolicy::exponential_backoff())
-.with_timeout_rs2(Duration::from_secs(30))
-.collect_rs2::<Vec<_>>()
-.await?;
-```
-
 ### **I/O Scaling Performance**
 
 | **Concurrency** | **Time** | **Speedup** |
@@ -134,6 +120,7 @@ Add RS2 to your `Cargo.toml`:
 [dependencies]
 rs2-stream = "0.1.0"
 ```
+### **Get Started*
 
 ## Basic Usage
 
