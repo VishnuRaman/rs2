@@ -32,6 +32,9 @@ sha2 = "0.10.9"
 num_cpus = "1.17.0"
 flume = "0.11.1"
 rand = "0.8.5"
+thiserror = "1.0.69"
+tokio-tungstenite = "0.27.0"
+base64 = "0.21.7"
 
 [dev-dependencies]
 testcontainers = { version = "0.24.0", features = ["blocking"] }
