@@ -1,6 +1,6 @@
 [package]
 name = "rs2-stream"
-version = "1.0.2"
+version = "0.1.0"
 edition = "2021"
 authors = ["Vishnu Raman <vishnu310592@gmail.com>"]
 description = "A high-performance, production-ready async streaming library for Rust."
