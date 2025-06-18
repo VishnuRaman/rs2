@@ -19,7 +19,7 @@ use tokio::{spawn, time::sleep};
 use tokio::sync::Mutex;
 
 use crate::error::{StreamError, StreamResult, RetryPolicy};
-use crate::stream_performance_metrics::StreamMetrics;
+use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
 
 /// A boxed, heap-allocated Rust Stream analogous to RS2's Stream[F, O]
 pub type RS2Stream<O> = BoxStream<'static, O>;
@@ -524,11 +524,20 @@ where
 }
 
 /// Collect metrics while processing rs2_stream
-pub fn with_metrics<T>(s: RS2Stream<T>, _name: String) -> (RS2Stream<T>, Arc<Mutex<StreamMetrics>>)
+pub fn with_metrics<T>(
+    s: RS2Stream<T>,
+    name: String,
+    thresholds: HealthThresholds
+) -> (RS2Stream<T>, Arc<Mutex<StreamMetrics>>)
 where
     T: Send + 'static,
 {
-    let metrics = Arc::new(Mutex::new(StreamMetrics::new()));
+    let metrics = Arc::new(Mutex::new(
+        StreamMetrics::new()
+            .with_name(name)
+            .with_health_thresholds(thresholds)
+    ));
+    
     let metrics_clone = Arc::clone(&metrics);
 
     let monitored_stream = stream! {
@@ -536,7 +545,7 @@ where
         while let Some(item) = s.next().await {
             {
                 let mut m = metrics_clone.lock().await;
-                m.record_item(std::mem::size_of_val(&item) as u64);
+                m.record_item(size_of_val(&item) as u64);
             }
             yield item;
         }
@@ -549,6 +558,7 @@ where
 
     (monitored_stream, metrics)
 }
+
 
 // ================================
 // Backpressure Management

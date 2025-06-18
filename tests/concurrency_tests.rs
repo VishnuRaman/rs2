@@ -851,7 +851,6 @@ async fn test_backpressure_handling() {
     // Test with drop strategy
     println!("Testing with drop oldest strategy...");
 
-    let dropped_count = Arc::new(AtomicUsize::new(0));
     let processed_count = Arc::new(AtomicUsize::new(0));
 
     // Create a stream with drop oldest strategy
@@ -891,6 +890,8 @@ async fn test_backpressure_handling() {
     // With drop oldest strategy, we expect to process all items but may drop some
     let processed = processed_count.load(Ordering::SeqCst);
     println!("Processed {} out of {} items with drop oldest strategy", processed, item_count);
+    let dropped = item_count - processed;
+    assert!(dropped > 0, "Some items should have been dropped with aggressive backpressure");
 
     // We should have processed some items
     assert!(processed > 0, "Should have processed some items");

@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::collections::{HashSet, BTreeSet};
+use rs2_stream::stream_performance_metrics::HealthThresholds;
 
 // Tests for RResultStreamExt trait
 #[test]
@@ -885,7 +886,7 @@ fn test_with_metrics_rs2() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
         // Apply with_metrics
-        let (metrics_stream, metrics) = stream.with_metrics_rs2("test_stream".to_string());
+        let (metrics_stream, metrics) = stream.with_metrics_rs2("test_stream".to_string(), HealthThresholds::default());
 
         // Collect the stream to ensure all items are processed
         let result = metrics_stream.collect::<Vec<_>>().await;
@@ -908,7 +909,7 @@ fn test_with_metrics_rs2_empty_stream() {
         let stream: RS2Stream<i32> = from_iter(vec![]);
 
         // Apply with_metrics
-        let (metrics_stream, metrics) = stream.with_metrics_rs2("empty_stream".to_string());
+        let (metrics_stream, metrics) = stream.with_metrics_rs2("empty_stream".to_string(), HealthThresholds::default());
 
         // Collect the stream to ensure all items are processed
         let result = metrics_stream.collect::<Vec<_>>().await;

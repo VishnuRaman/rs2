@@ -118,7 +118,7 @@ Add RS2 to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rs2-stream = "0.1.1"
+rs2-stream = "0.2.0"
 ```
 ### **Get Started*
 
@@ -512,6 +512,78 @@ RS2 provides built-in support for collecting metrics while processing streams, a
 
 - `with_metrics_rs2(name)` - Collect metrics while processing the stream
 
+#### Available Metrics
+
+RS2 collects a comprehensive set of metrics to help you monitor and optimize your stream processing:
+
+| **Metric** | **Description** | **Use Case** |
+|------------|-----------------|--------------|
+| `name` | Identifier for the stream metrics | Distinguish between multiple streams |
+| `items_processed` | Total number of items processed by the stream | Track overall throughput |
+| `bytes_processed` | Total bytes processed by the stream | Monitor data volume |
+| `processing_time` | Total time spent processing items | Measure processing efficiency |
+| `errors` | Number of errors encountered during processing | Track error rates |
+| `retries` | Number of retry attempts | Monitor retry behavior |
+| `items_per_second` | Throughput in items per second (wall-clock time) | Compare stream performance |
+| `bytes_per_second` | Throughput in bytes per second (wall-clock time) | Measure data throughput |
+| `average_item_size` | Average size of processed items in bytes | Understand data characteristics |
+| `peak_processing_time` | Maximum processing time for any item | Identify processing bottlenecks |
+| `consecutive_errors` | Number of errors without successful processing in between | Detect error patterns |
+| `error_rate` | Ratio of errors to total operations | Monitor stream health |
+| `backpressure_events` | Number of backpressure events | Track backpressure occurrences |
+| `queue_depth` | Current depth of the processing queue | Monitor buffer utilization |
+| `health_thresholds` | Configurable thresholds for determining stream health | Set health monitoring parameters |
+
+#### Utility Methods
+
+The `StreamMetrics` struct provides several utility methods for working with metrics:
+
+- `record_item(size_bytes)` - Record a processed item with its size
+- `record_error()` - Record an error occurrence
+- `record_retry()` - Record a retry attempt
+- `record_processing_time(duration)` - Record time spent processing
+- `record_backpressure()` - Record a backpressure event
+- `update_queue_depth(depth)` - Update the current queue depth
+- `is_healthy()` - Check if the stream is healthy (low error rate)
+- `throughput_items_per_sec()` - Calculate items processed per second
+- `throughput_bytes_per_sec()` - Calculate bytes processed per second
+- `throughput_summary()` - Get a formatted summary of throughput metrics
+- `with_name(name)` - Set a name for the metrics (builder pattern)
+- `set_name(name)` - Set a name for the metrics
+- `with_health_thresholds(thresholds)` - Set health thresholds (builder pattern)
+- `set_health_thresholds(thresholds)` - Set health thresholds
+
+#### Health Monitoring
+
+RS2 provides built-in health monitoring for streams through the `HealthThresholds` configuration:
+
+- `max_error_rate` - Maximum acceptable error rate (default: 0.1 or 10%)
+- `max_consecutive_errors` - Maximum number of consecutive errors allowed (default: 5)
+
+The `is_healthy()` method uses these thresholds to determine if a stream is healthy. You can customize these thresholds using:
+
+- `HealthThresholds::default()` - Default thresholds (10% error rate, 5 consecutive errors)
+- `HealthThresholds::strict()` - Strict thresholds for critical systems (1% error rate, 2 consecutive errors)
+- `HealthThresholds::relaxed()` - Relaxed thresholds for high-throughput systems (20% error rate, 20 consecutive errors)
+- `HealthThresholds::custom(max_error_rate, max_consecutive_errors)` - Custom thresholds
+
+Example:
+```rust
+// Create metrics with strict health thresholds
+let metrics = StreamMetrics::new()
+    .with_name("critical_stream".to_string())
+    .with_health_thresholds(HealthThresholds::strict());
+
+// Or update thresholds on existing metrics
+metrics.set_health_thresholds(HealthThresholds::custom(0.05, 3));
+
+// Check if the stream is healthy
+if !metrics.is_healthy() {
+    println!("Stream health check failed: error rate = {}, consecutive errors = {}", 
+             metrics.error_rate, metrics.consecutive_errors);
+}
+```
+
 #### Examples
 
 ##### Stream Metrics Collection
@@ -526,6 +598,9 @@ For examples of collecting metrics from streams, see [examples/with_metrics_exam
 // - Collecting metrics for async operations
 // See the full code at examples/with_metrics_example.rs
 ```
+Here's what your stream metrics output could look like (in examples) :
+
+<img src="docs/images/new_metrics.png" alt="Example output" width="35%">
 
 ### Media Streaming
 
