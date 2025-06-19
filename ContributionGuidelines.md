@@ -1,6 +1,6 @@
 # Contributing to RS2 Stream Processing Library 🚀
 
-Thank you for your interest in contributing to RS2! We're excited to have you join our community of developers building the next generation of stream processing tools in Rust.
+Thank you for your interest in contributing to RS2! I am excited to have you join me in building the next generation of stream processing library in Rust.
 Please contact me if you are interested in helping me make this library reach its full potential. Can't wait to hear from you all.
 
 ## 🌟 How You Can Help
