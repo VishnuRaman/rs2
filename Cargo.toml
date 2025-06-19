@@ -1,6 +1,6 @@
 [package]
 name = "rs2-stream"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Vishnu Raman <vishnu310592@gmail.com>"]
 description = "A high-performance, production-ready async streaming library for Rust."
@@ -11,6 +11,26 @@ readme = "README.md"
 keywords = ["stream", "async", "pipeline", "analytics", "kafka"]
 categories = ["asynchronous", "data-structures", "network-programming", "concurrency"]
 license = "Apache-2.0"
+
+exclude = [
+    "benches/",
+    "benches/*",
+    "scripts/",
+    "scripts/*",
+    "docs/images/",
+    "docs/images/*",
+    "assets/",
+    "assets/*",
+    "*.png",
+    "*.jpg",
+    "*.jpeg",
+    "*.gif",
+    "*.mp4",
+    "*.svg",
+    ".github/",
+    "screenshots/"
+]
+
 [dependencies]
 # The core futures traits, StreamExt, FuturesUnordered, mpsc channels, etc.
 futures = "0.3"
@@ -68,8 +88,6 @@ harness = false
 name = "memory_usage"
 harness = false
 
-
-
 [[bench]]
-name = "ecosystem_comparison"  # Add this line
+name = "ecosystem_comparison"
 harness = false

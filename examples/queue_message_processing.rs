@@ -28,9 +28,9 @@ async fn process_message(msg: Message) -> Result<(), Box<dyn Error + Send + Sync
 
     // Simulate processing time based on priority
     let delay = match msg.priority {
-        Priority::High => 50,
-        Priority::Medium => 100,
-        Priority::Low => 200,
+        Priority::High => 5,
+        Priority::Medium => 10,
+        Priority::Low => 20,
     };
 
     sleep(Duration::from_millis(delay)).await;
@@ -64,10 +64,15 @@ fn main() {
                 Priority::Low => Arc::clone(&low_priority_queue),
             };
 
-            println!("Enqueueing message {}: '{}' with {:?} priority", 
+            println!("Enqueueing message {}: '{}' with {:?} priority",
                      msg.id, msg.content, msg.priority);
             queue.enqueue(msg).await.unwrap();
         }
+
+        // Close the queues to signal no more messages
+        high_priority_queue.close().await;
+        medium_priority_queue.close().await;
+        low_priority_queue.close().await;
 
         // Process messages from queues with priority
         let high_stream = high_priority_queue.dequeue();

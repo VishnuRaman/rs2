@@ -1,32 +1,32 @@
 use async_stream::stream;
+use async_trait;
 use futures_core::Stream;
+use futures_util::future;
 use futures_util::pin_mut;
 use futures_util::stream::{BoxStream, StreamExt};
-use futures_util::future;
-use std::future::Future;
-use std::time::Duration;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use log;
 use num_cpus;
 use serde;
-use serde_json;
-use log;
-use async_trait;
-use std::pin::Pin;
 use serde::Serialize;
+use serde_json;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
 
 use crate::error::StreamResult;
-use crate::stream_performance_metrics::StreamMetrics;
-use crate::stream_configuration::{BufferConfig, GrowthStrategy};
-use crate::{
-    RS2Stream, BackpressureConfig, auto_backpressure, merge, zip_with, throttle, debounce, sample,
-    par_eval_map, par_eval_map_unordered, par_join, timeout, prefetch, distinct_until_changed,
-    distinct_until_changed_by, interrupt_when, take_while, drop_while, group_adjacent_by, group_by,
-    fold, scan, take, drop, either, sliding_window, batch_process, with_metrics, interleave, chunk,
-    tick, bracket
-};
-use crate::schema_validation::SchemaValidator;
 use crate::schema_validation::SchemaError;
+use crate::schema_validation::SchemaValidator;
+use crate::stream_configuration::{BufferConfig, GrowthStrategy};
+use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
+use crate::{
+    auto_backpressure, batch_process, bracket, chunk, debounce, distinct_until_changed,
+    distinct_until_changed_by, drop, drop_while, either, fold, group_adjacent_by, group_by,
+    interleave, interrupt_when, merge, par_eval_map, par_eval_map_unordered, par_join, prefetch,
+    sample, scan, sliding_window, take, take_while, throttle, tick, timeout, with_metrics,
+    zip_with, BackpressureConfig, RS2Stream,
+};
 
 /// Extension trait providing RS2-like combinators on Streams
 pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
@@ -539,8 +539,9 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
                     if vec.len() == vec.capacity() {
                         let new_capacity = match config.growth_strategy {
                             GrowthStrategy::Linear(step) => vec.capacity() + step,
-                            GrowthStrategy::Exponential(factor) =>
-                                (vec.capacity() as f64 * factor) as usize,
+                            GrowthStrategy::Exponential(factor) => {
+                                (vec.capacity() as f64 * factor) as usize
+                            }
                             GrowthStrategy::Fixed => vec.capacity(), // No growth
                         };
 
@@ -604,11 +605,15 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     ///
     /// This combinator collects metrics while processing the stream,
     /// returning both the stream and the metrics.
-    fn with_metrics_rs2(self, name: String) -> (RS2Stream<Self::Item>, Arc<Mutex<StreamMetrics>>)
+    fn with_metrics_rs2(
+        self,
+        name: String,
+        health_thresholds: HealthThresholds,
+    ) -> (RS2Stream<Self::Item>, Arc<Mutex<StreamMetrics>>)
     where
         Self::Item: Send + 'static,
     {
-        with_metrics(self.boxed(), name)
+        with_metrics(self.boxed(), name, health_thresholds)
     }
 
     /// Interleave multiple streams in a round-robin fashion
@@ -671,7 +676,10 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         bracket(acquire, use_fn, release)
     }
 
-    fn with_schema_validation_rs2<V, T>(self, validator: V) -> Pin<Box<dyn futures_util::Stream<Item = T> + Send>>
+    fn with_schema_validation_rs2<V, T>(
+        self,
+        validator: V,
+    ) -> Pin<Box<dyn futures_util::Stream<Item = T> + Send>>
     where
         V: SchemaValidator + 'static,
         T: serde::de::DeserializeOwned + Serialize + Send + 'static,
@@ -697,12 +705,9 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
                     }
                 }
             }
-        }).boxed()
+        })
+        .boxed()
     }
 }
 
-impl<S> RS2StreamExt for S
-where
-    S: Stream + Sized + Unpin + Send + 'static,
-{
-}
+impl<S> RS2StreamExt for S where S: Stream + Sized + Unpin + Send + 'static {}
