@@ -1,5 +1,5 @@
-use rs2_stream::queue::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::queue::*;
 use tokio::runtime::Runtime;
 
 fn main() {

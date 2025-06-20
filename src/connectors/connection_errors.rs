@@ -33,8 +33,12 @@ impl fmt::Display for ConnectorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConnectorError::ConnectionFailed(msg) => write!(f, "Connection failed: {}", msg),
-            ConnectorError::AuthenticationFailed(msg) => write!(f, "Authentication failed: {}", msg),
-            ConnectorError::InvalidConfiguration(msg) => write!(f, "Invalid configuration: {}", msg),
+            ConnectorError::AuthenticationFailed(msg) => {
+                write!(f, "Authentication failed: {}", msg)
+            }
+            ConnectorError::InvalidConfiguration(msg) => {
+                write!(f, "Invalid configuration: {}", msg)
+            }
             ConnectorError::SerializationError(msg) => write!(f, "Serialization error: {}", msg),
             ConnectorError::IO(msg) => write!(f, "I/O error: {}", msg),
             ConnectorError::Timeout => write!(f, "Operation timed out"),
@@ -45,7 +49,9 @@ impl fmt::Display for ConnectorError {
             ConnectorError::Multiple(errors) => {
                 write!(f, "Multiple errors: ")?;
                 for (i, error) in errors.iter().enumerate() {
-                    if i > 0 { write!(f, ", ")?; }
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
                     write!(f, "{}", error)?;
                 }
                 Ok(())

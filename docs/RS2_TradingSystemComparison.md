@@ -62,6 +62,47 @@ Testing on multi-core hardware with different concurrency levels:
 | Windowing | ✅ Sliding/Tumbling | Time-based and count-based windows |
 | Parallel Processing | ✅ par_eval_map | Linear scaling up to available cores |
 | Metrics Collection | ✅ Built-in | Throughput, latency, error rates |
+| **State Management** | **✅ Comprehensive** | **Full stateful streaming capabilities** |
+
+### State Management Features (Verified)
+
+| **Stateful Operation** | **Implementation** | **Use Cases** | **Test Coverage** |
+|------------------------|-------------------|---------------|-------------------|
+| **Stateful Map** | ✅ `stateful_map_rs2` | Event transformation with state | User enrichment, session tracking |
+| **Stateful Filter** | ✅ `stateful_filter_rs2` | State-based filtering | Rate limiting, fraud detection |
+| **Stateful Fold** | ✅ `stateful_fold_rs2` | State accumulation | Running totals, aggregations |
+| **Stateful Reduce** | ✅ `stateful_reduce_rs2` | Stateful reduction | Real-time aggregations |
+| **Stateful Window** | ✅ `stateful_window_rs2` | Tumbling/sliding windows | Time-based analytics |
+| **Stateful Join** | ✅ `stateful_join_rs2` | Stream correlation | Event matching, data enrichment |
+| **Stateful Group By** | ✅ `stateful_group_by_rs2` | Group processing | Multi-tenant, batch processing |
+| **Stateful Deduplicate** | ✅ `stateful_deduplicate_rs2` | Duplicate removal | Data quality, idempotency |
+| **Stateful Throttle** | ✅ `stateful_throttle_rs2` | Rate limiting | API protection, traffic shaping |
+| **Stateful Session** | ✅ `stateful_session_rs2` | Session management | User sessions, authentication |
+| **Stateful Pattern** | ✅ `stateful_pattern_rs2` | Pattern detection | Fraud detection, anomalies |
+
+### State Storage & Configuration (Verified)
+
+| **Feature** | **Implementation** | **Capabilities** | **Test Coverage** |
+|-------------|-------------------|------------------|-------------------|
+| **Storage Backends** | ✅ Pluggable | In-memory + custom backends | 100% tested |
+| **TTL Support** | ✅ Automatic expiration | Configurable time-to-live | Expiration tests |
+| **Memory Management** | ✅ Size limits + cleanup | Simple eviction strategy | Memory leak tests |
+| **Key Extraction** | ✅ Custom extractors | Flexible key partitioning | Multiple test scenarios |
+| **Configuration** | ✅ Builder pattern | Predefined + custom configs | All configs tested |
+| **Error Handling** | ✅ Comprehensive | Storage, serialization, validation | Error scenario tests |
+
+### State Management Performance (Verified)
+
+| **Aspect** | **RS2 Implementation** | **Performance Characteristics** |
+|------------|----------------------|--------------------------------|
+| **Memory Usage** | ✅ Bounded | 10k keys per operation, configurable limits |
+| **Cleanup Strategy** | ✅ Simple eviction | Alphabetical key removal, periodic cleanup |
+| **Storage Backends** | ✅ In-memory + custom | Fast in-memory, extensible for persistence |
+| **Key Partitioning** | ✅ Custom extractors | Flexible state organization |
+| **TTL Management** | ✅ Automatic | Background cleanup, configurable intervals |
+| **Concurrent Access** | ✅ Thread-safe | Arc<Mutex> for shared state access |
+
+**⚠️ Eviction Strategy Note**: RS2 uses simple alphabetical eviction rather than true LRU. This is sufficient for most streaming use cases due to natural boundaries (windows, sessions, timeouts) and TTL expiration.
 
 ## Trading Use Case Alignment
 
@@ -75,6 +116,10 @@ Testing on multi-core hardware with different concurrency levels:
 | **Circuit Breakers** | Exchange connectivity | Automatic failure detection |
 | **Parallel Scaling** | Risk calculations | Linear performance scaling |
 | **Memory Efficiency** | Long-running processes | 10MB vs 200MB+ alternatives |
+| **Stateful Operations** | Position tracking, risk management | Real-time state across events |
+| **Stateful Windows** | Time-based analytics | Sliding window aggregations |
+| **Stateful Joins** | Order-fill correlation | Stream correlation with state |
+| **Stateful Throttle** | Rate limiting | Exchange API protection |
 
 ### Real Trading Scenarios Tested
 

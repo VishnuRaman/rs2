@@ -1,11 +1,8 @@
 use futures_util::StreamExt;
-use tokio::runtime::Runtime;
 use rs2_stream::media::streaming::{MediaStreamingService, StreamingServiceFactory};
-use rs2_stream::media::types::{MediaStream, MediaChunk, ChunkType, MediaPriority, MediaType, QualityLevel};
-use std::path::PathBuf;
-use std::time::Duration;
+use rs2_stream::media::types::{MediaStream, MediaType, QualityLevel};
 use std::collections::HashMap;
-use chrono::Utc;
+use tokio::runtime::Runtime;
 
 #[test]
 fn test_streaming_service_creation() {
@@ -29,10 +26,10 @@ fn test_streaming_service_metrics() {
         let metrics = service.get_metrics().await;
 
         // Verify initial metrics
-        assert_eq!(metrics.chunks_processed, 0);
+        assert_eq!(metrics.items_processed, 0);
         assert_eq!(metrics.bytes_processed, 0);
-        assert_eq!(metrics.dropped_chunks, 0);
-        assert_eq!(metrics.average_chunk_size, 0.0);
+        assert_eq!(metrics.errors, 0);
+        assert_eq!(metrics.average_item_size, 0.0);
     });
 }
 
@@ -83,7 +80,7 @@ fn test_streaming_service_live_stream() {
         let metrics = service.get_metrics().await;
 
         // Verify metrics were updated
-        assert!(metrics.chunks_processed > 0);
+        assert!(metrics.items_processed > 0);
         assert!(metrics.bytes_processed > 0);
     });
 }
@@ -102,7 +99,7 @@ fn test_streaming_service_metrics_stream() {
         let metrics = metrics_stream.next().await.unwrap();
 
         // Basic verification
-        assert_eq!(metrics.chunks_processed, 0);
+        assert_eq!(metrics.items_processed, 0);
         assert_eq!(metrics.bytes_processed, 0);
     });
 }

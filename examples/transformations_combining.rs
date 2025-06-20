@@ -1,8 +1,8 @@
-use rs2_stream::rs2::*;
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::Duration;
 use async_stream::stream;
+use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
 // Define our User type for the example
 #[derive(Debug, Clone, PartialEq)]
@@ -19,14 +19,44 @@ fn main() {
     rt.block_on(async {
         // Create two streams of users
         let admins = vec![
-            User { id: 1, name: "Alice".to_string(), email: "alice@example.com".to_string(), active: true, role: "admin".to_string() },
-            User { id: 4, name: "Diana".to_string(), email: "diana@example.com".to_string(), active: true, role: "admin".to_string() },
+            User {
+                id: 1,
+                name: "Alice".to_string(),
+                email: "alice@example.com".to_string(),
+                active: true,
+                role: "admin".to_string(),
+            },
+            User {
+                id: 4,
+                name: "Diana".to_string(),
+                email: "diana@example.com".to_string(),
+                active: true,
+                role: "admin".to_string(),
+            },
         ];
 
         let regular_users = vec![
-            User { id: 2, name: "Bob".to_string(), email: "bob@example.com".to_string(), active: true, role: "user".to_string() },
-            User { id: 3, name: "Charlie".to_string(), email: "charlie@example.com".to_string(), active: true, role: "user".to_string() },
-            User { id: 5, name: "Eve".to_string(), email: "eve@example.com".to_string(), active: true, role: "user".to_string() },
+            User {
+                id: 2,
+                name: "Bob".to_string(),
+                email: "bob@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+            },
+            User {
+                id: 3,
+                name: "Charlie".to_string(),
+                email: "charlie@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+            },
+            User {
+                id: 5,
+                name: "Eve".to_string(),
+                email: "eve@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+            },
         ];
 
         // Zip the streams to pair admins with users they manage
@@ -42,7 +72,10 @@ fn main() {
         // Use zip_with to create management assignments
         let assignments = from_iter(admins.clone())
             .zip_with_rs2(from_iter(regular_users.clone()), |admin, user| {
-                format!("{} is responsible for {}'s onboarding", admin.name, user.name)
+                format!(
+                    "{} is responsible for {}'s onboarding",
+                    admin.name, user.name
+                )
             })
             .collect::<Vec<_>>()
             .await;
@@ -64,14 +97,16 @@ fn main() {
             yield "Fast response";
             tokio::time::sleep(Duration::from_millis(50)).await;
             yield "Fast again";
-        }.boxed();
+        }
+        .boxed();
 
         let slow_stream = stream! {
             tokio::time::sleep(Duration::from_millis(20)).await;
             yield "Slow response";
             tokio::time::sleep(Duration::from_millis(100)).await;
             yield "Slow again";
-        }.boxed();
+        }
+        .boxed();
 
         // Use either to select whichever stream produces a value first
         let results = fast_stream

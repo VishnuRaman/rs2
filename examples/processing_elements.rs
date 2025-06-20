@@ -1,11 +1,11 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::Duration;
-use std::collections::{HashSet, BTreeMap, HashMap};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use rs2_stream::rs2::*;
+use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::runtime::Runtime;
+use tokio::sync::Mutex;
 
 // Define our User type for the example
 #[derive(Debug, Clone, PartialEq)]
@@ -53,11 +53,41 @@ fn main() {
     rt.block_on(async {
         // Create a stream of users to process
         let users = vec![
-            User { id: 1, name: "Alice".to_string(), email: "alice@example.com".to_string(), active: true, role: "admin".to_string() },
-            User { id: 2, name: "Bob".to_string(), email: "bob@example.com".to_string(), active: true, role: "user".to_string() },
-            User { id: 3, name: "Charlie".to_string(), email: "charlie@example.com".to_string(), active: false, role: "user".to_string() },
-            User { id: 4, name: "Diana".to_string(), email: "diana@example.com".to_string(), active: true, role: "moderator".to_string() },
-            User { id: 5, name: "Eve".to_string(), email: "eve@example.com".to_string(), active: true, role: "user".to_string() },
+            User {
+                id: 1,
+                name: "Alice".to_string(),
+                email: "alice@example.com".to_string(),
+                active: true,
+                role: "admin".to_string(),
+            },
+            User {
+                id: 2,
+                name: "Bob".to_string(),
+                email: "bob@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+            },
+            User {
+                id: 3,
+                name: "Charlie".to_string(),
+                email: "charlie@example.com".to_string(),
+                active: false,
+                role: "user".to_string(),
+            },
+            User {
+                id: 4,
+                name: "Diana".to_string(),
+                email: "diana@example.com".to_string(),
+                active: true,
+                role: "moderator".to_string(),
+            },
+            User {
+                id: 5,
+                name: "Eve".to_string(),
+                email: "eve@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+            },
         ];
 
         println!("\n=== Sequential Processing Example ===");
@@ -94,14 +124,20 @@ fn main() {
                 // Process the user profile in parallel (with 3 concurrent tasks max)
                 match process_profile(&user).await {
                     Ok(result) => (user.id, result),
-                    Err(_) => (user.id, format!("Failed to process {}'s profile", user.name)),
+                    Err(_) => (
+                        user.id,
+                        format!("Failed to process {}'s profile", user.name),
+                    ),
                 }
             })
             .collect::<Vec<_>>()
             .await;
 
-        println!("Processed {} profiles in parallel (ordered) in {:?}", 
-                 processed_profiles.len(), start.elapsed());
+        println!(
+            "Processed {} profiles in parallel (ordered) in {:?}",
+            processed_profiles.len(),
+            start.elapsed()
+        );
         for (id, result) in &processed_profiles {
             println!("  User {}: {}", id, result);
         }
@@ -117,14 +153,20 @@ fn main() {
                 // Results will be returned in the order they complete, not input order
                 match update_permissions(&user).await {
                     Ok(result) => (user.id, result),
-                    Err(_) => (user.id, format!("Failed to update {}'s permissions", user.name)),
+                    Err(_) => (
+                        user.id,
+                        format!("Failed to update {}'s permissions", user.name),
+                    ),
                 }
             })
             .collect::<Vec<_>>()
             .await;
 
-        println!("Updated {} user permissions in parallel (unordered) in {:?}", 
-                 permission_updates.len(), start.elapsed());
+        println!(
+            "Updated {} user permissions in parallel (unordered) in {:?}",
+            permission_updates.len(),
+            start.elapsed()
+        );
         for (id, result) in &permission_updates {
             println!("  User {}: {}", id, result);
         }
@@ -135,30 +177,33 @@ fn main() {
         let start = std::time::Instant::now();
 
         // Create three different streams for different user processing tasks
-        let active_users = from_iter(users.clone())
-            .filter_rs2(|user| user.active);
+        let active_users = from_iter(users.clone()).filter_rs2(|user| user.active);
 
-        let admin_users = from_iter(users.clone())
-            .filter_rs2(|user| user.role == "admin");
+        let admin_users = from_iter(users.clone()).filter_rs2(|user| user.role == "admin");
 
-        let regular_users = from_iter(users.clone())
-            .filter_rs2(|user| user.role == "user");
+        let regular_users = from_iter(users.clone()).filter_rs2(|user| user.role == "user");
 
         // Process all three streams in parallel with bounded concurrency
         let streams = vec![
-            active_users.map_rs2(|user| format!("Active: {}", user.name)).boxed(),
-            admin_users.map_rs2(|user| format!("Admin: {}", user.name)).boxed(),
-            regular_users.map_rs2(|user| format!("Regular: {}", user.name)).boxed(),
+            active_users
+                .map_rs2(|user| format!("Active: {}", user.name))
+                .boxed(),
+            admin_users
+                .map_rs2(|user| format!("Admin: {}", user.name))
+                .boxed(),
+            regular_users
+                .map_rs2(|user| format!("Regular: {}", user.name))
+                .boxed(),
         ];
 
         // Create a stream of streams and use par_join_rs2
-        let combined_results = from_iter(streams)
-            .par_join_rs2(3)
-            .collect::<Vec<_>>()
-            .await;
+        let combined_results = from_iter(streams).par_join_rs2(3).collect::<Vec<_>>().await;
 
-        println!("Processed {} streams in parallel in {:?}", 
-                 combined_results.len(), start.elapsed());
+        println!(
+            "Processed {} streams in parallel in {:?}",
+            combined_results.len(),
+            start.elapsed()
+        );
         for result in &combined_results {
             println!("  {}", result);
         }

@@ -6,13 +6,12 @@
 //! 3. Start streaming from a file
 //! 4. Process and display the media chunks
 
-use rs2_stream::media::streaming::{MediaStreamingService, StreamingServiceFactory};
-use rs2_stream::media::types::{MediaStream, MediaType, QualityLevel, MediaChunk};
-use rs2_stream::rs2::*;
-use futures_util::StreamExt;
-use std::path::PathBuf;
 use chrono::Utc;
+use futures_util::StreamExt;
+use rs2_stream::media::streaming::StreamingServiceFactory;
+use rs2_stream::media::types::{MediaChunk, MediaStream, MediaType, QualityLevel};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 #[tokio::main]
@@ -31,17 +30,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metadata: HashMap::new(),
     };
 
-    // Path to the media file
-    let file_path = PathBuf::from("path/to/your/media/file.mp4");
+    // Create a simple test file for this example
+    let file_path = PathBuf::from("examples/test_media.txt");
+
+    // Create test file if it doesn't exist
+    if !file_path.exists() {
+        use std::fs::File;
+        use std::io::Write;
+        let mut file = File::create(&file_path)?;
+        file.write_all(b"This is a test media file for the streaming example. It contains some sample data that will be streamed in chunks.")?;
+        println!("Created test file: {:?}", file_path);
+    }
 
     println!("Starting file stream from: {:?}", file_path);
 
     // Start streaming from the file
-    let chunk_stream = streaming_service.start_file_stream(file_path, stream_config).await;
+    let chunk_stream = streaming_service
+        .start_file_stream(file_path, stream_config)
+        .await;
 
     // Process the chunks
     let mut chunk_count = 0;
-    let mut total_bytes = 0;
+    let mut _total_bytes = 0;
 
     // Pin the stream to the stack
     let mut chunk_stream = std::pin::pin!(chunk_stream);
@@ -49,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Process up to 100 chunks or until the stream ends
     while let Some(chunk) = chunk_stream.next().await {
         chunk_count += 1;
-        total_bytes += chunk.data.len();
+        _total_bytes += chunk.data.len();
 
         println!(
             "Received chunk #{}: type={:?}, size={} bytes, priority={:?}",
@@ -68,12 +78,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get and display metrics
     let metrics = streaming_service.get_metrics().await;
     println!("\nStream Metrics:");
-    println!("  Stream ID: {}", metrics.stream_id);
+    println!("  Name: {}", metrics.name.as_deref().unwrap_or("unknown"));
     println!("  Bytes processed: {}", metrics.bytes_processed);
-    println!("  Chunks processed: {}", metrics.chunks_processed);
-    println!("  Dropped chunks: {}", metrics.dropped_chunks);
-    println!("  Average chunk size: {:.2} bytes", metrics.average_chunk_size);
-    println!("  Buffer utilization: {:.2}%", metrics.buffer_utilization * 100.0);
+    println!("  Items processed: {}", metrics.items_processed);
+    println!("  Errors: {}", metrics.errors);
+    println!(
+        "  Average item size: {:.2} bytes",
+        metrics.average_item_size
+    );
+    println!("  Processing time: {:?}", metrics.processing_time);
 
     // Shutdown the streaming service
     streaming_service.shutdown().await;
@@ -83,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // Helper function to simulate processing a chunk
-fn process_chunk(chunk: &MediaChunk) {
+fn process_chunk(_chunk: &MediaChunk) {
     // In a real application, you would decode and render the chunk
     // For this example, we just simulate processing time
     std::thread::sleep(Duration::from_millis(10));

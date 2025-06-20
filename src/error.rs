@@ -66,7 +66,7 @@ pub enum RetryPolicy {
     Exponential {
         max_retries: usize,
         initial_delay: Duration,
-        multiplier: f64
+        multiplier: f64,
     },
 }
 

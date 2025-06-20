@@ -1,8 +1,8 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::Duration;
+use rs2_stream::rs2::*;
 use std::error::Error;
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
 // Define a simple data structure for our examples
 #[derive(Debug, Clone)]
@@ -13,7 +13,9 @@ struct LogEntry {
 }
 
 // Simulate a slow database operation
-async fn save_logs_to_database(logs: Vec<LogEntry>) -> Result<String, Box<dyn Error + Send + Sync>> {
+async fn save_logs_to_database(
+    logs: Vec<LogEntry>,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
     println!("Saving batch of {} logs to database...", logs.len());
     // Simulate database latency
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -43,16 +45,23 @@ fn main() {
 
         // Create a stream of strings
         let words = from_iter(vec![
-            "hello", "world", "batch", "processing", "example",
-            "with", "rs2", "is", "efficient", "and", "powerful"
+            "hello",
+            "world",
+            "batch",
+            "processing",
+            "example",
+            "with",
+            "rs2",
+            "is",
+            "efficient",
+            "and",
+            "powerful",
         ]);
 
         // Process words in batches of 3, converting each batch to uppercase
         let uppercase_batches = words
             .batch_process_rs2(3, |batch| {
-                batch.into_iter()
-                    .map(|word| word.to_uppercase())
-                    .collect()
+                batch.into_iter().map(|word| word.to_uppercase()).collect()
             })
             .collect::<Vec<_>>()
             .await;
@@ -67,7 +76,11 @@ fn main() {
         // Create a stream of log entries
         let logs = from_iter((0..15).map(|i| LogEntry {
             timestamp: i,
-            level: if i % 3 == 0 { "ERROR".to_string() } else { "INFO".to_string() },
+            level: if i % 3 == 0 {
+                "ERROR".to_string()
+            } else {
+                "INFO".to_string()
+            },
             message: format!("Log message {}", i),
         }));
 
@@ -91,15 +104,16 @@ fn main() {
         // Create a stream of log entries
         let logs = from_iter((0..12).map(|i| LogEntry {
             timestamp: i,
-            level: if i % 3 == 0 { "ERROR".to_string() } else { "INFO".to_string() },
+            level: if i % 3 == 0 {
+                "ERROR".to_string()
+            } else {
+                "INFO".to_string()
+            },
             message: format!("Log message {}", i),
         }));
 
         // First batch the logs
-        let batched_logs = logs
-            .chunks(3)
-            .collect::<Vec<_>>()
-            .await;
+        let batched_logs = logs.chunks(3).collect::<Vec<_>>().await;
 
         // Then process each batch asynchronously
         let results = from_iter(batched_logs)

@@ -1,10 +1,10 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::Duration;
-use std::error::Error;
 use rand::{thread_rng, Rng};
+use rs2_stream::rs2::*;
 use rs2_stream::stream_performance_metrics::HealthThresholds;
+use std::error::Error;
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
 // Simulate a slow operation that may fail sometimes
 async fn process_item(item: i32) -> Result<i32, Box<dyn Error + Send + Sync>> {
@@ -21,23 +21,55 @@ async fn process_item(item: i32) -> Result<i32, Box<dyn Error + Send + Sync>> {
 }
 
 // Enhanced metrics display function
-fn print_enhanced_metrics(name: &str, metrics: &rs2_stream::stream_performance_metrics::StreamMetrics) {
+fn print_enhanced_metrics(
+    name: &str,
+    metrics: &rs2_stream::stream_performance_metrics::StreamMetrics,
+) {
     println!("\n📊 {} Metrics:", name);
     println!("  ✅ Items processed: {}", metrics.items_processed);
     println!("  📦 Bytes processed: {}", metrics.bytes_processed);
     println!("  ⏱️  Processing time: {:?}", metrics.processing_time);
-    println!("  🚀 Throughput (processing): {:.2} items/sec", metrics.throughput_items_per_sec());
-    println!("  📈 Throughput (wall-clock): {:.2} items/sec", metrics.items_per_second);
-    println!("  💾 Bandwidth (processing): {:.2} KB/sec", metrics.throughput_bytes_per_sec() / 1000.0);
-    println!("  📊 Bandwidth (wall-clock): {:.2} KB/sec", metrics.bytes_per_second / 1000.0);
-    println!("  📏 Average item size: {:.1} bytes", metrics.average_item_size);
-    println!("  ❌ Errors: {} ({:.1}%)", metrics.errors, metrics.error_rate * 100.0);
+    println!(
+        "  🚀 Throughput (processing): {:.2} items/sec",
+        metrics.throughput_items_per_sec()
+    );
+    println!(
+        "  📈 Throughput (wall-clock): {:.2} items/sec",
+        metrics.items_per_second
+    );
+    println!(
+        "  💾 Bandwidth (processing): {:.2} KB/sec",
+        metrics.throughput_bytes_per_sec() / 1000.0
+    );
+    println!(
+        "  📊 Bandwidth (wall-clock): {:.2} KB/sec",
+        metrics.bytes_per_second / 1000.0
+    );
+    println!(
+        "  📏 Average item size: {:.1} bytes",
+        metrics.average_item_size
+    );
+    println!(
+        "  ❌ Errors: {} ({:.1}%)",
+        metrics.errors,
+        metrics.error_rate * 100.0
+    );
     println!("  🔄 Retries: {}", metrics.retries);
     println!("  ⚠️  Consecutive errors: {}", metrics.consecutive_errors);
-    println!("  🐌 Peak processing time: {:?}", metrics.peak_processing_time);
+    println!(
+        "  🐌 Peak processing time: {:?}",
+        metrics.peak_processing_time
+    );
     println!("  📊 Backpressure events: {}", metrics.backpressure_events);
     println!("  📋 Queue depth: {}", metrics.queue_depth);
-    println!("  🏥 Health: {}", if metrics.is_healthy() { "✅ Good" } else { "⚠️ Issues" });
+    println!(
+        "  🏥 Health: {}",
+        if metrics.is_healthy() {
+            "✅ Good"
+        } else {
+            "⚠️ Issues"
+        }
+    );
 }
 
 fn main() {
@@ -49,9 +81,10 @@ fn main() {
 
         // Create a stream of numbers
         let numbers = from_iter(1..=20);
-        
+
         // Apply metrics collection to the stream
-        let (metrics_stream, metrics) = numbers.with_metrics_rs2("numbers_stream".to_string(), HealthThresholds::default());
+        let (metrics_stream, metrics) =
+            numbers.with_metrics_rs2("numbers_stream".to_string(), HealthThresholds::default());
 
         // Process the stream with enhanced metrics tracking
         let mut results = Vec::new();
@@ -89,7 +122,8 @@ fn main() {
 
         // Create a stream of numbers that might fail during processing
         let numbers = from_iter(1..=50);
-        let (metrics_stream, metrics) = numbers.with_metrics_rs2("async_processing".to_string(), HealthThresholds::default());
+        let (metrics_stream, metrics) =
+            numbers.with_metrics_rs2("async_processing".to_string(), HealthThresholds::default());
 
         let mut success_count = 0;
         let mut error_count = 0;
@@ -112,7 +146,7 @@ fn main() {
                             let mut m = metrics.lock().await;
                             m.record_processing_time(start.elapsed());
                             if attempts > 0 {
-                                m.retries += attempts;  // Record total retry attempts
+                                m.retries += attempts; // Record total retry attempts
                             }
                         }
                         break;
@@ -129,20 +163,28 @@ fn main() {
 
                         if attempts > max_retries {
                             error_count += 1;
-                            println!("  ❌ Failed to process item {} after {} attempts", item, attempts);
+                            println!(
+                                "  ❌ Failed to process item {} after {} attempts",
+                                item, attempts
+                            );
                             break;
                         } else {
                             retry_count += 1;
                             // Exponential backoff
-                            tokio::time::sleep(Duration::from_millis(50 * 2_u64.pow(attempts as u32))).await;
+                            tokio::time::sleep(Duration::from_millis(
+                                50 * 2_u64.pow(attempts as u32),
+                            ))
+                            .await;
                         }
                     }
                 }
             }
         }
 
-        println!("✅ Successful: {} | ❌ Failed: {} | 🔄 Total retries: {}",
-                 success_count, error_count, retry_count);
+        println!(
+            "✅ Successful: {} | ❌ Failed: {} | 🔄 Total retries: {}",
+            success_count, error_count, retry_count
+        );
 
         let metrics_data = metrics.lock().await;
         print_enhanced_metrics("Error-Prone Processing", &*metrics_data);
@@ -151,7 +193,7 @@ fn main() {
 
         // Test different transformations with enhanced metrics
 
-        // 1. Filter operation 
+        // 1. Filter operation
         let (filter_stream, filter_metrics) = from_iter(1..=1000)
             .with_metrics_rs2("filter_operation".to_string(), HealthThresholds::default());
 
@@ -179,7 +221,7 @@ fn main() {
                     return false; // Filter out this item due to "error"
                 }
 
-                n % 2 == 0  // Keep only even numbers
+                n % 2 == 0 // Keep only even numbers
             })
             .collect::<Vec<_>>()
             .await;
@@ -222,8 +264,10 @@ fn main() {
             .await;
 
         // 3. Throttled operation
-        let (throttled_stream, throttled_metrics) = from_iter(1..=100)
-            .with_metrics_rs2("throttled_operation".to_string(), HealthThresholds::default());
+        let (throttled_stream, throttled_metrics) = from_iter(1..=100).with_metrics_rs2(
+            "throttled_operation".to_string(),
+            HealthThresholds::default(),
+        );
 
         // We need to manually record errors for throttled operation
         // since throttle_rs2 doesn't take a closure where we could add error logic
@@ -231,7 +275,8 @@ fn main() {
 
         // Spawn a task to simulate random errors during throttled processing
         tokio::spawn(async move {
-            for _ in 0..20 { // Generate about 20 errors
+            for _ in 0..20 {
+                // Generate about 20 errors
                 if thread_rng().gen_ratio(1, 5) {
                     let mut m = throttled_metrics_for_errors.lock().await;
                     m.record_error();
@@ -241,7 +286,7 @@ fn main() {
         });
 
         let throttled_results = throttled_stream
-            .throttle_rs2(Duration::from_millis(10))  // Throttle to simulate load control
+            .throttle_rs2(Duration::from_millis(10)) // Throttle to simulate load control
             .collect::<Vec<_>>()
             .await;
 
@@ -254,7 +299,7 @@ fn main() {
         let chunked_metrics_for_errors = chunked_metrics.clone();
 
         let chunked_results = chunked_stream
-            .chunk_rs2(5)  // Process in chunks of 5
+            .chunk_rs2(5) // Process in chunks of 5
             .enumerate()
             .map_rs2(move |(chunk_idx, chunk)| {
                 // Simulate queue depth changes
@@ -278,7 +323,7 @@ fn main() {
                     });
                 }
 
-                chunk.len()  // Return chunk size
+                chunk.len() // Return chunk size
             })
             .collect::<Vec<_>>()
             .await;
@@ -303,19 +348,60 @@ fn main() {
         println!("  📦 Created {} chunks", chunked_results.len());
 
         println!("\n=== Performance Summary ===");
-        println!("🏆 Fastest throughput: Map operation ({:.2} items/sec)",
-                 map_data.throughput_items_per_sec());
-        println!("🐌 Slowest throughput: Throttled operation ({:.2} items/sec)",
-                 throttled_data.throughput_items_per_sec());
-        println!("📊 Most selective: Filter operation ({:.1}% pass rate)",
-                 filter_results.len() as f64 / 1000.0 * 100.0);
+        println!(
+            "🏆 Fastest throughput: Map operation ({:.2} items/sec)",
+            map_data.throughput_items_per_sec()
+        );
+        println!(
+            "🐌 Slowest throughput: Throttled operation ({:.2} items/sec)",
+            throttled_data.throughput_items_per_sec()
+        );
+        println!(
+            "📊 Most selective: Filter operation ({:.1}% pass rate)",
+            filter_results.len() as f64 / 1000.0 * 100.0
+        );
 
         // Health check summary
         println!("\n🏥 Health Check Summary:");
-        println!("  Metrics collection: {}", if metrics_data.is_healthy() { "✅ Healthy" } else { "⚠️ Issues" });
-        println!("  Filter operation: {}", if filter_data.is_healthy() { "✅ Healthy" } else { "⚠️ Issues" });
-        println!("  Map operation: {}", if map_data.is_healthy() { "✅ Healthy" } else { "⚠️ Issues" });
-        println!("  Throttled operation: {}", if throttled_data.is_healthy() { "✅ Healthy" } else { "⚠️ Issues" });
-        println!("  Chunked operation: {}", if chunked_data.is_healthy() { "✅ Healthy" } else { "⚠️ Issues" });
+        println!(
+            "  Metrics collection: {}",
+            if metrics_data.is_healthy() {
+                "✅ Healthy"
+            } else {
+                "⚠️ Issues"
+            }
+        );
+        println!(
+            "  Filter operation: {}",
+            if filter_data.is_healthy() {
+                "✅ Healthy"
+            } else {
+                "⚠️ Issues"
+            }
+        );
+        println!(
+            "  Map operation: {}",
+            if map_data.is_healthy() {
+                "✅ Healthy"
+            } else {
+                "⚠️ Issues"
+            }
+        );
+        println!(
+            "  Throttled operation: {}",
+            if throttled_data.is_healthy() {
+                "✅ Healthy"
+            } else {
+                "⚠️ Issues"
+            }
+        );
+        println!(
+            "  Chunked operation: {}",
+            if chunked_data.is_healthy() {
+                "✅ Healthy"
+            } else {
+                "⚠️ Issues"
+            }
+        );
     });
 }

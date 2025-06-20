@@ -1,8 +1,8 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
 use rs2_stream::pipe;
 use rs2_stream::pipe::*;
+use rs2_stream::rs2::*;
+use tokio::runtime::Runtime;
 
 #[test]
 fn test_pipe_map() {
@@ -73,6 +73,15 @@ fn test_pipe_ext_compose() {
         let pipe = double.compose(to_string);
 
         let result = pipe.apply(stream).collect::<Vec<_>>().await;
-        assert_eq!(result, vec!["2".to_string(), "4".to_string(), "6".to_string(), "8".to_string(), "10".to_string()]);
+        assert_eq!(
+            result,
+            vec![
+                "2".to_string(),
+                "4".to_string(),
+                "6".to_string(),
+                "8".to_string(),
+                "10".to_string()
+            ]
+        );
     });
 }

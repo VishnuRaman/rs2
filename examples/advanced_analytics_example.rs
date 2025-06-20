@@ -7,12 +7,12 @@
 //! This example shows real-world scenarios like user behavior analysis
 //! and system monitoring.
 
-use rs2_stream::rs2::*;
-use rs2_stream::advanced_analytics::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
+use rs2_stream::advanced_analytics::*;
+use rs2_stream::rs2::*;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
-use serde::{Serialize, Deserialize};
+use tokio::runtime::Runtime;
 
 // ================================
 // Data Models
@@ -68,13 +68,17 @@ async fn time_windowed_aggregations() {
             user_id: 1,
             event_type: "login".to_string(),
             timestamp: now,
-            metadata: [("ip".to_string(), "192.168.1.1".to_string())].into_iter().collect(),
+            metadata: [("ip".to_string(), "192.168.1.1".to_string())]
+                .into_iter()
+                .collect(),
         },
         UserEvent {
             user_id: 2,
             event_type: "purchase".to_string(),
             timestamp: now + Duration::from_secs(10),
-            metadata: [("amount".to_string(), "100.0".to_string())].into_iter().collect(),
+            metadata: [("amount".to_string(), "100.0".to_string())]
+                .into_iter()
+                .collect(),
         },
         UserEvent {
             user_id: 1,
@@ -106,7 +110,10 @@ async fn time_windowed_aggregations() {
             let mut user_ids = std::collections::HashSet::new();
             for event in &window.events {
                 user_ids.insert(event.user_id);
-                *stats.event_types.entry(event.event_type.clone()).or_insert(0) += 1;
+                *stats
+                    .event_types
+                    .entry(event.event_type.clone())
+                    .or_insert(0) += 1;
             }
             stats.unique_users = user_ids.len();
 
@@ -117,7 +124,10 @@ async fn time_windowed_aggregations() {
     println!("\n[Results] Windowed User Event Statistics:");
     for (i, stats) in results.iter().enumerate() {
         println!("  Window {}:", i + 1);
-        println!("    Time: {:?} - {:?}", stats.window_start, stats.window_end);
+        println!(
+            "    Time: {:?} - {:?}",
+            stats.window_start, stats.window_end
+        );
         println!("    Events: {}", stats.event_count);
         println!("    Unique Users: {}", stats.unique_users);
         println!("    Event Types: {:?}", stats.event_types);
@@ -149,7 +159,9 @@ async fn time_windowed_joins() {
             user_id: 2,
             event_type: "purchase".to_string(),
             timestamp: now + Duration::from_secs(2),
-            metadata: [("amount".to_string(), "50.0".to_string())].into_iter().collect(),
+            metadata: [("amount".to_string(), "50.0".to_string())]
+                .into_iter()
+                .collect(),
         },
     ];
 
@@ -188,7 +200,10 @@ async fn time_windowed_joins() {
     println!("\n[Results] Enriched Events:");
     for (i, (event, profile)) in results.iter().enumerate() {
         println!("  Match {}:", i + 1);
-        println!("    User {} ({}): {}", event.user_id, profile.location, event.event_type);
+        println!(
+            "    User {} ({}): {}",
+            event.user_id, profile.location, event.event_type
+        );
         println!("    Risk Score: {}", profile.risk_score);
     }
     println!("--------------------------------------------------");
@@ -264,15 +279,24 @@ async fn system_monitoring() {
                 }
             }
 
-            println!("System Health Window: {:?} - {:?}", window.start_time, window.end_time);
+            println!(
+                "System Health Window: {:?} - {:?}",
+                window.start_time, window.end_time
+            );
             if cpu_count > 0 {
                 println!("  Average CPU Usage: {:.1}%", total_cpu / cpu_count as f64);
             }
             if response_count > 0 {
-                println!("  Average Response Time: {:.0}ms", total_response_time / response_count as f64);
+                println!(
+                    "  Average Response Time: {:.0}ms",
+                    total_response_time / response_count as f64
+                );
             }
             if error_count > 0 {
-                println!("  Average Error Rate: {:.1}%", total_error_rate / error_count as f64);
+                println!(
+                    "  Average Error Rate: {:.1}%",
+                    total_error_rate / error_count as f64
+                );
             }
         });
 
@@ -301,4 +325,4 @@ fn main() {
         println!("📋 Note: Complex Event Processing (CEP) is planned for future releases");
         println!("==================================================\n");
     });
-} 
+}

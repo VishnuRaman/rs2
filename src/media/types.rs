@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserActivity {  // Add 'pub' here
+pub struct UserActivity {
+    // Add 'pub' here
     /// Unique identifier for the activity
-    pub id: String,        // Make fields public too
+    pub id: String, // Make fields public too
     /// User ID who performed the activity
     pub user_id: u64,
     /// Type of activity (e.g., "login", "purchase", "view")
@@ -20,12 +20,11 @@ pub struct UserActivity {  // Add 'pub' here
     pub metadata: HashMap<String, String>,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MediaPriority {
-    High = 3,    // I-frames, audio, critical metadata
-    Normal = 2,  // P-frames, standard video data
-    Low = 1,     // B-frames, thumbnails, preview data
+    High = 3,   // I-frames, audio, critical metadata
+    Normal = 2, // P-frames, standard video data
+    Low = 1,    // B-frames, thumbnails, preview data
 }
 
 impl Default for MediaPriority {
@@ -45,23 +44,22 @@ pub struct MediaStream {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MediaType {
     Video,
     Audio,
     Mixed, // Audio + Video
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum QualityLevel {
-    Low,      // 240p, 64kbps audio
-    Medium,   // 480p, 128kbps audio  
-    High,     // 720p, 192kbps audio
+    Low,       // 240p, 64kbps audio
+    Medium,    // 480p, 128kbps audio
+    High,      // 720p, 192kbps audio
     UltraHigh, // 1080p+, 320kbps audio
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq)]
-#[derive(PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct MediaChunk {
     pub stream_id: String,
     pub sequence_number: u64,
@@ -75,12 +73,12 @@ pub struct MediaChunk {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChunkType {
-    VideoIFrame,    // Key frame - high priority
-    VideoPFrame,    // Predicted frame - normal priority  
-    VideoBFrame,    // Bidirectional frame - low priority
-    Audio,          // Audio data - high priority
-    Metadata,       // Stream metadata - high priority
-    Thumbnail,      // Preview images - low priority
+    VideoIFrame, // Key frame - high priority
+    VideoPFrame, // Predicted frame - normal priority
+    VideoBFrame, // Bidirectional frame - low priority
+    Audio,       // Audio data - high priority
+    Metadata,    // Stream metadata - high priority
+    Thumbnail,   // Preview images - low priority
 }
 
 impl ChunkType {

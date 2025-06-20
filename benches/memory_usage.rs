@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rs2_stream::rs2::*;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -16,23 +16,19 @@ fn bench_memory_efficiency(c: &mut Criterion) {
     let mut group = c.benchmark_group("memory_efficiency");
 
     for size in [10_000, 100_000, 1_000_000].iter() {
-        group.bench_with_input(
-            BenchmarkId::new("large_objects", size),
-            size,
-            |b, &size| {
-                b.to_async(&rt).iter(|| async {
-                    let large_strings: Vec<String> = (0..size)
-                        .map(|i| format!("Large string data {}: {}", i, "x".repeat(100)))
-                        .collect();
+        group.bench_with_input(BenchmarkId::new("large_objects", size), size, |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let large_strings: Vec<String> = (0..size)
+                    .map(|i| format!("Large string data {}: {}", i, "x".repeat(100)))
+                    .collect();
 
-                    let result = from_iter(large_strings)
-                        .map_rs2(|s| black_box(s.len()))
-                        .fold_rs2(0usize, |acc, len| async move { acc + len })
-                        .await;
-                    black_box(result)
-                });
-            },
-        );
+                let result = from_iter(large_strings)
+                    .map_rs2(|s| black_box(s.len()))
+                    .fold_rs2(0usize, |acc, len| async move { acc + len })
+                    .await;
+                black_box(result)
+            });
+        });
 
         group.bench_with_input(
             BenchmarkId::new("chunked_processing", size),

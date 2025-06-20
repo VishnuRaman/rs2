@@ -1,5 +1,5 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
 
 // Define our User type for the example
@@ -35,9 +35,27 @@ fn main() {
 
         // Create a stream from an iterator
         let users = vec![
-            User { id: 1, name: "Alice".to_string(), email: "alice@example.com".to_string(), active: true, role: "admin".to_string() },
-            User { id: 2, name: "Bob".to_string(), email: "bob@example.com".to_string(), active: true, role: "user".to_string() },
-            User { id: 3, name: "Charlie".to_string(), email: "charlie@example.com".to_string(), active: false, role: "user".to_string() },
+            User {
+                id: 1,
+                name: "Alice".to_string(),
+                email: "alice@example.com".to_string(),
+                active: true,
+                role: "admin".to_string(),
+            },
+            User {
+                id: 2,
+                name: "Bob".to_string(),
+                email: "bob@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+            },
+            User {
+                id: 3,
+                name: "Charlie".to_string(),
+                email: "charlie@example.com".to_string(),
+                active: false,
+                role: "user".to_string(),
+            },
         ];
 
         let users_stream = from_iter(users);
