@@ -1,5 +1,5 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
 
 // Define our User type for the example
@@ -17,11 +17,41 @@ fn main() {
     rt.block_on(async {
         // Create a stream of users
         let users = vec![
-            User { id: 1, name: "Alice".to_string(), email: "alice@example.com".to_string(), active: true, role: "admin".to_string() },
-            User { id: 2, name: "Bob".to_string(), email: "bob@example.com".to_string(), active: true, role: "user".to_string() },
-            User { id: 3, name: "Charlie".to_string(), email: "charlie@example.com".to_string(), active: false, role: "user".to_string() },
-            User { id: 4, name: "Diana".to_string(), email: "diana@example.com".to_string(), active: true, role: "moderator".to_string() },
-            User { id: 5, name: "Eve".to_string(), email: "eve@example.com".to_string(), active: true, role: "user".to_string() },
+            User {
+                id: 1,
+                name: "Alice".to_string(),
+                email: "alice@example.com".to_string(),
+                active: true,
+                role: "admin".to_string(),
+            },
+            User {
+                id: 2,
+                name: "Bob".to_string(),
+                email: "bob@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+            },
+            User {
+                id: 3,
+                name: "Charlie".to_string(),
+                email: "charlie@example.com".to_string(),
+                active: false,
+                role: "user".to_string(),
+            },
+            User {
+                id: 4,
+                name: "Diana".to_string(),
+                email: "diana@example.com".to_string(),
+                active: true,
+                role: "moderator".to_string(),
+            },
+            User {
+                id: 5,
+                name: "Eve".to_string(),
+                email: "eve@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+            },
         ];
 
         // Take the first 2 users
@@ -30,7 +60,10 @@ fn main() {
             .collect::<Vec<_>>()
             .await;
 
-        println!("First two users: {} and {}", first_two_users[0].name, first_two_users[1].name);
+        println!(
+            "First two users: {} and {}",
+            first_two_users[0].name, first_two_users[1].name
+        );
 
         // Skip the first 3 users
         let last_two_users = from_iter(users.clone())
@@ -38,7 +71,10 @@ fn main() {
             .collect::<Vec<_>>()
             .await;
 
-        println!("Last two users: {} and {}", last_two_users[0].name, last_two_users[1].name);
+        println!(
+            "Last two users: {} and {}",
+            last_two_users[0].name, last_two_users[1].name
+        );
 
         // Take users while they are active
         let initial_active_users = from_iter(users.clone())
@@ -55,9 +91,7 @@ fn main() {
         let non_standard_users = from_iter(users.clone())
             .drop_while_rs2(|user| {
                 let user_clone = user.clone();
-                async move { 
-                    user_clone.role == "admin" || user_clone.role == "user" 
-                }
+                async move { user_clone.role == "admin" || user_clone.role == "user" }
             })
             .collect::<Vec<_>>()
             .await;

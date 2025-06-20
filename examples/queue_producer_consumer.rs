@@ -1,8 +1,8 @@
-use rs2_stream::queue::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::queue::*;
+use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::time::{sleep, Duration};
-use std::sync::Arc;
 
 fn main() {
     let rt = Runtime::new().unwrap();

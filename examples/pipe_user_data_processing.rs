@@ -1,8 +1,8 @@
+use futures_util::stream::StreamExt;
 use rs2_stream::pipe::*;
 use rs2_stream::rs2::*;
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
 use std::collections::HashMap;
+use tokio::runtime::Runtime;
 
 // Define our User type
 #[derive(Debug, Clone, PartialEq)]
@@ -30,11 +30,46 @@ fn main() {
     rt.block_on(async {
         // Create a stream of users
         let users = vec![
-            User { id: 1, name: "Alice".to_string(), email: "alice@example.com".to_string(), active: true, role: "admin".to_string(), login_count: 120 },
-            User { id: 2, name: "Bob".to_string(), email: "bob@example.com".to_string(), active: true, role: "user".to_string(), login_count: 45 },
-            User { id: 3, name: "Charlie".to_string(), email: "charlie@example.com".to_string(), active: false, role: "user".to_string(), login_count: 5 },
-            User { id: 4, name: "Diana".to_string(), email: "diana@example.com".to_string(), active: true, role: "moderator".to_string(), login_count: 80 },
-            User { id: 5, name: "Eve".to_string(), email: "eve@example.com".to_string(), active: true, role: "user".to_string(), login_count: 30 },
+            User {
+                id: 1,
+                name: "Alice".to_string(),
+                email: "alice@example.com".to_string(),
+                active: true,
+                role: "admin".to_string(),
+                login_count: 120,
+            },
+            User {
+                id: 2,
+                name: "Bob".to_string(),
+                email: "bob@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+                login_count: 45,
+            },
+            User {
+                id: 3,
+                name: "Charlie".to_string(),
+                email: "charlie@example.com".to_string(),
+                active: false,
+                role: "user".to_string(),
+                login_count: 5,
+            },
+            User {
+                id: 4,
+                name: "Diana".to_string(),
+                email: "diana@example.com".to_string(),
+                active: true,
+                role: "moderator".to_string(),
+                login_count: 80,
+            },
+            User {
+                id: 5,
+                name: "Eve".to_string(),
+                email: "eve@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+                login_count: 30,
+            },
         ];
 
         // Create pipes for different transformations
@@ -72,13 +107,14 @@ fn main() {
         // Print the results
         println!("User Statistics:");
         for stats in user_stats {
-            println!("  - {} ({}): {} usage", stats.name, stats.role, stats.login_frequency);
+            println!(
+                "  - {} ({}): {} usage",
+                stats.name, stats.role, stats.login_frequency
+            );
         }
 
         // Group users by login frequency using another pipe
-        let group_by_frequency = map(|stats: UserStats| {
-            (stats.login_frequency, stats)
-        });
+        let group_by_frequency = map(|stats: UserStats| (stats.login_frequency, stats));
 
         // Apply the grouping pipe to the stats stream
         let user_stream = from_iter(users);
@@ -90,7 +126,10 @@ fn main() {
         let grouped_stats = grouped_stream.collect::<Vec<_>>().await;
 
         for (frequency, stats) in grouped_stats {
-            frequency_groups.entry(frequency).or_insert_with(Vec::new).push(stats);
+            frequency_groups
+                .entry(frequency)
+                .or_insert_with(Vec::new)
+                .push(stats);
         }
 
         // Print the grouped results

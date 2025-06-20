@@ -1,14 +1,14 @@
+use futures_util::StreamExt;
+use rs2_stream::connectors::kafka_connector::KafkaConfig;
 use rs2_stream::connectors::*;
 use rs2_stream::rs2::*;
-use std::time::Duration;
-use testcontainers::*;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::kafka::apache::{Kafka, KAFKA_PORT};
-use futures_util::StreamExt;
-use tokio::time::sleep;
-use rs2_stream::connectors::kafka_connector::KafkaConfig;
-use uuid::Uuid;
 use serial_test::serial;
+use std::time::Duration;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::*;
+use testcontainers_modules::kafka::apache::{Kafka, KAFKA_PORT};
+use tokio::time::sleep;
+use uuid::Uuid;
 
 struct KafkaTestEnvironment {
     pub connector: KafkaConnector,
@@ -22,10 +22,7 @@ struct KafkaTestEnvironment {
 impl KafkaTestEnvironment {
     async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         // Start Kafka container with JVM image
-        let kafka_container = Kafka::default()
-            .with_jvm_image()
-            .start()
-            .await?;
+        let kafka_container = Kafka::default().with_jvm_image().start().await?;
 
         // Get the bootstrap servers
         let bootstrap_servers = format!(
@@ -38,7 +35,10 @@ impl KafkaTestEnvironment {
 
         // Wait for Kafka to be ready
         for i in 0..30 {
-            if <KafkaConnector as StreamConnector<String>>::health_check(&connector).await.is_ok() {
+            if <KafkaConnector as StreamConnector<String>>::health_check(&connector)
+                .await
+                .is_ok()
+            {
                 break;
             }
             if i == 29 {
@@ -104,13 +104,17 @@ async fn test_kafka_connector_with_testcontainers() {
     ];
 
     let producer_stream = from_iter(test_messages.clone());
-    let metadata = env.connector
+    let metadata = env
+        .connector
         .to_sink(producer_stream, env.producer_config())
         .await
         .unwrap();
 
     println!("Messages produced: {}", metadata.messages_produced);
-    assert_eq!(metadata.messages_produced, 3, "Should have produced 3 messages");
+    assert_eq!(
+        metadata.messages_produced, 3,
+        "Should have produced 3 messages"
+    );
     assert_eq!(metadata.topic, env.test_topic);
     assert!(metadata.bytes_sent > 0, "Should have sent some bytes");
 
@@ -118,7 +122,8 @@ async fn test_kafka_connector_with_testcontainers() {
     sleep(Duration::from_secs(2)).await;
 
     println!("Starting consumer test to verify messages");
-    let consumer_stream = env.connector
+    let consumer_stream = env
+        .connector
         .from_source(env.consumer_config("test-group"))
         .await
         .expect("Failed to create consumer stream");
@@ -126,16 +131,25 @@ async fn test_kafka_connector_with_testcontainers() {
     // Collect messages from the stream with a timeout
     let received_messages: Vec<String> = tokio::time::timeout(
         Duration::from_secs(10),
-        consumer_stream.take(test_messages.len()).collect::<Vec<_>>()
-    ).await.expect("Timed out waiting for messages");
+        consumer_stream
+            .take(test_messages.len())
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .expect("Timed out waiting for messages");
 
     // Print received messages for debugging
     println!("Received messages: {:?}", received_messages);
     println!("Expected messages: {:?}", test_messages);
 
     // Assert that we received all the messages we sent
-    assert_eq!(received_messages.len(), test_messages.len(),
-               "Received {} messages, expected {}", received_messages.len(), test_messages.len());
+    assert_eq!(
+        received_messages.len(),
+        test_messages.len(),
+        "Received {} messages, expected {}",
+        received_messages.len(),
+        test_messages.len()
+    );
 
     // Sort both for comparison since order might not be preserved
     let mut received_sorted = received_messages.clone();
@@ -144,9 +158,16 @@ async fn test_kafka_connector_with_testcontainers() {
     expected_sorted.sort();
 
     // Compare each message
-    for (i, (received, expected)) in received_sorted.iter().zip(expected_sorted.iter()).enumerate() {
-        assert_eq!(received, expected, "Message {} doesn't match: got {:?}, expected {:?}",
-                   i, received, expected);
+    for (i, (received, expected)) in received_sorted
+        .iter()
+        .zip(expected_sorted.iter())
+        .enumerate()
+    {
+        assert_eq!(
+            received, expected,
+            "Message {} doesn't match: got {:?}, expected {:?}",
+            i, received, expected
+        );
     }
     println!("✅ Basic producer/consumer test passed");
 
@@ -163,7 +184,8 @@ async fn test_kafka_connector_with_testcontainers() {
 
     // Send the large dataset
     let producer_stream = from_iter(large_dataset.clone());
-    let metadata = env.connector
+    let metadata = env
+        .connector
         .to_sink(producer_stream, env.producer_config())
         .await
         .unwrap();
@@ -172,8 +194,14 @@ async fn test_kafka_connector_with_testcontainers() {
     println!("Backpressure test completed in: {:?}", elapsed);
     println!("Messages sent: {}", metadata.messages_produced);
 
-    assert_eq!(metadata.messages_produced, 500, "Should have produced 500 messages");
-    assert!(metadata.bytes_sent > 50000, "Should have sent at least 50KB of data");
+    assert_eq!(
+        metadata.messages_produced, 500,
+        "Should have produced 500 messages"
+    );
+    assert!(
+        metadata.bytes_sent > 50000,
+        "Should have sent at least 50KB of data"
+    );
     println!("✅ Backpressure test passed");
 
     // ===== PART 4: Multiple Consumers Test =====
@@ -222,12 +250,14 @@ async fn test_kafka_connector_with_testcontainers() {
     };
 
     // Start both consumers
-    let consumer_stream_1 = env.connector
+    let consumer_stream_1 = env
+        .connector
         .from_source(consumer_config_1)
         .await
         .expect("Failed to create first consumer");
 
-    let consumer_stream_2 = env.connector
+    let consumer_stream_2 = env
+        .connector
         .from_source(consumer_config_2)
         .await
         .expect("Failed to create second consumer");
@@ -235,22 +265,36 @@ async fn test_kafka_connector_with_testcontainers() {
     // Collect messages from both consumers with a timeout
     let received_1: Vec<String> = tokio::time::timeout(
         Duration::from_secs(10),
-        consumer_stream_1.take(multi_test_data.len()).collect::<Vec<_>>()
-    ).await.unwrap_or_default();
+        consumer_stream_1
+            .take(multi_test_data.len())
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .unwrap_or_default();
 
     let received_2: Vec<String> = tokio::time::timeout(
         Duration::from_secs(10),
-        consumer_stream_2.take(multi_test_data.len()).collect::<Vec<_>>()
-    ).await.unwrap_or_default();
+        consumer_stream_2
+            .take(multi_test_data.len())
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .unwrap_or_default();
 
     println!("Consumer 1 received {} messages", received_1.len());
     println!("Consumer 2 received {} messages", received_2.len());
 
     // With different consumer groups, each consumer should receive all messages
-    assert_eq!(received_1.len(), multi_test_data.len(), 
-               "Consumer 1 should receive all messages");
-    assert_eq!(received_2.len(), multi_test_data.len(), 
-               "Consumer 2 should receive all messages");
+    assert_eq!(
+        received_1.len(),
+        multi_test_data.len(),
+        "Consumer 1 should receive all messages"
+    );
+    assert_eq!(
+        received_2.len(),
+        multi_test_data.len(),
+        "Consumer 2 should receive all messages"
+    );
 
     // Verify the content of the messages for both consumers
     let mut received_1_sorted = received_1.clone();
@@ -262,10 +306,14 @@ async fn test_kafka_connector_with_testcontainers() {
     let mut expected = multi_test_data.clone();
     expected.sort();
 
-    assert_eq!(received_1_sorted, expected, 
-               "Consumer 1 should receive all expected messages");
-    assert_eq!(received_2_sorted, expected, 
-               "Consumer 2 should receive all expected messages");
+    assert_eq!(
+        received_1_sorted, expected,
+        "Consumer 1 should receive all expected messages"
+    );
+    assert_eq!(
+        received_2_sorted, expected,
+        "Consumer 2 should receive all expected messages"
+    );
     println!("✅ Multiple consumers test passed");
 
     // ===== PART 5: Consumer Group Offset Test =====
@@ -282,9 +330,7 @@ async fn test_kafka_connector_with_testcontainers() {
     };
 
     // Produce initial batch of messages
-    let initial_messages: Vec<String> = (0..10)
-        .map(|i| format!("Initial message {}", i))
-        .collect();
+    let initial_messages: Vec<String> = (0..10).map(|i| format!("Initial message {}", i)).collect();
 
     println!("Producing initial batch of messages");
     let producer_stream = from_iter(initial_messages.clone());
@@ -306,17 +352,24 @@ async fn test_kafka_connector_with_testcontainers() {
 
     // Consume the initial batch
     println!("Consuming initial batch of messages");
-    let consumer_stream = env.connector
+    let consumer_stream = env
+        .connector
         .from_source(offset_consumer_config.clone())
         .await
         .expect("Failed to create consumer");
 
     let received_initial: Vec<String> = tokio::time::timeout(
         Duration::from_secs(10),
-        consumer_stream.take(10).collect::<Vec<_>>()
-    ).await.expect("Timed out waiting for messages");
+        consumer_stream.take(10).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("Timed out waiting for messages");
 
-    assert_eq!(received_initial.len(), 10, "Should receive all 10 initial messages");
+    assert_eq!(
+        received_initial.len(),
+        10,
+        "Should receive all 10 initial messages"
+    );
 
     // Produce second batch of messages
     let second_batch: Vec<String> = (10..20)
@@ -336,23 +389,36 @@ async fn test_kafka_connector_with_testcontainers() {
     // Create a new consumer with the same group ID
     // It should only receive the second batch since the group offset was committed
     println!("Creating new consumer with same group ID");
-    let consumer_stream = env.connector
+    let consumer_stream = env
+        .connector
         .from_source(offset_consumer_config.clone())
         .await
         .expect("Failed to create consumer");
 
     let received_second: Vec<String> = tokio::time::timeout(
         Duration::from_secs(10),
-        consumer_stream.take(10).collect::<Vec<_>>()
-    ).await.expect("Timed out waiting for messages");
+        consumer_stream.take(10).collect::<Vec<_>>(),
+    )
+    .await
+    .expect("Timed out waiting for messages");
 
-    println!("Second consumer received {} messages", received_second.len());
-    assert_eq!(received_second.len(), 10, "Should receive only the 10 new messages");
+    println!(
+        "Second consumer received {} messages",
+        received_second.len()
+    );
+    assert_eq!(
+        received_second.len(),
+        10,
+        "Should receive only the 10 new messages"
+    );
 
     // Verify the messages are from the second batch
     for msg in &received_second {
-        assert!(msg.contains("Second batch"), 
-                "Message should be from second batch: {}", msg);
+        assert!(
+            msg.contains("Second batch"),
+            "Message should be from second batch: {}",
+            msg
+        );
     }
 
     println!("✅ Consumer group offset test passed");

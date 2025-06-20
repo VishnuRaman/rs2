@@ -1,9 +1,8 @@
-use rs2_stream::connectors::{ConnectorError, StreamConnector, CommonConfig};
-use rs2_stream::rs2::*;
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::Duration;
 use async_trait::async_trait;
+use futures_util::stream::StreamExt;
+use rs2_stream::connectors::{CommonConfig, ConnectorError, StreamConnector};
+use rs2_stream::rs2::*;
+use tokio::runtime::Runtime;
 
 // Mock connector for testing
 struct MockConnector {
@@ -34,7 +33,9 @@ impl StreamConnector<String> for MockConnector {
 
     async fn from_source(&self, config: Self::Config) -> Result<RS2Stream<String>, Self::Error> {
         if !self.healthy {
-            return Err(ConnectorError::ConnectionFailed("Mock connector is unhealthy".to_string()));
+            return Err(ConnectorError::ConnectionFailed(
+                "Mock connector is unhealthy".to_string(),
+            ));
         }
 
         // Create a stream of mock messages
@@ -47,9 +48,15 @@ impl StreamConnector<String> for MockConnector {
         Ok(from_iter(messages))
     }
 
-    async fn to_sink(&self, stream: RS2Stream<String>, config: Self::Config) -> Result<Self::Metadata, Self::Error> {
+    async fn to_sink(
+        &self,
+        stream: RS2Stream<String>,
+        config: Self::Config,
+    ) -> Result<Self::Metadata, Self::Error> {
         if !self.healthy {
-            return Err(ConnectorError::ConnectionFailed("Mock connector is unhealthy".to_string()));
+            return Err(ConnectorError::ConnectionFailed(
+                "Mock connector is unhealthy".to_string(),
+            ));
         }
 
         // Count the messages in the stream
@@ -68,7 +75,9 @@ impl StreamConnector<String> for MockConnector {
 
     async fn metadata(&self) -> Result<Self::Metadata, Self::Error> {
         if !self.healthy {
-            return Err(ConnectorError::ConnectionFailed("Mock connector is unhealthy".to_string()));
+            return Err(ConnectorError::ConnectionFailed(
+                "Mock connector is unhealthy".to_string(),
+            ));
         }
 
         Ok(MockMetadata {
@@ -248,10 +257,7 @@ fn test_mock_connector_sink_unhealthy() {
         };
 
         // Create a stream of messages
-        let messages = vec![
-            "Test message 1".to_string(),
-            "Test message 2".to_string(),
-        ];
+        let messages = vec!["Test message 1".to_string(), "Test message 2".to_string()];
         let stream = from_iter(messages);
 
         // Test to_sink should fail
@@ -295,7 +301,10 @@ fn test_connector_with_transformations() {
 
         // Verify the transformed stream
         assert_eq!(transformed_stream.len(), 1);
-        assert_eq!(transformed_stream[0], "Transformed: Message 2 from test-topic");
+        assert_eq!(
+            transformed_stream[0],
+            "Transformed: Message 2 from test-topic"
+        );
 
         // Create a new stream with transformations and send to sink
         let new_stream = from_iter(vec![

@@ -6,12 +6,11 @@
 //! 3. Process events in a stream
 //! 4. Implement a simple event handler
 
+use chrono::Utc;
+use futures_util::StreamExt;
 use rs2_stream::media::events::MediaStreamEvent;
 use rs2_stream::media::types::{QualityLevel, UserActivity};
 use rs2_stream::rs2::*;
-use futures_util::StreamExt;
-use chrono::{DateTime, Utc};
-use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
 
 #[tokio::main]
@@ -37,10 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Print the activity
         println!(
-            "Activity: {} by user {} at {}", 
-            activity.activity_type,
-            activity.user_id,
-            activity.timestamp
+            "Activity: {} by user {} at {}",
+            activity.activity_type, activity.user_id, activity.timestamp
         );
 
         // Print some metadata
@@ -85,7 +82,6 @@ fn create_sample_event_stream() -> RS2Stream<MediaStreamEvent> {
             quality: QualityLevel::High,
             timestamp: now,
         },
-
         // Quality changed after 2 seconds
         MediaStreamEvent::QualityChanged {
             stream_id: stream_id.clone(),
@@ -94,7 +90,6 @@ fn create_sample_event_stream() -> RS2Stream<MediaStreamEvent> {
             new_quality: QualityLevel::Medium,
             timestamp: now + chrono::Duration::seconds(2),
         },
-
         // Buffer underrun after 5 seconds
         MediaStreamEvent::BufferUnderrun {
             stream_id: stream_id.clone(),
@@ -102,7 +97,6 @@ fn create_sample_event_stream() -> RS2Stream<MediaStreamEvent> {
             buffer_level: 0.1,
             timestamp: now + chrono::Duration::seconds(5),
         },
-
         // Chunk dropped after 6 seconds
         MediaStreamEvent::ChunkDropped {
             stream_id: stream_id.clone(),
@@ -111,7 +105,6 @@ fn create_sample_event_stream() -> RS2Stream<MediaStreamEvent> {
             reason: "Network congestion".to_string(),
             timestamp: now + chrono::Duration::seconds(6),
         },
-
         // Quality changed back after 8 seconds
         MediaStreamEvent::QualityChanged {
             stream_id: stream_id.clone(),
@@ -120,7 +113,6 @@ fn create_sample_event_stream() -> RS2Stream<MediaStreamEvent> {
             new_quality: QualityLevel::High,
             timestamp: now + chrono::Duration::seconds(8),
         },
-
         // Stream stopped after 10 seconds
         MediaStreamEvent::StreamStopped {
             stream_id: stream_id.clone(),
@@ -163,41 +155,69 @@ impl EventHandler {
 
         // For this example, we just print the event details
         match event {
-            MediaStreamEvent::StreamStarted { stream_id, user_id, quality, timestamp } => {
+            MediaStreamEvent::StreamStarted {
+                stream_id,
+                user_id,
+                quality,
+                timestamp,
+            } => {
                 println!(
-                    "Stream started: id={}, user={}, quality={:?}, time={}", 
+                    "Stream started: id={}, user={}, quality={:?}, time={}",
                     stream_id, user_id, quality, timestamp
                 );
                 self.stats.stream_started += 1;
-            },
-            MediaStreamEvent::StreamStopped { stream_id, user_id, duration_seconds, bytes_transferred, timestamp } => {
+            }
+            MediaStreamEvent::StreamStopped {
+                stream_id,
+                user_id,
+                duration_seconds,
+                bytes_transferred,
+                timestamp,
+            } => {
                 println!(
-                    "Stream stopped: id={}, user={}, duration={}s, bytes={}, time={}", 
+                    "Stream stopped: id={}, user={}, duration={}s, bytes={}, time={}",
                     stream_id, user_id, duration_seconds, bytes_transferred, timestamp
                 );
                 self.stats.stream_stopped += 1;
-            },
-            MediaStreamEvent::QualityChanged { stream_id, user_id, old_quality, new_quality, timestamp } => {
+            }
+            MediaStreamEvent::QualityChanged {
+                stream_id,
+                user_id,
+                old_quality,
+                new_quality,
+                timestamp,
+            } => {
                 println!(
-                    "Quality changed: id={}, user={}, old={:?}, new={:?}, time={}", 
+                    "Quality changed: id={}, user={}, old={:?}, new={:?}, time={}",
                     stream_id, user_id, old_quality, new_quality, timestamp
                 );
                 self.stats.quality_changed += 1;
-            },
-            MediaStreamEvent::BufferUnderrun { stream_id, user_id, buffer_level, timestamp } => {
+            }
+            MediaStreamEvent::BufferUnderrun {
+                stream_id,
+                user_id,
+                buffer_level,
+                timestamp,
+            } => {
                 println!(
-                    "Buffer underrun: id={}, user={}, level={:.2}, time={}", 
+                    "Buffer underrun: id={}, user={}, level={:.2}, time={}",
                     stream_id, user_id, buffer_level, timestamp
                 );
                 self.stats.buffer_underrun += 1;
-            },
-            MediaStreamEvent::ChunkDropped { stream_id, user_id, sequence_number, reason, timestamp } => {
+            }
+            MediaStreamEvent::ChunkDropped {
+                stream_id,
+                user_id,
+                sequence_number,
+                reason,
+                timestamp,
+            } => {
                 println!(
-                    "Chunk dropped: id={}, user={}, seq={}, reason='{}', time={}", 
+                    "Chunk dropped: id={}, user={}, seq={}, reason='{}', time={}",
                     stream_id, user_id, sequence_number, reason, timestamp
                 );
                 self.stats.chunk_dropped += 1;
-            },
+            }
         }
 
         self.stats.total_events += 1;

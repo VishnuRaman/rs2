@@ -7,15 +7,14 @@
 //! 4. Process and display the media chunks
 //! 5. Monitor stream metrics in real-time
 
-use rs2_stream::media::streaming::{MediaStreamingService, StreamingServiceFactory};
-use rs2_stream::media::types::{MediaStream, MediaType, QualityLevel, MediaChunk, StreamMetrics};
-use rs2_stream::rs2::*;
-use futures_util::StreamExt;
-use tokio::time::{sleep, Duration};
 use chrono::Utc;
+use futures_util::StreamExt;
+use rs2_stream::media::streaming::StreamingServiceFactory;
+use rs2_stream::media::types::{MediaChunk, MediaStream, MediaType, QualityLevel};
+use rs2_stream::rs2::*;
+use rs2_stream::stream_performance_metrics::StreamMetrics;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::time::{sleep, Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -80,12 +79,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Get final metrics
     let metrics = streaming_service.get_metrics().await;
     println!("\nFinal Stream Metrics:");
-    println!("  Stream ID: {}", metrics.stream_id);
+    println!("  Name: {}", metrics.name.as_deref().unwrap_or("unknown"));
     println!("  Bytes processed: {}", metrics.bytes_processed);
-    println!("  Chunks processed: {}", metrics.chunks_processed);
-    println!("  Dropped chunks: {}", metrics.dropped_chunks);
-    println!("  Average chunk size: {:.2} bytes", metrics.average_chunk_size);
-    println!("  Buffer utilization: {:.2}%", metrics.buffer_utilization * 100.0);
+    println!("  Items processed: {}", metrics.items_processed);
+    println!("  Errors: {}", metrics.errors);
+    println!(
+        "  Average item size: {:.2} bytes",
+        metrics.average_item_size
+    );
+    println!("  Processing time: {:?}", metrics.processing_time);
 
     // Shutdown the streaming service
     streaming_service.shutdown().await;
@@ -98,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // Helper function to simulate processing a chunk
-fn process_chunk(chunk: &MediaChunk) {
+fn process_chunk(_chunk: &MediaChunk) {
     // In a real application, you would decode and render the chunk
     // For this example, we just simulate processing time
     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -112,10 +114,8 @@ async fn monitor_metrics(metrics_stream: RS2Stream<StreamMetrics>) {
 
     while let Some(metrics) = metrics_stream.next().await {
         println!(
-            "[Metrics] Chunks: {}, Buffer: {:.1}%, Dropped: {}",
-            metrics.chunks_processed,
-            metrics.buffer_utilization * 100.0,
-            metrics.dropped_chunks
+            "[Metrics] Items: {}, Errors: {}, Avg size: {:.1} bytes",
+            metrics.items_processed, metrics.errors, metrics.average_item_size
         );
 
         // Short sleep to avoid flooding the console

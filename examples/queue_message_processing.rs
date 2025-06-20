@@ -1,10 +1,10 @@
+use futures_util::stream::StreamExt;
 use rs2_stream::queue::*;
 use rs2_stream::rs2::*;
-use futures_util::stream::StreamExt;
+use std::error::Error;
+use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::time::{sleep, Duration};
-use std::sync::Arc;
-use std::error::Error;
 
 // Define our Message type
 #[derive(Debug, Clone)]
@@ -48,12 +48,42 @@ fn main() {
 
         // Create some test messages
         let messages = vec![
-            Message { id: 1, content: "Critical system alert".to_string(), priority: Priority::High, timestamp: 1000 },
-            Message { id: 2, content: "User login".to_string(), priority: Priority::Medium, timestamp: 1001 },
-            Message { id: 3, content: "Log rotation".to_string(), priority: Priority::Low, timestamp: 1002 },
-            Message { id: 4, content: "Security breach detected".to_string(), priority: Priority::High, timestamp: 1003 },
-            Message { id: 5, content: "New user registration".to_string(), priority: Priority::Medium, timestamp: 1004 },
-            Message { id: 6, content: "Daily report".to_string(), priority: Priority::Low, timestamp: 1005 },
+            Message {
+                id: 1,
+                content: "Critical system alert".to_string(),
+                priority: Priority::High,
+                timestamp: 1000,
+            },
+            Message {
+                id: 2,
+                content: "User login".to_string(),
+                priority: Priority::Medium,
+                timestamp: 1001,
+            },
+            Message {
+                id: 3,
+                content: "Log rotation".to_string(),
+                priority: Priority::Low,
+                timestamp: 1002,
+            },
+            Message {
+                id: 4,
+                content: "Security breach detected".to_string(),
+                priority: Priority::High,
+                timestamp: 1003,
+            },
+            Message {
+                id: 5,
+                content: "New user registration".to_string(),
+                priority: Priority::Medium,
+                timestamp: 1004,
+            },
+            Message {
+                id: 6,
+                content: "Daily report".to_string(),
+                priority: Priority::Low,
+                timestamp: 1005,
+            },
         ];
 
         // Distribute messages to appropriate queues
@@ -64,8 +94,10 @@ fn main() {
                 Priority::Low => Arc::clone(&low_priority_queue),
             };
 
-            println!("Enqueueing message {}: '{}' with {:?} priority",
-                     msg.id, msg.content, msg.priority);
+            println!(
+                "Enqueueing message {}: '{}' with {:?} priority",
+                msg.id, msg.content, msg.priority
+            );
             queue.enqueue(msg).await.unwrap();
         }
 
@@ -81,9 +113,7 @@ fn main() {
 
         // Create a prioritized stream by merging the queues
         // High priority messages are processed first, then medium, then low
-        let prioritized_stream = high_stream
-            .chain(medium_stream)
-            .chain(low_stream);
+        let prioritized_stream = high_stream.chain(medium_stream).chain(low_stream);
 
         // Process messages with bounded concurrency
         let results = prioritized_stream

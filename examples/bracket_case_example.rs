@@ -1,10 +1,10 @@
-use rs2_stream::rs2::*;
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::fs::File;
-use std::io::{BufReader, BufRead};
-use std::path::PathBuf;
 use async_stream::stream;
+use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+use tokio::runtime::Runtime;
 
 // Acquire a resource - returns a path to the file
 async fn acquire_resource() -> PathBuf {
@@ -14,7 +14,11 @@ async fn acquire_resource() -> PathBuf {
 
 // Release a resource with exit case information
 async fn release_resource(path: PathBuf, exit_case: ExitCase<String>) {
-    println!("Resource released: {} with exit case: {:?}", path.display(), exit_case);
+    println!(
+        "Resource released: {} with exit case: {:?}",
+        path.display(),
+        exit_case
+    );
 }
 
 // Use a resource to create a stream of results
@@ -47,7 +51,8 @@ fn use_resource(path: PathBuf) -> RS2Stream<Result<String, String>> {
                 Err(e) => yield Err(format!("IO error: {}", e)),
             }
         }
-    }.boxed()
+    }
+    .boxed()
 }
 
 fn main() {
@@ -67,7 +72,7 @@ fn main() {
             .bracket_case_rs2(
                 acquire_resource(),
                 |resource| use_resource(resource),
-                release_resource
+                release_resource,
             )
             .collect::<Vec<_>>()
             .await;

@@ -1,8 +1,8 @@
-use rs2_stream::rs2::*;
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::Duration;
 use async_stream::stream;
+use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
 // Simulate a stream that emits items with delays
 fn delayed_stream<T: Clone + Send + 'static>(
@@ -17,7 +17,8 @@ fn delayed_stream<T: Clone + Send + 'static>(
             println!("Stream '{}' emitting item", name);
             yield (name.clone(), item);
         }
-    }.boxed()
+    }
+    .boxed()
 }
 
 fn main() {
@@ -76,27 +77,39 @@ fn main() {
         println!("\n=== Interleave for Multiplexing Data Sources ===");
 
         // Simulate multiple data sources
-        let user_events = from_iter(vec![
-            "User 1 logged in",
-            "User 2 logged in",
-            "User 1 updated profile",
-            "User 3 logged in",
-        ].into_iter().map(|s| ("USER".to_string(), s.to_string())));
+        let user_events = from_iter(
+            vec![
+                "User 1 logged in",
+                "User 2 logged in",
+                "User 1 updated profile",
+                "User 3 logged in",
+            ]
+            .into_iter()
+            .map(|s| ("USER".to_string(), s.to_string())),
+        );
 
-        let system_events = from_iter(vec![
-            "System started",
-            "CPU usage at 80%",
-            "Memory usage at 60%",
-            "Disk space low",
-            "System update available",
-        ].into_iter().map(|s| ("SYSTEM".to_string(), s.to_string())));
+        let system_events = from_iter(
+            vec![
+                "System started",
+                "CPU usage at 80%",
+                "Memory usage at 60%",
+                "Disk space low",
+                "System update available",
+            ]
+            .into_iter()
+            .map(|s| ("SYSTEM".to_string(), s.to_string())),
+        );
 
-        let application_events = from_iter(vec![
-            "Application started",
-            "Database connected",
-            "Cache initialized",
-            "Request processed",
-        ].into_iter().map(|s| ("APP".to_string(), s.to_string())));
+        let application_events = from_iter(
+            vec![
+                "Application started",
+                "Database connected",
+                "Cache initialized",
+                "Request processed",
+            ]
+            .into_iter()
+            .map(|s| ("APP".to_string(), s.to_string())),
+        );
 
         // Interleave all event streams
         let all_events = user_events

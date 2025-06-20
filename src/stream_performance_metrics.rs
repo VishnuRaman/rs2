@@ -34,7 +34,6 @@ pub enum GrowthStrategy {
     Fixed,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct HealthThresholds {
     pub max_error_rate: f64,
@@ -44,8 +43,8 @@ pub struct HealthThresholds {
 impl Default for HealthThresholds {
     fn default() -> Self {
         Self {
-            max_error_rate: 0.1,        // 10% error rate
-            max_consecutive_errors: 5,   // 5 consecutive errors
+            max_error_rate: 0.1,       // 10% error rate
+            max_consecutive_errors: 5, // 5 consecutive errors
         }
     }
 }
@@ -55,14 +54,14 @@ impl HealthThresholds {
     pub fn strict() -> Self {
         Self {
             max_error_rate: 0.01,      // 1% error rate
-            max_consecutive_errors: 2,  // 2 consecutive errors
+            max_consecutive_errors: 2, // 2 consecutive errors
         }
     }
 
     /// Permissive thresholds for high-throughput systems
     pub fn relaxed() -> Self {
         Self {
-            max_error_rate: 0.20,      // 20% error rate
+            max_error_rate: 0.20,       // 20% error rate
             max_consecutive_errors: 20, // 20 consecutive errors
         }
     }
@@ -96,7 +95,7 @@ pub struct StreamMetrics {
     pub error_rate: f64,
     pub backpressure_events: u64,
     pub queue_depth: u64,
-    pub health_thresholds: HealthThresholds
+    pub health_thresholds: HealthThresholds,
 }
 
 impl StreamMetrics {
@@ -136,16 +135,13 @@ impl StreamMetrics {
         self.last_activity = Some(Instant::now());
         self.consecutive_errors = 0;
         self.update_derived_metrics();
-
     }
 
     pub fn record_error(&mut self) {
-        
         self.errors += 1;
         self.consecutive_errors += 1;
         self.last_activity = Some(Instant::now());
         self.update_derived_metrics();
-
     }
 
     pub fn record_retry(&mut self) {
@@ -166,15 +162,14 @@ impl StreamMetrics {
     pub fn update_queue_depth(&mut self, depth: u64) {
         self.queue_depth = depth;
     }
-    
+
     pub fn finalize(&mut self) {
         if let Some(start) = self.start_time.take() {
             self.processing_time = start.elapsed();
         }
         self.update_derived_metrics();
-
     }
-    
+
     pub fn throughput_items_per_sec(&self) -> f64 {
         if self.processing_time.as_secs_f64() > 0.0 {
             self.items_processed as f64 / self.processing_time.as_secs_f64()
@@ -213,19 +208,21 @@ impl StreamMetrics {
     pub fn is_healthy(&self) -> bool {
         self.error_rate < self.health_thresholds.max_error_rate
             && self.consecutive_errors < self.health_thresholds.max_consecutive_errors
-
     }
 
     pub fn throughput_summary(&self) -> String {
-        format!("{:.1} items/sec, {:.1} KB/sec",
-                self.items_per_second,
-                self.bytes_per_second / 1000.0)
+        format!(
+            "{:.1} items/sec, {:.1} KB/sec",
+            self.items_per_second,
+            self.bytes_per_second / 1000.0
+        )
     }
 
     pub fn throughput_summary_processing_time(&self) -> String {
-        format!("{:.1} items/sec, {:.1} KB/sec",
-                self.throughput_items_per_sec(),
-                self.throughput_bytes_per_sec() / 1000.0)
+        format!(
+            "{:.1} items/sec, {:.1} KB/sec",
+            self.throughput_items_per_sec(),
+            self.throughput_bytes_per_sec() / 1000.0
+        )
     }
-
 }

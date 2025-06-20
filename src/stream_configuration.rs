@@ -1,7 +1,5 @@
 //! Configuration types for RStream operations
 
-use std::time::Duration;
-
 /// Buffer configuration for rs2_stream operations
 #[derive(Debug, Clone)]
 pub struct BufferConfig {

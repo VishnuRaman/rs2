@@ -2,13 +2,14 @@
 
 use super::priority_queue::MediaPriorityQueue;
 use super::types::*;
-use crate::queue::Queue;
-use crate::*;
+use crate::stream_performance_metrics::StreamMetrics;
+use crate::{auto_backpressure_block, tick, unfold};
+use crate::{auto_backpressure_drop_newest, from_iter, throttle, RS2Stream, RS2StreamExt};
 use futures_core::Stream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, BufReader};
+use tokio::io::AsyncReadExt;
 
 pub struct MediaStreamingService {
     chunk_queue: Arc<MediaPriorityQueue>,
@@ -19,15 +20,9 @@ impl MediaStreamingService {
     pub fn new(buffer_capacity: usize) -> Self {
         Self {
             chunk_queue: Arc::new(MediaPriorityQueue::new(buffer_capacity, 64)),
-            metrics: Arc::new(tokio::sync::Mutex::new(StreamMetrics {
-                stream_id: String::new(),
-                bytes_processed: 0,
-                chunks_processed: 0,
-                dropped_chunks: 0,
-                average_chunk_size: 0.0,
-                buffer_utilization: 0.0,
-                last_updated: chrono::Utc::now(),
-            })),
+            metrics: Arc::new(tokio::sync::Mutex::new(
+                StreamMetrics::new().with_name("media-stream".to_string()),
+            )),
         }
     }
 
@@ -45,10 +40,7 @@ impl MediaStreamingService {
     }
 
     /// Start streaming from live input (camera, microphone, etc.)
-    pub async fn start_live_stream(
-        &self,
-        stream_config: MediaStream,
-    ) -> RS2Stream<MediaChunk> {
+    pub async fn start_live_stream(&self, stream_config: MediaStream) -> RS2Stream<MediaChunk> {
         let chunk_queue = Arc::clone(&self.chunk_queue);
         let metrics = Arc::clone(&self.metrics);
 
@@ -56,9 +48,13 @@ impl MediaStreamingService {
         auto_backpressure_drop_newest(
             throttle(
                 from_iter(0u64..)
-                    .take_rs2(stream_config.metadata.get("max_chunks")
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(u64::MAX as usize))
+                    .take_rs2(
+                        stream_config
+                            .metadata
+                            .get("max_chunks")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(u64::MAX as usize),
+                    )
                     .par_eval_map_rs2(4, move |sequence| {
                         let queue = Arc::clone(&chunk_queue);
                         let metrics = Arc::clone(&metrics);
@@ -94,35 +90,37 @@ impl MediaStreamingService {
                             // Update metrics
                             {
                                 let mut m = metrics.lock().await;
-                                m.chunks_processed += 1;
+                                m.items_processed += 1;
                                 m.bytes_processed += chunk.data.len() as u64;
-                                m.average_chunk_size = m.bytes_processed as f64 / m.chunks_processed as f64;
-                                m.last_updated = chrono::Utc::now();
+                                m.average_item_size =
+                                    m.bytes_processed as f64 / m.items_processed as f64;
+                                m.last_activity = Some(std::time::Instant::now());
                             }
 
                             // Try to enqueue (don't block for live streaming)
                             if let Err(_) = queue.try_enqueue(chunk.clone()).await {
                                 let mut m = metrics.lock().await;
-                                m.dropped_chunks += 1;
+                                m.errors += 1;
                             }
 
                             chunk
                         }
                     }),
-                std::time::Duration::from_millis(33) // ~30fps
+                std::time::Duration::from_millis(33), // ~30fps
             ),
-            512
+            512,
         )
     }
 
     async fn acquire_file_resource(&self, path: PathBuf) -> File {
-        File::open(&path).await
+        File::open(&path)
+            .await
             .unwrap_or_else(|e| panic!("Failed to open media file {:?}: {}", path, e))
     }
 
     fn create_chunk_stream(
         &self,
-        mut file: File,
+        file: File,
         config: MediaStream,
         queue: Arc<MediaPriorityQueue>,
         metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
@@ -180,16 +178,17 @@ impl MediaStreamingService {
                             // Update metrics inline
                             {
                                 let mut m = metrics.lock().await;
-                                m.chunks_processed += 1;
+                                m.items_processed += 1;
                                 m.bytes_processed += chunk.data.len() as u64;
-                                m.average_chunk_size = m.bytes_processed as f64 / m.chunks_processed as f64;
-                                m.last_updated = chrono::Utc::now();
+                                m.average_item_size =
+                                    m.bytes_processed as f64 / m.items_processed as f64;
+                                m.last_activity = Some(std::time::Instant::now());
                             }
 
                             // Enqueue with priority
                             if let Err(_) = queue.enqueue(chunk.clone()).await {
                                 let mut m = metrics.lock().await;
-                                m.dropped_chunks += 1;
+                                m.errors += 1;
                             }
 
                             Some((chunk, (file, sequence + 1)))
@@ -201,7 +200,7 @@ impl MediaStreamingService {
                     }
                 }
             }),
-            256
+            256,
         )
     }
 
@@ -238,19 +237,23 @@ impl MediaStreamingService {
         if sequence % 30 == 0 {
             MediaPriority::High // I-frames are high priority
         } else if sequence % 3 == 0 {
-            MediaPriority::Low  // B-frames are low priority
+            MediaPriority::Low // B-frames are low priority
         } else {
             MediaPriority::Normal // P-frames are normal priority
         }
     }
 
     /// Update metrics efficiently
-    async fn update_metrics(&self, metrics: &Arc<tokio::sync::Mutex<StreamMetrics>>, chunk: &MediaChunk) {
+    async fn update_metrics(
+        &self,
+        metrics: &Arc<tokio::sync::Mutex<StreamMetrics>>,
+        chunk: &MediaChunk,
+    ) {
         let mut m = metrics.lock().await;
-        m.chunks_processed += 1;
+        m.items_processed += 1;
         m.bytes_processed += chunk.data.len() as u64;
-        m.average_chunk_size = m.bytes_processed as f64 / m.chunks_processed as f64;
-        m.last_updated = chrono::Utc::now();
+        m.average_item_size = m.bytes_processed as f64 / m.items_processed as f64;
+        m.last_activity = Some(std::time::Instant::now());
     }
 
     /// Get stream from priority queue
@@ -260,36 +263,22 @@ impl MediaStreamingService {
 
     /// Get current metrics with updated buffer utilization
     pub async fn get_metrics(&self) -> StreamMetrics {
-        let mut metrics = self.metrics.lock().await;
-
-        // Update buffer utilization based on queue length
-        let queue_len = self.chunk_queue.len().await;
-        let queue_capacity = 1024; // You might want to store this in the service
-        metrics.buffer_utilization = queue_len as f64 / queue_capacity as f64;
-
+        let metrics = self.metrics.lock().await;
         metrics.clone()
     }
 
     /// Create a metrics monitoring stream
     pub fn get_metrics_stream(&self) -> RS2Stream<StreamMetrics> {
         let metrics = Arc::clone(&self.metrics);
-        let chunk_queue = Arc::clone(&self.chunk_queue);
 
-        tick(std::time::Duration::from_secs(1), ())
-            .par_eval_map_rs2(1, move |_| {
-                let metrics = Arc::clone(&metrics);
-                let chunk_queue = Arc::clone(&chunk_queue);
+        tick(std::time::Duration::from_secs(1), ()).par_eval_map_rs2(1, move |_| {
+            let metrics = Arc::clone(&metrics);
 
-                async move {
-                    let mut m = metrics.lock().await;
-
-                    // Update real-time buffer utilization
-                    let queue_len = chunk_queue.len().await;
-                    m.buffer_utilization = queue_len as f64 / 1024.0;
-
-                    m.clone()
-                }
-            })
+            async move {
+                let m = metrics.lock().await;
+                m.clone()
+            }
+        })
     }
 
     /// Gracefully shutdown the streaming service
@@ -308,7 +297,7 @@ impl StreamingServiceFactory {
         MediaStreamingService::new(2048) // Larger buffer for live
     }
 
-    /// Create service optimized for file streaming  
+    /// Create service optimized for file streaming
     pub fn create_file_streaming_service() -> MediaStreamingService {
         MediaStreamingService::new(512) // Smaller buffer for files
     }

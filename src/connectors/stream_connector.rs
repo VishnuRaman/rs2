@@ -1,9 +1,9 @@
 //! Core traits for stream connectors
 
-use async_trait::async_trait;
-use serde::{Serialize, Deserialize};
-use std::time::Duration;
 use crate::RS2Stream;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// Common configuration for all connectors
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,7 +48,11 @@ where
     async fn from_source(&self, config: Self::Config) -> Result<RS2Stream<T>, Self::Error>;
 
     /// Send a stream to the connector as a sink
-    async fn to_sink(&self, stream: RS2Stream<T>, config: Self::Config) -> Result<Self::Metadata, Self::Error>;
+    async fn to_sink(
+        &self,
+        stream: RS2Stream<T>,
+        config: Self::Config,
+    ) -> Result<Self::Metadata, Self::Error>;
 
     /// Check if the connector is healthy
     async fn health_check(&self) -> Result<bool, Self::Error>;
@@ -74,7 +78,13 @@ where
         &self,
         input_config: Self::Config,
         output_config: Self::Config,
-    ) -> Result<(RS2Stream<T>, Box<dyn Fn(RS2Stream<T>) -> Result<(), Self::Error> + Send + Sync>), Self::Error>;
+    ) -> Result<
+        (
+            RS2Stream<T>,
+            Box<dyn Fn(RS2Stream<T>) -> Result<(), Self::Error> + Send + Sync>,
+        ),
+        Self::Error,
+    >;
 }
 
 /// Health status for connectors

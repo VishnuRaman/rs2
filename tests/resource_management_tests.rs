@@ -1,7 +1,7 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
+use rs2_stream::rs2::*;
 use std::sync::{Arc, Mutex};
+use tokio::runtime::Runtime;
 
 #[test]
 fn test_bracket() {
@@ -27,7 +27,7 @@ fn test_bracket() {
             move |resource| async move {
                 assert_eq!(resource, "resource");
                 *released_clone.lock().unwrap() = true;
-            }
+            },
         );
 
         // Collect the rs2_stream
@@ -69,7 +69,7 @@ fn test_bracket_case_success() {
                 assert_eq!(resource, "resource");
                 *released_clone.lock().unwrap() = true;
                 *exit_case_clone.lock().unwrap() = Some(format!("{:?}", case));
-            }
+            },
         );
 
         // Collect the rs2_stream
@@ -115,7 +115,7 @@ fn test_bracket_case_error() {
                 assert_eq!(resource, "resource");
                 *released_clone.lock().unwrap() = true;
                 *exit_case_clone.lock().unwrap() = Some(format!("{:?}", case));
-            }
+            },
         );
 
         // Collect the rs2_stream

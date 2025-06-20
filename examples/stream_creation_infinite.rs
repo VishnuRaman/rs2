@@ -1,5 +1,5 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
 
 fn main() {
@@ -22,7 +22,7 @@ fn main() {
                 } else {
                     None // End the stream after user ID 5
                 }
-            }
+            },
         );
 
         let user_ids = user_id_stream.collect::<Vec<_>>().await;
