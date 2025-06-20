@@ -1,4 +1,3 @@
-
 //! Queue implementation for RStream
 //!
 //! This module provides a concurrent queue with Stream interface for dequeuing
@@ -10,6 +9,7 @@ use futures_util::StreamExt;
 use std::fmt;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
+use crate::resource_manager::get_global_resource_manager;
 
 /// Error types for Queue operations
 #[derive(Debug, Clone, PartialEq)]
@@ -74,28 +74,31 @@ where
 
     /// Enqueue an item into the queue
     pub async fn enqueue(&self, item: T) -> Result<(), QueueError> {
+        let resource_manager = get_global_resource_manager();
         match self {
             Queue::Bounded { sender, .. } => {
                 let guard = sender.lock().await;
                 match &*guard {
-                    Some(sender) => {
-                        match sender.send(item).await {
-                            Ok(_) => Ok(()),
-                            Err(_) => Err(QueueError::Disconnected),
-                        }
-                    }
+                    Some(sender) => match sender.send(item).await {
+                        Ok(_) => {
+                            resource_manager.track_memory_allocation(1).await.ok();
+                            Ok(())
+                        },
+                        Err(_) => Err(QueueError::Disconnected),
+                    },
                     None => Err(QueueError::Closed),
                 }
             }
             Queue::Unbounded { sender, .. } => {
                 let guard = sender.lock().await;
                 match &*guard {
-                    Some(sender) => {
-                        match sender.send(item) {
-                            Ok(_) => Ok(()),
-                            Err(_) => Err(QueueError::Disconnected),
-                        }
-                    }
+                    Some(sender) => match sender.send(item) {
+                        Ok(_) => {
+                            resource_manager.track_memory_allocation(1).await.ok();
+                            Ok(())
+                        },
+                        Err(_) => Err(QueueError::Disconnected),
+                    },
                     None => Err(QueueError::Closed),
                 }
             }
@@ -104,29 +107,35 @@ where
 
     /// Try to enqueue an item without blocking
     pub async fn try_enqueue(&self, item: T) -> Result<(), QueueError> {
+        let resource_manager = get_global_resource_manager();
         match self {
             Queue::Bounded { sender, .. } => {
                 let guard = sender.lock().await;
                 match &*guard {
-                    Some(sender) => {
-                        match sender.try_send(item) {
-                            Ok(_) => Ok(()),
-                            Err(mpsc::error::TrySendError::Full(_)) => Err(QueueError::Full),
-                            Err(mpsc::error::TrySendError::Closed(_)) => Err(QueueError::Disconnected),
-                        }
-                    }
+                    Some(sender) => match sender.try_send(item) {
+                        Ok(_) => {
+                            resource_manager.track_memory_allocation(1).await.ok();
+                            Ok(())
+                        },
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            resource_manager.track_buffer_overflow().await.ok();
+                            Err(QueueError::Full)
+                        },
+                        Err(_) => Err(QueueError::Disconnected),
+                    },
                     None => Err(QueueError::Closed),
                 }
             }
             Queue::Unbounded { sender, .. } => {
                 let guard = sender.lock().await;
                 match &*guard {
-                    Some(sender) => {
-                        match sender.send(item) {
-                            Ok(_) => Ok(()),
-                            Err(_) => Err(QueueError::Disconnected),
-                        }
-                    }
+                    Some(sender) => match sender.send(item) {
+                        Ok(_) => {
+                            resource_manager.track_memory_allocation(1).await.ok();
+                            Ok(())
+                        },
+                        Err(_) => Err(QueueError::Disconnected),
+                    },
                     None => Err(QueueError::Closed),
                 }
             }
@@ -135,10 +144,11 @@ where
 
     /// Get a rs2_stream for dequeuing items
     pub fn dequeue(&self) -> impl Stream<Item = T> + Send + 'static {
+        let resource_manager = get_global_resource_manager();
         match self {
             Queue::Bounded { receiver, .. } => {
                 let receiver = Arc::clone(receiver);
-
+                let resource_manager = resource_manager.clone();
                 stream! {
                     loop {
                         let item = {
@@ -149,17 +159,20 @@ where
                                 None
                             }
                         };
-                        
                         match item {
-                            Some(item) => yield item,
+                            Some(item) => {
+                                resource_manager.track_memory_deallocation(1).await;
+                                yield item
+                            },
                             None => break,
                         }
                     }
-                }.boxed()
+                }
+                .boxed()
             }
             Queue::Unbounded { receiver, .. } => {
                 let receiver = Arc::clone(receiver);
-
+                let resource_manager = resource_manager.clone();
                 stream! {
                     loop {
                         let item = {
@@ -170,13 +183,16 @@ where
                                 None
                             }
                         };
-                        
                         match item {
-                            Some(item) => yield item,
+                            Some(item) => {
+                                resource_manager.track_memory_deallocation(1).await;
+                                yield item
+                            },
                             None => break,
                         }
                     }
-                }.boxed()
+                }
+                .boxed()
             }
         }
     }
@@ -234,14 +250,11 @@ where
 impl<T> fmt::Debug for Queue<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Queue::Bounded { capacity, .. } => {
-                f.debug_struct("Queue::Bounded")
-                    .field("capacity", capacity)
-                    .finish()
-            }
-            Queue::Unbounded { .. } => {
-                f.debug_struct("Queue::Unbounded").finish()
-            }
+            Queue::Bounded { capacity, .. } => f
+                .debug_struct("Queue::Bounded")
+                .field("capacity", capacity)
+                .finish(),
+            Queue::Unbounded { .. } => f.debug_struct("Queue::Unbounded").finish(),
         }
     }
 }

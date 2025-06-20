@@ -1,9 +1,9 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
+use rs2_stream::rs2::*;
 use std::fs::File;
-use std::io::{self, BufReader, BufRead};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use tokio::runtime::Runtime;
 
 // Acquire a resource - returns a path to the file
 async fn acquire_resource() -> PathBuf {
@@ -39,13 +39,13 @@ fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         println!("Using bracket_rs extension method for resource management");
-        
+
         // Use bracket_rs extension method to ensure resource is released
         let result = empty::<i32>()
             .bracket_rs(
                 acquire_resource(),
                 |reader| use_resource(reader),
-                release_resource
+                release_resource,
             )
             .collect::<Vec<_>>()
             .await;

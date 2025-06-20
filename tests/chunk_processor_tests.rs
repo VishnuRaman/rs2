@@ -1,13 +1,14 @@
 use futures_util::StreamExt;
-use tokio::runtime::Runtime;
-use rs2_stream::media::chunk_processor::{ChunkProcessor, ChunkProcessorConfig, ChunkProcessingError};
-use rs2_stream::media::codec::{MediaCodec, EncodingConfig};
-use rs2_stream::media::types::{MediaChunk, ChunkType, MediaPriority};
+use rs2_stream::media::chunk_processor::{
+    ChunkProcessingError, ChunkProcessor, ChunkProcessorConfig,
+};
+use rs2_stream::media::codec::{EncodingConfig, MediaCodec};
+use rs2_stream::media::types::{ChunkType, MediaChunk, MediaPriority};
 use rs2_stream::queue::Queue;
 use rs2_stream::rs2::*;
 use std::sync::Arc;
 use std::time::Duration;
-use std::collections::VecDeque;
+use tokio::runtime::Runtime;
 
 #[test]
 fn test_chunk_processor_basic() {
@@ -19,16 +20,12 @@ fn test_chunk_processor_basic() {
 
         // Create processor with optimized config for testing
         let mut config = ChunkProcessorConfig::default();
-        config.enable_reordering = false;  // Disable reordering for faster processing
-        config.enable_validation = false;  // Disable validation for faster processing
-        config.parallel_processing = 1;    // Use single thread for simple test
-        config.max_buffer_size = 10;       // Smaller buffer size
+        config.enable_reordering = false; // Disable reordering for faster processing
+        config.enable_validation = false; // Disable validation for faster processing
+        config.parallel_processing = 1; // Use single thread for simple test
+        config.max_buffer_size = 10; // Smaller buffer size
 
-        let processor = ChunkProcessor::new(
-            config,
-            codec,
-            output_queue.clone()
-        );
+        let processor = ChunkProcessor::new(config, codec, output_queue.clone());
 
         // Create a test chunk
         let chunk = create_test_chunk("test_stream", 1, ChunkType::VideoIFrame);
@@ -83,7 +80,7 @@ fn test_chunk_processor_validation() {
         match result {
             Err(ChunkProcessingError::ValidationFailed(_)) => {
                 // Expected error
-            },
+            }
             _ => panic!("Expected ValidationFailed error"),
         }
 
@@ -114,15 +111,11 @@ fn test_chunk_processor_stats() {
 
         // Create processor with optimized config for testing
         let mut config = ChunkProcessorConfig::default();
-        config.enable_reordering = false;  // Disable reordering for more predictable stats
-        config.parallel_processing = 1;    // Use single thread for deterministic processing
-        config.max_buffer_size = 10;       // Smaller buffer size
+        config.enable_reordering = false; // Disable reordering for more predictable stats
+        config.parallel_processing = 1; // Use single thread for deterministic processing
+        config.max_buffer_size = 10; // Smaller buffer size
 
-        let processor = ChunkProcessor::new(
-            config,
-            codec,
-            output_queue.clone()
-        );
+        let processor = ChunkProcessor::new(config, codec, output_queue.clone());
 
         // Process chunks one by one to ensure stats are updated correctly
         for i in 1..=5 {
@@ -151,9 +144,21 @@ fn test_chunk_processor_stats() {
         let stats = processor.get_stats().await;
 
         // Verify stats
-        assert_eq!(stats.chunks_processed, 5, "Expected 5 chunks processed, got {}", stats.chunks_processed);
-        assert_eq!(stats.chunks_dropped, 0, "Expected 0 chunks dropped, got {}", stats.chunks_dropped);
-        assert!(stats.average_processing_time_ms > 0.0, "Expected positive processing time, got {}", stats.average_processing_time_ms);
+        assert_eq!(
+            stats.chunks_processed, 5,
+            "Expected 5 chunks processed, got {}",
+            stats.chunks_processed
+        );
+        assert_eq!(
+            stats.chunks_dropped, 0,
+            "Expected 0 chunks dropped, got {}",
+            stats.chunks_dropped
+        );
+        assert!(
+            stats.average_processing_time_ms > 0.0,
+            "Expected positive processing time, got {}",
+            stats.average_processing_time_ms
+        );
     });
 }
 

@@ -1,17 +1,19 @@
-use rs2_stream::rs2::*;
-use rs2_stream::error::{StreamError, StreamResult};
+use futures::future::join_all;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
+use quickcheck::TestResult;
+use rand::{thread_rng, Rng};
+use rs2_stream::error::StreamResult;
+use rs2_stream::rs2::*;
+use serial_test::serial;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{sleep, timeout};
-use std::time::Duration;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
-use std::collections::{HashMap, HashSet};
-use futures::future::join_all;
-use rand::{thread_rng, Rng};
-use serial_test::serial;
-use quickcheck::{quickcheck, TestResult};
-use std::sync::atomic::AtomicBool;
 
 /// Test 1: Multiple consumers reading from the same stream safely
 #[tokio::test]
@@ -87,17 +89,26 @@ async fn test_multiple_consumers_same_stream() {
     let mut all_items = HashSet::new();
     for items in all_received.iter() {
         for &item in items {
-            assert!(all_items.insert(item), "Item {} was processed more than once", item);
+            assert!(
+                all_items.insert(item),
+                "Item {} was processed more than once",
+                item
+            );
         }
     }
 
     // Verify that we processed the expected number of items
-    assert_eq!(all_items.len(), total_processed, 
-               "Number of unique items should match total processed count");
+    assert_eq!(
+        all_items.len(),
+        total_processed,
+        "Number of unique items should match total processed count"
+    );
 
     // It's okay if we didn't process all items, as long as each item was processed at most once
-    assert!(total_processed <= item_count, 
-            "Total processed should not exceed the source data size");
+    assert!(
+        total_processed <= item_count,
+        "Total processed should not exceed the source data size"
+    );
 
     println!("✅ Multiple consumers test passed");
 }
@@ -145,7 +156,11 @@ async fn test_concurrent_stream_transformations() {
             let counter = counter.clone();
             move |x| {
                 counter.fetch_add(1, Ordering::SeqCst);
-                if x >= 5 { x - 5 } else { x }
+                if x >= 5 {
+                    x - 5
+                } else {
+                    x
+                }
             }
         });
 
@@ -156,15 +171,20 @@ async fn test_concurrent_stream_transformations() {
     assert_eq!(results.len(), item_count, "Should have processed all items");
 
     // Verify the counter was updated correctly (3 times per item)
-    assert_eq!(counter.load(Ordering::SeqCst), item_count * 3, 
-               "Counter should be updated exactly 3 times per item");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        item_count * 3,
+        "Counter should be updated exactly 3 times per item"
+    );
 
     // Verify the transformation logic was applied correctly for a sample item
     // Original: 42 -> *2 -> 84 -> +1 -> 85 -> *3 -> 255 -> -5 -> 250
     let sample_input = 42;
     let expected_output = ((sample_input * 2) + 1) * 3 - 5;
-    assert!(results.contains(&expected_output), 
-            "Results should contain the correctly transformed sample value");
+    assert!(
+        results.contains(&expected_output),
+        "Results should contain the correctly transformed sample value"
+    );
 
     println!("✅ Concurrent stream transformations test passed");
 }
@@ -182,25 +202,24 @@ async fn test_parallel_processing_with_par_eval_map() {
     let shared_state = Arc::new(Mutex::new(HashSet::new()));
 
     // Create a stream with parallel processing
-    let stream = from_iter(source_data.clone())
-        .par_eval_map_rs2(20, {
+    let stream = from_iter(source_data.clone()).par_eval_map_rs2(20, {
+        let shared_state = shared_state.clone();
+        move |x| {
             let shared_state = shared_state.clone();
-            move |x| {
-                let shared_state = shared_state.clone();
-                let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..10));
-                async move {
-                    // Simulate some async work with random duration
-                    sleep(sleep_duration).await;
+            let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..10));
+            async move {
+                // Simulate some async work with random duration
+                sleep(sleep_duration).await;
 
-                    // Access shared state safely
-                    let mut state = shared_state.lock().await;
-                    state.insert(x);
+                // Access shared state safely
+                let mut state = shared_state.lock().await;
+                state.insert(x);
 
-                    // Return the processed item
-                    x * 2
-                }
+                // Return the processed item
+                x * 2
             }
-        });
+        }
+    });
 
     // Collect the results
     let results: Vec<usize> = stream.collect().await;
@@ -210,13 +229,19 @@ async fn test_parallel_processing_with_par_eval_map() {
 
     // Verify that all items were processed in the shared state
     let processed_items = shared_state.lock().await;
-    assert_eq!(processed_items.len(), item_count, 
-               "All items should have been processed in the shared state");
+    assert_eq!(
+        processed_items.len(),
+        item_count,
+        "All items should have been processed in the shared state"
+    );
 
     // Verify that the results are correctly transformed
     for (i, &result) in results.iter().enumerate() {
-        assert!(source_data.contains(&(result / 2)), 
-                "Result {} should be a transformation of a source item", result);
+        assert!(
+            source_data.contains(&(result / 2)),
+            "Result {} should be a transformation of a source item",
+            result
+        );
     }
 
     println!("✅ Parallel processing test passed");
@@ -240,49 +265,51 @@ async fn test_shared_resource_access() {
     let source_data: Vec<usize> = (0..item_count).collect();
 
     // Process the stream with high concurrency, but limited by the connection pool
-    let stream = from_iter(source_data)
-        .par_eval_map_rs2(20, {
+    let stream = from_iter(source_data).par_eval_map_rs2(20, {
+        let connection_pool = connection_pool.clone();
+        let concurrent_connections = concurrent_connections.clone();
+        let max_concurrent = max_concurrent.clone();
+
+        move |x| {
             let connection_pool = connection_pool.clone();
             let concurrent_connections = concurrent_connections.clone();
             let max_concurrent = max_concurrent.clone();
+            let sleep_duration = Duration::from_millis(thread_rng().gen_range(10..50));
 
-            move |x| {
-                let connection_pool = connection_pool.clone();
-                let concurrent_connections = concurrent_connections.clone();
-                let max_concurrent = max_concurrent.clone();
-                let sleep_duration = Duration::from_millis(thread_rng().gen_range(10..50));
+            async move {
+                // Acquire a connection from the pool
+                let permit = connection_pool.acquire().await.unwrap();
 
-                async move {
-                    // Acquire a connection from the pool
-                    let permit = connection_pool.acquire().await.unwrap();
-
-                    // Update concurrent connection count
-                    let current = concurrent_connections.fetch_add(1, Ordering::SeqCst) + 1;
-                    let mut max = max_concurrent.load(Ordering::SeqCst);
-                    while current > max {
-                        match max_concurrent.compare_exchange(
-                            max, current, Ordering::SeqCst, Ordering::SeqCst
-                        ) {
-                            Ok(_) => break,
-                            Err(x) => max = x
-                        }
+                // Update concurrent connection count
+                let current = concurrent_connections.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut max = max_concurrent.load(Ordering::SeqCst);
+                while current > max {
+                    match max_concurrent.compare_exchange(
+                        max,
+                        current,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(_) => break,
+                        Err(x) => max = x,
                     }
-
-                    // Simulate some work with the connection
-                    sleep(sleep_duration).await;
-
-                    // Process the item
-                    let result = x * 3;
-
-                    // Release the connection (decrement count)
-                    concurrent_connections.fetch_sub(1, Ordering::SeqCst);
-
-                    // Permit is automatically dropped here, returning the connection to the pool
-
-                    result
                 }
+
+                // Simulate some work with the connection
+                sleep(sleep_duration).await;
+
+                // Process the item
+                let result = x * 3;
+
+                // Release the connection (decrement count)
+                concurrent_connections.fetch_sub(1, Ordering::SeqCst);
+
+                // Permit is automatically dropped here, returning the connection to the pool
+
+                result
             }
-        });
+        }
+    });
 
     // Collect the results
     let results: Vec<usize> = stream.collect().await;
@@ -292,13 +319,20 @@ async fn test_shared_resource_access() {
 
     // Verify that we never exceeded the maximum number of connections
     let max_used = max_concurrent.load(Ordering::SeqCst);
-    println!("Maximum concurrent connections used: {}/{}", max_used, max_connections);
-    assert!(max_used <= max_connections, 
-            "Should never exceed the maximum number of connections");
+    println!(
+        "Maximum concurrent connections used: {}/{}",
+        max_used, max_connections
+    );
+    assert!(
+        max_used <= max_connections,
+        "Should never exceed the maximum number of connections"
+    );
 
     // In a high-concurrency test, we should have used all available connections
-    assert_eq!(max_used, max_connections, 
-               "Should have used all available connections");
+    assert_eq!(
+        max_used, max_connections,
+        "Should have used all available connections"
+    );
 
     println!("✅ Shared resource access test passed");
 }
@@ -383,15 +417,21 @@ async fn test_deadlock_prevention() {
         Ok(results) => {
             completed.store(true, Ordering::SeqCst);
             results
-        },
+        }
         Err(_) => {
-            panic!("Deadlock detected: test timed out after {:?}", timeout_duration);
+            panic!(
+                "Deadlock detected: test timed out after {:?}",
+                timeout_duration
+            );
         }
     };
 
     // Verify the results
     assert_eq!(results.len(), item_count, "Should have processed all items");
-    assert!(completed.load(Ordering::SeqCst), "Test should have completed successfully");
+    assert!(
+        completed.load(Ordering::SeqCst),
+        "Test should have completed successfully"
+    );
 
     println!("✅ Deadlock prevention test passed");
 }
@@ -409,25 +449,24 @@ async fn test_race_condition_detection() {
     let source_data: Vec<usize> = (0..item_count).collect();
 
     // Process the stream with high concurrency to try to trigger race conditions
-    let stream = from_iter(source_data.clone())
-        .par_eval_map_unordered_rs2(20, {
+    let stream = from_iter(source_data.clone()).par_eval_map_unordered_rs2(20, {
+        let counter = counter.clone();
+        move |x| {
             let counter = counter.clone();
-            move |x| {
-                let counter = counter.clone();
-                let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..5));
+            let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..5));
 
-                async move {
-                    // Simulate some async work
-                    sleep(sleep_duration).await;
+            async move {
+                // Simulate some async work
+                sleep(sleep_duration).await;
 
-                    // Update the counter safely using atomic operations
-                    counter.fetch_add(1, Ordering::SeqCst);
+                // Update the counter safely using atomic operations
+                counter.fetch_add(1, Ordering::SeqCst);
 
-                    // Return the processed item
-                    x
-                }
+                // Return the processed item
+                x
             }
-        });
+        }
+    });
 
     // Collect the results
     let results: Vec<usize> = stream.collect().await;
@@ -436,8 +475,11 @@ async fn test_race_condition_detection() {
     assert_eq!(results.len(), item_count, "Should have processed all items");
 
     // Verify that the counter was updated correctly
-    assert_eq!(counter.load(Ordering::SeqCst), item_count, 
-               "Counter should equal the number of processed items");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        item_count,
+        "Counter should equal the number of processed items"
+    );
 
     // Now test with a more complex scenario involving a shared HashMap
     println!("Testing with shared HashMap...");
@@ -446,26 +488,25 @@ async fn test_race_condition_detection() {
     let shared_map = Arc::new(Mutex::new(HashMap::new()));
 
     // Process the stream again with a different transformation
-    let stream = from_iter(source_data)
-        .par_eval_map_rs2(20, {
+    let stream = from_iter(source_data).par_eval_map_rs2(20, {
+        let shared_map = shared_map.clone();
+        move |x| {
             let shared_map = shared_map.clone();
-            move |x| {
-                let shared_map = shared_map.clone();
-                let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..5));
+            let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..5));
 
-                async move {
-                    // Simulate some async work
-                    sleep(sleep_duration).await;
+            async move {
+                // Simulate some async work
+                sleep(sleep_duration).await;
 
-                    // Update the shared map safely using a mutex
-                    let mut map = shared_map.lock().await;
-                    map.insert(x, x * 2);
+                // Update the shared map safely using a mutex
+                let mut map = shared_map.lock().await;
+                map.insert(x, x * 2);
 
-                    // Return the processed item
-                    x
-                }
+                // Return the processed item
+                x
             }
-        });
+        }
+    });
 
     // Collect the results
     let results: Vec<usize> = stream.collect().await;
@@ -475,11 +516,19 @@ async fn test_race_condition_detection() {
 
     // Verify that the shared map was updated correctly
     let map = shared_map.lock().await;
-    assert_eq!(map.len(), item_count, "Map should contain all processed items");
+    assert_eq!(
+        map.len(),
+        item_count,
+        "Map should contain all processed items"
+    );
 
     // Verify some sample entries
     for i in 0..10 {
-        assert_eq!(map.get(&i), Some(&(i * 2)), "Map should contain correct values");
+        assert_eq!(
+            map.get(&i),
+            Some(&(i * 2)),
+            "Map should contain correct values"
+        );
     }
 
     println!("✅ Race condition detection test passed");
@@ -495,10 +544,8 @@ async fn property_based_parallel_processing() {
         }
 
         // Process sequentially
-        let sequential_results: Vec<usize> = from_iter(input.clone())
-            .map_rs2(|x| x * 2)
-            .collect()
-            .await;
+        let sequential_results: Vec<usize> =
+            from_iter(input.clone()).map_rs2(|x| x * 2).collect().await;
 
         // Process in parallel
         let parallel_results: Vec<usize> = from_iter(input.clone())
@@ -532,7 +579,12 @@ async fn property_based_parallel_processing() {
         let result = test_parallel_vs_sequential(input).await;
         // In quickcheck, we can't directly check the type of TestResult
         // So we'll just assert that the test didn't fail
-        assert_ne!(format!("{:?}", result), format!("{:?}", TestResult::failed()), "Property test failed for size {}", size);
+        assert_ne!(
+            format!("{:?}", result),
+            format!("{:?}", TestResult::failed()),
+            "Property test failed for size {}",
+            size
+        );
     }
 
     println!("✅ Property-based parallel processing test passed");
@@ -552,29 +604,28 @@ async fn stress_test_concurrent_operations() {
     let shared_map = Arc::new(Mutex::new(HashMap::new()));
 
     // Process with high concurrency
-    let stream = from_iter(source_data)
-        .par_eval_map_rs2(50, {
+    let stream = from_iter(source_data).par_eval_map_rs2(50, {
+        let counter = counter.clone();
+        let shared_map = shared_map.clone();
+
+        move |x| {
             let counter = counter.clone();
             let shared_map = shared_map.clone();
 
-            move |x| {
-                let counter = counter.clone();
-                let shared_map = shared_map.clone();
+            async move {
+                // Update counter
+                counter.fetch_add(1, Ordering::SeqCst);
 
-                async move {
-                    // Update counter
-                    counter.fetch_add(1, Ordering::SeqCst);
-
-                    // Occasionally update shared map (to reduce contention)
-                    if x % 10 == 0 {
-                        let mut map = shared_map.lock().await;
-                        map.insert(x, x);
-                    }
-
-                    x
+                // Occasionally update shared map (to reduce contention)
+                if x % 10 == 0 {
+                    let mut map = shared_map.lock().await;
+                    map.insert(x, x);
                 }
+
+                x
             }
-        });
+        }
+    });
 
     // Collect results with timeout
     let timeout_duration = Duration::from_secs(30);
@@ -585,12 +636,18 @@ async fn stress_test_concurrent_operations() {
 
     // Verify results
     assert_eq!(results.len(), item_count, "Should have processed all items");
-    assert_eq!(counter.load(Ordering::SeqCst), item_count, 
-               "Counter should equal the number of processed items");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        item_count,
+        "Counter should equal the number of processed items"
+    );
 
     let map = shared_map.lock().await;
-    assert_eq!(map.len(), item_count / 10, 
-               "Map should contain the expected number of items");
+    assert_eq!(
+        map.len(),
+        item_count / 10,
+        "Map should contain the expected number of items"
+    );
 
     println!("✅ Stress test passed");
 }
@@ -616,7 +673,8 @@ async fn test_multiple_tasks_same_stream() {
     // Divide the data among tasks based on remainder when divided by task_count
     for task_id in 0..task_count {
         // Create a filtered stream for this task
-        let task_data: Vec<usize> = source_data.iter()
+        let task_data: Vec<usize> = source_data
+            .iter()
             .filter(|&&x| x % task_count == task_id)
             .cloned()
             .collect();
@@ -632,7 +690,7 @@ async fn test_multiple_tasks_same_stream() {
             // Process items from the stream
             while let Some(item) = task_stream.next().await {
                 // Process the item
-                let processed_item = item * 2;  // Simple transformation
+                let processed_item = item * 2; // Simple transformation
 
                 // Store the result
                 let mut results_guard = results.lock().await;
@@ -671,8 +729,10 @@ async fn test_multiple_tasks_same_stream() {
     let total_processed = results_guard.len();
 
     // Each item should be processed by exactly one task
-    assert_eq!(total_processed, item_count, 
-               "All items should have been processed exactly once");
+    assert_eq!(
+        total_processed, item_count,
+        "All items should have been processed exactly once"
+    );
 
     // Verify the transformation was applied correctly
     let mut expected_results: Vec<usize> = source_data.iter().map(|&x| x * 2).collect();
@@ -682,8 +742,10 @@ async fn test_multiple_tasks_same_stream() {
     expected_results.sort();
     actual_results.sort();
 
-    assert_eq!(actual_results, expected_results, 
-               "Transformation should have been applied correctly to all items");
+    assert_eq!(
+        actual_results, expected_results,
+        "Transformation should have been applied correctly to all items"
+    );
 
     println!("✅ Multiple tasks same stream test passed");
 }
@@ -705,44 +767,43 @@ async fn test_concurrent_shared_state_modifications() {
     let mutex_vec = Arc::new(Mutex::new(Vec::new()));
 
     // Process the stream with high concurrency
-    let stream = from_iter(source_data.clone())
-        .par_eval_map_rs2(20, {
+    let stream = from_iter(source_data.clone()).par_eval_map_rs2(20, {
+        let atomic_counter = atomic_counter.clone();
+        let mutex_map = mutex_map.clone();
+        let mutex_vec = mutex_vec.clone();
+
+        move |x| {
             let atomic_counter = atomic_counter.clone();
             let mutex_map = mutex_map.clone();
             let mutex_vec = mutex_vec.clone();
+            let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..5));
 
-            move |x| {
-                let atomic_counter = atomic_counter.clone();
-                let mutex_map = mutex_map.clone();
-                let mutex_vec = mutex_vec.clone();
-                let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..5));
+            async move {
+                // Simulate some async work
+                sleep(sleep_duration).await;
 
-                async move {
-                    // Simulate some async work
-                    sleep(sleep_duration).await;
+                // 1. Modify atomic counter (no lock needed)
+                atomic_counter.fetch_add(1, Ordering::SeqCst);
 
-                    // 1. Modify atomic counter (no lock needed)
-                    atomic_counter.fetch_add(1, Ordering::SeqCst);
-
-                    // 2. Modify mutex-protected map
-                    {
-                        let mut map = mutex_map.lock().await;
-                        // Insert or update the value
-                        let entry = map.entry(x % 10).or_insert(0);
-                        *entry += 1;
-                    }
-
-                    // 3. Modify mutex-protected vector
-                    {
-                        let mut vec = mutex_vec.lock().await;
-                        vec.push(x);
-                    }
-
-                    // Return the processed item
-                    x
+                // 2. Modify mutex-protected map
+                {
+                    let mut map = mutex_map.lock().await;
+                    // Insert or update the value
+                    let entry = map.entry(x % 10).or_insert(0);
+                    *entry += 1;
                 }
+
+                // 3. Modify mutex-protected vector
+                {
+                    let mut vec = mutex_vec.lock().await;
+                    vec.push(x);
+                }
+
+                // Return the processed item
+                x
             }
-        });
+        }
+    });
 
     // Collect the results
     let results: Vec<usize> = stream.collect().await;
@@ -751,27 +812,37 @@ async fn test_concurrent_shared_state_modifications() {
     assert_eq!(results.len(), item_count, "Should have processed all items");
 
     // Verify atomic counter
-    assert_eq!(atomic_counter.load(Ordering::SeqCst), item_count, 
-               "Atomic counter should equal the number of processed items");
+    assert_eq!(
+        atomic_counter.load(Ordering::SeqCst),
+        item_count,
+        "Atomic counter should equal the number of processed items"
+    );
 
     // Verify mutex-protected map
     let map = mutex_map.lock().await;
     let map_sum: usize = map.values().sum();
-    assert_eq!(map_sum, item_count, 
-               "Sum of map values should equal the number of processed items");
+    assert_eq!(
+        map_sum, item_count,
+        "Sum of map values should equal the number of processed items"
+    );
 
     // Verify mutex-protected vector
     let vec = mutex_vec.lock().await;
-    assert_eq!(vec.len(), item_count, 
-               "Vector length should equal the number of processed items");
+    assert_eq!(
+        vec.len(),
+        item_count,
+        "Vector length should equal the number of processed items"
+    );
 
     // Verify that the vector contains all the original items (in any order)
     let mut sorted_vec = vec.clone();
     sorted_vec.sort();
     let mut sorted_source = source_data.clone();
     sorted_source.sort();
-    assert_eq!(sorted_vec, sorted_source, 
-               "Vector should contain all the original items");
+    assert_eq!(
+        sorted_vec, sorted_source,
+        "Vector should contain all the original items"
+    );
 
     println!("✅ Concurrent shared state modifications test passed");
 }
@@ -837,16 +908,21 @@ async fn test_backpressure_handling() {
 
     // Verify the results
     assert_eq!(results.len(), item_count, "Should have processed all items");
-    assert_eq!(processed_count.load(Ordering::SeqCst), item_count, 
-               "Processed count should equal the number of items");
+    assert_eq!(
+        processed_count.load(Ordering::SeqCst),
+        item_count,
+        "Processed count should equal the number of items"
+    );
 
     // Verify that the results contain all the original items (order may be different with backpressure)
     let mut sorted_results = results.clone();
     sorted_results.sort();
     let mut sorted_source = source_data.clone();
     sorted_source.sort();
-    assert_eq!(sorted_results, sorted_source, 
-               "Results should contain all the original items");
+    assert_eq!(
+        sorted_results, sorted_source,
+        "Results should contain all the original items"
+    );
 
     // Test with drop strategy
     println!("Testing with drop oldest strategy...");
@@ -884,21 +960,33 @@ async fn test_backpressure_handling() {
     // Collect the results with a timeout
     let results = match timeout(timeout_duration, stream.collect::<Vec<_>>()).await {
         Ok(results) => results,
-        Err(_) => panic!("Backpressure drop test timed out after {:?}", timeout_duration),
+        Err(_) => panic!(
+            "Backpressure drop test timed out after {:?}",
+            timeout_duration
+        ),
     };
 
     // With drop oldest strategy, we expect to process all items but may drop some
     let processed = processed_count.load(Ordering::SeqCst);
-    println!("Processed {} out of {} items with drop oldest strategy", processed, item_count);
+    println!(
+        "Processed {} out of {} items with drop oldest strategy",
+        processed, item_count
+    );
     let dropped = item_count - processed;
-    assert!(dropped > 0, "Some items should have been dropped with aggressive backpressure");
+    assert!(
+        dropped > 0,
+        "Some items should have been dropped with aggressive backpressure"
+    );
 
     // We should have processed some items
     assert!(processed > 0, "Should have processed some items");
 
     // The number of results should match the number of processed items
-    assert_eq!(results.len(), processed, 
-               "Number of results should match the number of processed items");
+    assert_eq!(
+        results.len(),
+        processed,
+        "Number of results should match the number of processed items"
+    );
 
     println!("✅ Backpressure handling test passed");
 }
@@ -941,47 +1029,52 @@ async fn test_resource_cleanup() {
             let source_data = source_data.clone();
             move |resource| {
                 // Use the resource to process the stream
-                from_iter(source_data.clone())
-                    .par_eval_map_rs2(10, {
+                from_iter(source_data.clone()).par_eval_map_rs2(10, {
+                    let resource = resource.clone();
+
+                    move |x| {
                         let resource = resource.clone();
+                        let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..10));
 
-                        move |x| {
-                            let resource = resource.clone();
-                            let sleep_duration = Duration::from_millis(thread_rng().gen_range(1..10));
+                        async move {
+                            // Verify the resource is active
+                            assert!(
+                                resource.load(Ordering::SeqCst) > 0,
+                                "Resource should be active during processing"
+                            );
 
-                            async move {
-                                // Verify the resource is active
-                                assert!(resource.load(Ordering::SeqCst) > 0, 
-                                        "Resource should be active during processing");
+                            // Simulate some work
+                            sleep(sleep_duration).await;
 
-                                // Simulate some work
-                                sleep(sleep_duration).await;
+                            // We'll skip the error simulation for now to make the test pass
+                            // if x % 50 == 0 && x > 0 {
+                            //     panic!("Simulated error for item {}", x);
+                            // }
 
-                                // We'll skip the error simulation for now to make the test pass
-                                // if x % 50 == 0 && x > 0 {
-                                //     panic!("Simulated error for item {}", x);
-                                // }
-
-                                x
-                            }
+                            x
                         }
-                    })
+                    }
+                })
             }
         },
         release_resource,
     );
 
     // Process the stream with error handling
-    let results = stream
-        .collect::<Vec<_>>()
-        .await;
+    let results = stream.collect::<Vec<_>>().await;
 
     // Verify that all resources were cleaned up
-    assert_eq!(resource_tracker.load(Ordering::SeqCst), 0, 
-               "All resources should be cleaned up after stream completion");
+    assert_eq!(
+        resource_tracker.load(Ordering::SeqCst),
+        0,
+        "All resources should be cleaned up after stream completion"
+    );
 
     // Verify the results (we may have fewer results due to simulated errors)
-    println!("Processed {} items (some may have been skipped due to errors)", results.len());
+    println!(
+        "Processed {} items (some may have been skipped due to errors)",
+        results.len()
+    );
 
     // Test with early cancellation
     println!("Testing with early cancellation...");
@@ -996,26 +1089,27 @@ async fn test_resource_cleanup() {
             let source_data = source_data.clone();
             move |resource| {
                 // Use the resource to process the stream
-                from_iter(source_data.clone())
-                    .par_eval_map_rs2(10, {
+                from_iter(source_data.clone()).par_eval_map_rs2(10, {
+                    let resource = resource.clone();
+
+                    move |x| {
                         let resource = resource.clone();
+                        let sleep_duration = Duration::from_millis(thread_rng().gen_range(10..20));
 
-                        move |x| {
-                            let resource = resource.clone();
-                            let sleep_duration = Duration::from_millis(thread_rng().gen_range(10..20));
+                        async move {
+                            // Verify the resource is active
+                            assert!(
+                                resource.load(Ordering::SeqCst) > 0,
+                                "Resource should be active during processing"
+                            );
 
-                            async move {
-                                // Verify the resource is active
-                                assert!(resource.load(Ordering::SeqCst) > 0, 
-                                        "Resource should be active during processing");
+                            // Simulate some work
+                            sleep(sleep_duration).await;
 
-                                // Simulate some work
-                                sleep(sleep_duration).await;
-
-                                x
-                            }
+                            x
                         }
-                    })
+                    }
+                })
             }
         },
         release_resource,
@@ -1059,10 +1153,16 @@ async fn test_resource_cleanup() {
         println!("Manually cleaned up resources after early cancellation");
     }
 
-    assert_eq!(resource_tracker.load(Ordering::SeqCst), 0, 
-               "All resources should be cleaned up after early cancellation");
+    assert_eq!(
+        resource_tracker.load(Ordering::SeqCst),
+        0,
+        "All resources should be cleaned up after early cancellation"
+    );
 
-    println!("Processed {} items before cancellation", partial_results.len());
+    println!(
+        "Processed {} items before cancellation",
+        partial_results.len()
+    );
 
     println!("✅ Resource cleanup test passed");
 }
@@ -1083,47 +1183,48 @@ async fn test_timeout_handling() {
     let timeout_ops = Arc::new(AtomicUsize::new(0));
 
     // Create a stream with operations that may time out
-    let stream = from_iter(source_data)
-        .par_eval_map_rs2(10, {
+    let stream = from_iter(source_data).par_eval_map_rs2(10, {
+        let successful_ops = successful_ops.clone();
+        let timeout_ops = timeout_ops.clone();
+
+        move |x| {
             let successful_ops = successful_ops.clone();
             let timeout_ops = timeout_ops.clone();
 
-            move |x| {
-                let successful_ops = successful_ops.clone();
-                let timeout_ops = timeout_ops.clone();
+            async move {
+                // Determine processing time based on the item value
+                let processing_time = if x % 10 == 0 {
+                    // Some items take longer than the timeout
+                    Duration::from_millis(200)
+                } else {
+                    // Most items complete within the timeout
+                    Duration::from_millis(thread_rng().gen_range(10..50))
+                };
 
-                async move {
-                    // Determine processing time based on the item value
-                    let processing_time = if x % 10 == 0 {
-                        // Some items take longer than the timeout
-                        Duration::from_millis(200)
-                    } else {
-                        // Most items complete within the timeout
-                        Duration::from_millis(thread_rng().gen_range(10..50))
-                    };
+                // Apply a timeout to the operation
+                let operation_timeout = Duration::from_millis(100);
 
-                    // Apply a timeout to the operation
-                    let operation_timeout = Duration::from_millis(100);
-
-                    match timeout(operation_timeout, async {
-                        // Simulate some work
-                        sleep(processing_time).await;
-                        x * 2
-                    }).await {
-                        Ok(result) => {
-                            // Operation completed within timeout
-                            successful_ops.fetch_add(1, Ordering::SeqCst);
-                            Ok(result)
-                        },
-                        Err(_) => {
-                            // Operation timed out
-                            timeout_ops.fetch_add(1, Ordering::SeqCst);
-                            Err(format!("Operation timed out for item {}", x))
-                        }
+                match timeout(operation_timeout, async {
+                    // Simulate some work
+                    sleep(processing_time).await;
+                    x * 2
+                })
+                .await
+                {
+                    Ok(result) => {
+                        // Operation completed within timeout
+                        successful_ops.fetch_add(1, Ordering::SeqCst);
+                        Ok(result)
+                    }
+                    Err(_) => {
+                        // Operation timed out
+                        timeout_ops.fetch_add(1, Ordering::SeqCst);
+                        Err(format!("Operation timed out for item {}", x))
                     }
                 }
             }
-        });
+        }
+    });
 
     // Collect the results
     let results: Vec<Result<usize, String>> = stream.collect().await;
@@ -1141,17 +1242,24 @@ async fn test_timeout_handling() {
     // Verify that we have both successful and timed out operations
     assert!(successful > 0, "Should have some successful operations");
     assert!(timed_out > 0, "Should have some timed out operations");
-    assert_eq!(successful + timed_out, item_count, 
-               "Sum of successful and timed out operations should equal the number of items");
+    assert_eq!(
+        successful + timed_out,
+        item_count,
+        "Sum of successful and timed out operations should equal the number of items"
+    );
 
     // Verify that the results match our counters
     let successful_results = results.iter().filter(|r| r.is_ok()).count();
     let error_results = results.iter().filter(|r| r.is_err()).count();
 
-    assert_eq!(successful_results, successful, 
-               "Number of successful results should match the counter");
-    assert_eq!(error_results, timed_out, 
-               "Number of error results should match the counter");
+    assert_eq!(
+        successful_results, successful,
+        "Number of successful results should match the counter"
+    );
+    assert_eq!(
+        error_results, timed_out,
+        "Number of error results should match the counter"
+    );
 
     // Test with timeout_rs2 combinator
     println!("Testing with timeout_rs2 combinator...");
@@ -1167,7 +1275,7 @@ async fn test_timeout_handling() {
                 // Determine processing time based on the item value
                 let processing_time = if x % 10 == 0 {
                     // Some items take longer than the timeout
-                    Duration::from_millis(500)  // Make this much longer to ensure timeouts
+                    Duration::from_millis(500) // Make this much longer to ensure timeouts
                 } else {
                     // Most items complete within the timeout
                     Duration::from_millis(thread_rng().gen_range(10..50))
@@ -1195,8 +1303,10 @@ async fn test_timeout_handling() {
     assert!(successful > 0, "Should have some successful operations");
     assert!(timed_out > 0, "Should have some timed out operations");
     // Note: The sum might not exactly equal item_count due to how the stream is processed
-    assert!(successful + timed_out >= item_count, 
-            "Sum of successful and timed out operations should be at least the number of items");
+    assert!(
+        successful + timed_out >= item_count,
+        "Sum of successful and timed out operations should be at least the number of items"
+    );
 
     println!("✅ Timeout handling test passed");
 }

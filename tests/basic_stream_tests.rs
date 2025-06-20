@@ -1,5 +1,5 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
 
 #[test]
@@ -60,9 +60,12 @@ fn test_emit_after() {
         let stream = emit_after(42, std::time::Duration::from_millis(100));
         let result = stream.collect::<Vec<_>>().await;
         let elapsed = start.elapsed();
-        
+
         assert_eq!(result, vec![42]);
-        assert!(elapsed.as_millis() >= 100, "Should have waited at least 100ms");
+        assert!(
+            elapsed.as_millis() >= 100,
+            "Should have waited at least 100ms"
+        );
     });
 }
 

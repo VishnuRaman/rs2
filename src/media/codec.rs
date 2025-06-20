@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
+use std::sync::Arc;
 
 /// Errors that can occur during codec operations
 #[derive(Debug, Clone)]
@@ -79,14 +80,14 @@ pub struct CodecStats {
 /// Main codec implementation
 pub struct MediaCodec {
     config: EncodingConfig,
-    stats: tokio::sync::Mutex<CodecStats>,
+    stats: Arc<tokio::sync::Mutex<CodecStats>>,
 }
 
 impl Clone for MediaCodec {
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
-            stats: tokio::sync::Mutex::new(CodecStats::default()),
+            stats: Arc::clone(&self.stats),
         }
     }
 }
@@ -95,7 +96,7 @@ impl MediaCodec {
     pub fn new(config: EncodingConfig) -> Self {
         Self {
             config,
-            stats: tokio::sync::Mutex::new(CodecStats::default()),
+            stats: Arc::new(tokio::sync::Mutex::new(CodecStats::default())),
         }
     }
 
@@ -106,11 +107,14 @@ impl MediaCodec {
         stream_id: String,
     ) -> RS2Stream<Result<MediaChunk, CodecError>> {
         let self_clone = self.clone();
-        auto_backpressure_block(par_eval_map(raw_data_stream, 4, move |raw_data| {
-            let stream_id = stream_id.clone();
-            let codec = self_clone.clone();
-            async move { codec.encode_single_frame(raw_data, stream_id).await }
-        }), 256) // Prevent encoder from overwhelming system
+        auto_backpressure_block(
+            par_eval_map(raw_data_stream, 4, move |raw_data| {
+                let stream_id = stream_id.clone();
+                let codec = self_clone.clone();
+                async move { codec.encode_single_frame(raw_data, stream_id).await }
+            }),
+            256,
+        ) // Prevent encoder from overwhelming system
     }
 
     /// Encode a single frame/audio sample
