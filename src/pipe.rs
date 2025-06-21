@@ -1,7 +1,7 @@
 use crate::RS2Stream;
+use async_stream::stream;
 use futures_util::StreamExt;
 use std::sync::Arc;
-use async_stream::stream;
 
 /// A Pipe represents a rs2_stream transformation from one type to another.
 /// It's a function from Stream[I] to Stream[O].
@@ -23,9 +23,7 @@ impl<I, O> Pipe<I, O> {
     where
         F: Fn(RS2Stream<I>) -> RS2Stream<O> + Send + Sync + 'static,
     {
-        Pipe {
-            f: Arc::new(f),
-        }
+        Pipe { f: Arc::new(f) }
     }
 
     /// Apply this pipe to a rs2_stream
@@ -62,7 +60,8 @@ where
                     yield item;
                 }
             }
-        }.boxed()
+        }
+        .boxed()
     })
 }
 

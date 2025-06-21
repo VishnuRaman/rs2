@@ -1,8 +1,8 @@
-use rs2_stream::rs2::*;
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::Duration;
 use async_stream::stream;
+use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
 fn main() {
     let rt = Runtime::new().unwrap();
@@ -16,7 +16,8 @@ fn main() {
                 // Simulate fast production
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-        }.boxed();
+        }
+        .boxed();
 
         println!("Stream created. Applying rate_limit_backpressure with capacity 5...");
 
@@ -44,8 +45,15 @@ fn main() {
 
         let elapsed = start.elapsed();
 
-        println!("Processed {} elements with backpressure in {:?}", result.len(), elapsed);
-        println!("Without backpressure, all elements would have been produced in {:?}", Duration::from_millis(10 * 20));
+        println!(
+            "Processed {} elements with backpressure in {:?}",
+            result.len(),
+            elapsed
+        );
+        println!(
+            "Without backpressure, all elements would have been produced in {:?}",
+            Duration::from_millis(10 * 20)
+        );
         println!("With backpressure, the production rate is limited by the consumption rate");
     });
 }

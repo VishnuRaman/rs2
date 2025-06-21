@@ -1,5 +1,5 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
 
 fn main() {
@@ -22,7 +22,7 @@ fn main() {
                 |mut acc, (user, time)| async move {
                     *acc.entry(user).or_insert(0) += time;
                     acc
-                }
+                },
             )
             .await;
 

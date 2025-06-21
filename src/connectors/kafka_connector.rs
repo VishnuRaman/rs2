@@ -206,7 +206,9 @@ where
     ) -> Result<Self::Metadata, Self::Error> {
         // Validate topic name
         if config.topic.trim().is_empty() {
-            return Err(ConnectorError::InvalidConfiguration("Topic name cannot be empty".to_string()));
+            return Err(ConnectorError::InvalidConfiguration(
+                "Topic name cannot be empty".to_string(),
+            ));
         }
 
         let client_config = self.create_producer_config(&config);
@@ -232,7 +234,9 @@ where
                     match serde_json::to_vec(&item) {
                         Ok(payload) => {
                             // If it's a string message, try to extract a key for partitioning
-                            let key_string = if let Ok(message_str) = serde_json::from_slice::<String>(&payload) {
+                            let key_string = if let Ok(message_str) =
+                                serde_json::from_slice::<String>(&payload)
+                            {
                                 // Check if it matches our test pattern "p{partition}-{sequence}"
                                 if let Some(key) = message_str.split('-').next() {
                                     Some(key.to_string())
@@ -307,7 +311,10 @@ where
 
         match consumer.fetch_metadata(Some("__consumer_offsets"), Duration::from_secs(5)) {
             Ok(_) => Ok(true),
-            Err(e) => Err(ConnectorError::ConnectionFailed(format!("Failed to fetch metadata: {}", e))),
+            Err(e) => Err(ConnectorError::ConnectionFailed(format!(
+                "Failed to fetch metadata: {}",
+                e
+            ))),
         }
     }
 

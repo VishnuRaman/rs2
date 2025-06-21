@@ -1,5 +1,5 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
 
 fn main() {
@@ -10,11 +10,11 @@ fn main() {
 
         // Apply transformations
         let result = stream
-            .filter_rs2(|&x| x % 2 == 0)  // Keep only even numbers
-            .map_rs2(|x| x * 2)           // Double each number
-            .collect::<Vec<_>>()          // Collect into a Vec
+            .filter_rs2(|&x| x % 2 == 0) // Keep only even numbers
+            .map_rs2(|x| x * 2) // Double each number
+            .collect::<Vec<_>>() // Collect into a Vec
             .await;
 
-        println!("Result: {:?}", result);  // Output: Result: [4, 8]
+        println!("Result: {:?}", result); // Output: Result: [4, 8]
     });
 }

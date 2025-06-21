@@ -1,7 +1,7 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
+use rs2_stream::rs2::*;
 use std::time::{Duration, Instant};
+use tokio::runtime::Runtime;
 
 // Define our User type for the example
 #[derive(Debug, Clone, PartialEq)]
@@ -38,13 +38,23 @@ fn main() {
         // Create a stream that emits a value after a delay
         let start = Instant::now();
         let delayed_user = emit_after(
-            User { id: 2, name: "Bob".to_string(), email: "bob@example.com".to_string(), active: true, role: "user".to_string() },
-            Duration::from_millis(100)
+            User {
+                id: 2,
+                name: "Bob".to_string(),
+                email: "bob@example.com".to_string(),
+                active: true,
+                role: "user".to_string(),
+            },
+            Duration::from_millis(100),
         );
 
         let user = delayed_user.collect::<Vec<_>>().await;
         let elapsed = start.elapsed();
 
-        println!("Delayed user: {} (after {}ms)", user[0].name, elapsed.as_millis());
+        println!(
+            "Delayed user: {} (after {}ms)",
+            user[0].name,
+            elapsed.as_millis()
+        );
     });
 }

@@ -1,8 +1,8 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::Duration;
+use rs2_stream::rs2::*;
 use std::error::Error;
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
 // Define our User type
 #[derive(Debug, Clone, PartialEq)]
@@ -18,11 +18,41 @@ struct User {
 async fn fetch_users() -> Vec<User> {
     // In a real application, this would query a database
     vec![
-        User { id: 1, name: "Alice".to_string(), email: "alice@example.com".to_string(), active: true, role: "admin".to_string() },
-        User { id: 2, name: "Bob".to_string(), email: "bob@example.com".to_string(), active: true, role: "user".to_string() },
-        User { id: 3, name: "Charlie".to_string(), email: "charlie@example.com".to_string(), active: false, role: "user".to_string() },
-        User { id: 4, name: "Diana".to_string(), email: "diana@example.com".to_string(), active: true, role: "moderator".to_string() },
-        User { id: 5, name: "Eve".to_string(), email: "eve@example.com".to_string(), active: true, role: "user".to_string() },
+        User {
+            id: 1,
+            name: "Alice".to_string(),
+            email: "alice@example.com".to_string(),
+            active: true,
+            role: "admin".to_string(),
+        },
+        User {
+            id: 2,
+            name: "Bob".to_string(),
+            email: "bob@example.com".to_string(),
+            active: true,
+            role: "user".to_string(),
+        },
+        User {
+            id: 3,
+            name: "Charlie".to_string(),
+            email: "charlie@example.com".to_string(),
+            active: false,
+            role: "user".to_string(),
+        },
+        User {
+            id: 4,
+            name: "Diana".to_string(),
+            email: "diana@example.com".to_string(),
+            active: true,
+            role: "moderator".to_string(),
+        },
+        User {
+            id: 5,
+            name: "Eve".to_string(),
+            email: "eve@example.com".to_string(),
+            active: true,
+            role: "user".to_string(),
+        },
     ]
 }
 
@@ -56,11 +86,12 @@ fn main() {
             // Process active users only
             users_with_backpressure
                 .filter_rs2(|user| user.active)
-                .prefetch_rs2(2)  // Prefetch to improve performance
+                .prefetch_rs2(2) // Prefetch to improve performance
         }
 
         // Group users by role
-        let users_by_role = get_active_users().await
+        let users_by_role = get_active_users()
+            .await
             .group_by_rs2(|user| user.role.clone())
             .collect::<Vec<_>>()
             .await;
@@ -74,7 +105,8 @@ fn main() {
         }
 
         // Process users in parallel with bounded concurrency
-        let processed_users = get_active_users().await
+        let processed_users = get_active_users()
+            .await
             .par_eval_map_rs2(3, |mut user| async move {
                 // Simulate some processing
                 user.name = format!("{} (Processed)", user.name);
@@ -88,13 +120,16 @@ fn main() {
         println!("\nProcessed {} users", processed_users.len());
 
         // Send emails to users with timeout
-        let email_results = get_active_users().await
+        let email_results = get_active_users()
+            .await
             .eval_map_rs2(|user| async move {
                 // Add timeout to email sending
                 match tokio::time::timeout(
                     Duration::from_millis(200),
-                    send_email(&user, "Welcome to our platform!")
-                ).await {
+                    send_email(&user, "Welcome to our platform!"),
+                )
+                .await
+                {
                     Ok(Ok(_)) => (user.id, true),
                     _ => (user.id, false),
                 }
@@ -104,7 +139,15 @@ fn main() {
 
         println!("\nEmail results:");
         for (user_id, success) in email_results {
-            println!("User {}: {}", user_id, if success { "Email sent" } else { "Failed to send email" });
+            println!(
+                "User {}: {}",
+                user_id,
+                if success {
+                    "Email sent"
+                } else {
+                    "Failed to send email"
+                }
+            );
         }
     });
 }

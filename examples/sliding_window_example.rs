@@ -1,7 +1,6 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
-use std::time::Duration;
 
 fn main() {
     let rt = Runtime::new().unwrap();
@@ -12,10 +11,7 @@ fn main() {
         let numbers = from_iter(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
         // Apply a sliding window of size 3
-        let windows = numbers
-            .sliding_window_rs2(3)
-            .collect::<Vec<_>>()
-            .await;
+        let windows = numbers.sliding_window_rs2(3).collect::<Vec<_>>().await;
 
         // Print each window
         println!("Sliding windows of size 3:");
@@ -39,10 +35,7 @@ fn main() {
         ]);
 
         // Apply a sliding window of size 4 to create phrases
-        let phrases = words
-            .sliding_window_rs2(4)
-            .collect::<Vec<_>>()
-            .await;
+        let phrases = words.sliding_window_rs2(4).collect::<Vec<_>>().await;
 
         // Print each phrase
         println!("Phrases (sliding windows of size 4):");
