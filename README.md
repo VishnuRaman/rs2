@@ -1,6 +1,6 @@
 # RS2: Rust Streaming Library
 
-**RS2** is a high-performance, production-ready async streaming library for Rust that combines the ergonomics of reactive streams with enterprise-grade reliability features. Built for real-world applications that demand both developer productivity and operational excellence.
+**RS2** is a high-performance, async streaming library for Rust that combines the ergonomics of reactive streams with enterprise-grade reliability features. Built for real-world applications that demand both developer productivity and operational excellence.
 
 **RS2 is also a powerful stateful streaming library** with built-in state management capabilities, enabling complex stateful operations like session tracking, deduplication, windowing, and real-time analytics without external dependencies.
 
@@ -8,7 +8,7 @@
 
 **Superior Scaling Performance**: While RS2 has modest sequential overhead (1.6x vs futures-rs, comparable to tokio-stream), it delivers exceptional parallel performance with **near-linear scaling up to 16+ cores** and **7.8-8.5x speedup** for I/O-bound workloads.
 
-**Production-Grade Reliability**: Unlike basic streaming libraries, RS2 includes built-in **automatic backpressure**, **retry policies with exponential backoff**, **circuit breakers**, **timeout handling**, and **resource management** - eliminating the need to manually implement these critical production patterns.
+**Reliability**: Unlike basic streaming libraries, RS2 includes built-in **automatic backpressure**, **retry policies with exponential backoff**, **circuit breakers**, **timeout handling**, and **resource management** - eliminating the need to manually implement these critical patterns.
 
 **Stateful Stream Processing**: RS2 provides **built-in state management** with support for stateful operations like deduplication, windowing, session tracking, and real-time analytics. No external state stores required - everything is handled internally with configurable storage backends.
 
@@ -50,7 +50,7 @@ cargo run --example parallel_processing_comprehensive
 cargo run --example real_time_analytics_pipeline
 ```
 
-**These examples demonstrate RS2's full capabilities - from basic parallel processing to complex stateful analytics pipelines. Perfect for understanding how to build production-ready streaming applications!**
+**These examples demonstrate RS2's full capabilities - from basic parallel processing to complex stateful analytics pipelines. Perfect for understanding how to build streaming applications!**
 
 # RS2 Performance Benchmarks
 
@@ -205,7 +205,7 @@ The improvements hold steady across different data sizes:
 
 ### 🔧 **Optimization Recommendations**
 1. **Use windowing** for highest throughput scenarios
-2. **Limit cardinality** in production workloads
+2. **Limit cardinality** in high workloads
 3. **Consider custom storage** for performance-critical applications
 4. **Monitor memory usage** for long-running stateful operations
 
@@ -281,7 +281,7 @@ RS2 provides comprehensive stateful stream processing capabilities:
 
 ## Resource Management
 
-RS2 provides **production-grade resource management** for all streaming operations. This includes:
+RS2 provides **resource management** for all streaming operations. This includes:
 
 - **Memory usage tracking**: All stateful and queue operations automatically track memory allocation and deallocation, giving you accurate metrics for monitoring and alerting.
 - **Circuit breaking**: If memory usage or buffer overflows exceed configurable thresholds, RS2 can trip a circuit breaker to prevent system overload.
@@ -327,7 +327,7 @@ let config = ResourceConfig {
 };
 ```
 
-For most users, the default configuration is robust and production-ready.
+For most users, the default configuration is robust.
 
 #### Comprehensive Resource Management Examples
 
@@ -977,7 +977,7 @@ You can create your own connectors by implementing the `StreamConnector` trait. 
 
 ## Pipelines and Schema Validation
 
-RS2 makes it easy to build robust, production-grade streaming pipelines with ergonomic composition and strong data validation guarantees.
+RS2 makes it easy to build robust, streaming pipelines with ergonomic composition and strong data validation guarantees.
 
 ### Pipeline Builder
 
@@ -995,7 +995,7 @@ You can branch, window, aggregate, and combine streams with ergonomic combinator
 
 ### Schema Validation
 
-**Production-grade schema validation** is built in. RS2 provides:
+**Schema validation** is built in. RS2 provides:
 - The `SchemaValidator` trait for pluggable validation (JSON Schema, Avro, Protobuf, custom)
 - A `JsonSchemaValidator` for validating JSON data using [JSON Schema](https://json-schema.org/)
 - The `.with_schema_validation_rs2(validator)` combinator to filter out invalid items and log errors
@@ -1023,7 +1023,7 @@ let validated_stream = raw_stream
     .boxed();
 ```
 
-See [examples/kafka_data_pipeline.rs](examples/kafka_data_pipeline.rs) for a full production pipeline with schema validation, branching, analytics, and error handling.
+See [examples/kafka_data_pipeline.rs](examples/kafka_data_pipeline.rs) for a full pipeline with schema validation, branching, analytics, and error handling.
 
 For comprehensive examples of JSON schema validation, see [examples/schema_validation_example.rs](examples/schema_validation_example.rs). This example demonstrates:
 - Creating JSON schemas for different data types (user events, orders, sensor data)
@@ -1162,9 +1162,9 @@ RS2 excels at parallel processing with near-linear scaling:
 - **CPU bound**: Scales well up to physical core count
 - **Mixed workloads**: Automatic optimization based on workload type
 
-## Advanced Analytics (Production-Ready)
+## Advanced Analytics
 
-RS2 provides robust, production-grade advanced analytics features:
+RS2 provides advanced analytics features:
 
 - **Time-based windowed aggregations**: Tumbling and sliding windows with custom time semantics, for real-time stats, metrics, and summaries.
 - **Keyed, time-windowed joins**: Join two streams on a key (e.g., user_id) within a time window, for enrichment and correlation.
@@ -1214,7 +1214,7 @@ RS2 provides powerful state management capabilities that allow you to maintain c
 - **Flexible Storage Backends**: In-memory storage with configurable TTL, cleanup intervals, and size limits
 - **Custom Storage Backends**: Create your own storage backends (Redis, databases, etc.) by implementing the `StateStorage` trait
 - **Custom Key Extraction**: Define how to partition state using custom key extractors
-- **Production-Ready Configuration**: Predefined configurations for common use cases (session, high-performance, short-lived, long-lived)
+- **Configuration**: Predefined configurations for common use cases (session, high-performance, short-lived, long-lived)
 - **Custom Configuration**: Build custom state configurations using builder patterns or method chaining
 
 ### Available Stateful Operations
@@ -1470,7 +1470,7 @@ We welcome contributions and feature requests! Some community-requested features
 5. **Help with documentation** and examples
 
 **Priority is given to features that:**
-- Improve production reliability and performance
+- Improve reliability and performance
 - Enable new use cases and workloads
 - Reduce developer friction and complexity
 - Have clear community demand and use cases

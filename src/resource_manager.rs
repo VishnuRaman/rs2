@@ -37,9 +37,9 @@ impl Default for ResourceConfig {
 /// Circuit breaker states
 #[derive(Debug, Clone, PartialEq)]
 pub enum CircuitBreakerState {
-    Closed,    // Normal operation
-    Open,      // Circuit is open, reject operations
-    HalfOpen,  // Testing if circuit should close
+    Closed,
+    Open,
+    HalfOpen,
 }
 
 /// Resource usage metrics
@@ -194,7 +194,21 @@ impl ResourceManager {
     /// Perform emergency cleanup
     async fn emergency_cleanup(&self) {
         self.emergency_cleanups.fetch_add(1, Ordering::Relaxed);
-        // Emergency cleanup logic would go here
+        log::warn!("Emergency cleanup triggered - memory pressure detected");
+        self.perform_cleanup().await;
+        self.perform_emergency_measures().await;
+        if self.is_under_memory_pressure().await {
+            log::error!("Memory pressure persists after emergency cleanup - tripping circuit breaker");
+            self.trip_circuit_breaker().await;
+        }
+    }
+
+    /// Perform emergency measures for severe memory pressure
+    async fn perform_emergency_measures(&self) {
+        let mut trackers = self.resource_trackers.write().await;
+        trackers.clear();
+        drop(trackers);
+        log::info!("Emergency measures completed - cleared non-essential resources");
     }
 
     /// Perform periodic cleanup
@@ -208,7 +222,31 @@ impl ResourceManager {
 
     /// Perform actual cleanup operations
     async fn perform_cleanup(&self) {
-        // Cleanup logic would go here
+        log::debug!("Performing periodic cleanup");
+        
+        let mut trackers = self.resource_trackers.write().await;
+        let before_count = trackers.len();
+        
+       
+        if trackers.len() > 1000 {
+            let to_remove: Vec<String> = trackers.keys().take(100).cloned().collect();
+            for key in to_remove {
+                trackers.remove(&key);
+            }
+        }
+        
+        let after_count = trackers.len();
+        drop(trackers);
+        
+        if before_count != after_count {
+            log::info!("Cleanup completed: removed {} resources", before_count - after_count);
+        }
+        
+        let overflow_count = self.buffer_overflow_count.load(Ordering::Relaxed);
+        if overflow_count > 1000 {
+            self.buffer_overflow_count.store(0, Ordering::Relaxed);
+            log::info!("Reset buffer overflow counter");
+        }
     }
 
     /// Track a specific resource
