@@ -8,7 +8,7 @@ repository = "https://github.com/VishnuRaman/rs2"
 homepage = "https://github.com/VishnuRaman/rs2"
 documentation = "https://docs.rs/rs2"
 readme = "README.md"
-keywords = ["stream", "async", "pipeline", "analytics", "kafka", "state-management"]
+keywords = ["stream", "async", "pipeline", "analytics", "state-management"]
 categories = ["asynchronous", "data-structures", "network-programming", "concurrency"]
 license = "Apache-2.0"
 
