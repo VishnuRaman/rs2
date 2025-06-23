@@ -358,12 +358,102 @@ Limits the number of entries in in-memory storage (simple eviction strategy):
 .max_size(usize::MAX)
 ```
 
-**⚠️ Eviction Strategy Caveat**: The current implementation uses a simple eviction strategy that removes entries in alphabetical order when the maximum size is exceeded. This is **not** a true LRU (Least Recently Used) implementation. For most streaming use cases, this approach is sufficient because:
+**⚠️ Advanced Memory Management System**: RS2 implements a sophisticated multi-layered memory management system that goes beyond simple eviction strategies. The current implementation uses several complementary approaches for optimal performance and memory efficiency:
+
+### **Multi-Strategy Memory Management**
+
+#### **1. Alphabetical Eviction (Base Strategy)**
+```rust
+// Used for most stateful operations when max_size is exceeded
+evict_oldest_entries(&mut state, MAX_HASHMAP_KEYS);
+```
+- **When**: Periodic cleanup every 1000 items processed
+- **How**: Removes entries in alphabetical order when `max_size` is exceeded
+- **Why**: Simple and fast for most streaming use cases
+
+#### **2. Complete Clear Eviction (Aggressive Strategy)**
+```rust
+// Used for stateful_filter operations
+if item_count % CLEANUP_INTERVAL == 0 && seen_keys.len() > MAX_HASHMAP_KEYS {
+    // More efficient cleanup - clear all and let it rebuild
+    let old_size = seen_keys.len();
+    seen_keys.clear();
+    pending_allocations = pending_allocations.saturating_sub(old_size as u64);
+}
+```
+- **When**: Filter operations with high cardinality
+- **How**: Completely clears the key set and rebuilds
+- **Why**: More efficient for filter operations that don't need persistent state
+
+#### **3. Time-Based Cleanup (Window Strategy)**
+```rust
+// Used for join operations with time windows
+left_buffer.entry(key.clone()).or_default().retain(|x| now - x.timestamp <= window_ms);
+```
+- **When**: Stream joins with time-based windows
+- **How**: Removes items older than the window duration
+- **Why**: Maintains only relevant items for time-based correlations
+
+#### **4. Size-Based Eviction (Buffer Strategy)**
+```rust
+// Used for join buffers and pattern storage
+let max_size = config.max_size.unwrap_or(DEFAULT_BUFFER_SIZE);
+if left_buf.len() > max_size {
+    let removed = left_buf.len() - max_size;
+    left_buf.drain(0..removed);
+    pending_deallocations += removed as u64;
+    pending_buffer_overflows += 1;
+}
+```
+- **When**: Buffer overflow prevention
+- **How**: Removes oldest items when buffer exceeds configured size
+- **Why**: Prevents unbounded memory growth in join operations
+
+#### **5. Pattern Size Limits (Specialized Strategy)**
+```rust
+// Used for pattern detection operations
+if pattern.len() > MAX_PATTERN_SIZE {
+    let drained = pattern.len() - MAX_PATTERN_SIZE;
+    pattern.drain(0..drained);
+    pending_deallocations += drained as u64;
+    pending_buffer_overflows += 1;
+}
+```
+- **When**: Pattern detection with large pattern buffers
+- **How**: Limits pattern buffer to prevent memory overflow
+- **Why**: Controls memory usage for complex pattern matching
+
+### **Resource Tracking & Batching**
+
+The system includes sophisticated resource tracking:
+```rust
+// Batch resource tracking every 100 items
+if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
+    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
+    pending_allocations = 0;
+    pending_deallocations = 0;
+    pending_buffer_overflows = 0;
+}
+```
+
+### **Why This Multi-Strategy Approach Works**
 
 - **Streaming Context**: Most operations have natural boundaries (windows, sessions, timeouts)
 - **Key Cardinality**: 10k unique keys per operation is generous for most use cases  
-- **Performance**: Simple eviction is faster and uses less memory than true LRU
+- **Performance**: Multiple strategies optimize for different operation types
 - **TTL Backup**: TTL expiration provides additional cleanup mechanisms
+- **Resource Awareness**: Built-in tracking prevents memory leaks
+
+### **Configuration Constants**
+
+```rust
+const MAX_HASHMAP_KEYS: usize = 10_000;        // Max keys per operation
+const MAX_GROUP_SIZE: usize = 10_000;          // Max items per group
+const MAX_PATTERN_SIZE: usize = 1_000;         // Max items per pattern
+const CLEANUP_INTERVAL: u64 = 1000;            // Cleanup every 1000 items
+const RESOURCE_TRACKING_INTERVAL: u64 = 100;   // Track resources every 100 items
+const DEFAULT_BUFFER_SIZE: usize = 1024;       // Default buffer size
+```
 
 If you need true LRU behavior for high-cardinality scenarios, consider implementing a custom storage backend with LRU capabilities.
 

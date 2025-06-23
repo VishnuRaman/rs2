@@ -102,7 +102,51 @@ Testing on multi-core hardware with different concurrency levels:
 | **TTL Management** | ✅ Automatic | Background cleanup, configurable intervals |
 | **Concurrent Access** | ✅ Thread-safe | Arc<Mutex> for shared state access |
 
-**⚠️ Eviction Strategy Note**: RS2 uses simple alphabetical eviction rather than true LRU. This is sufficient for most streaming use cases due to natural boundaries (windows, sessions, timeouts) and TTL expiration.
+**⚠️ Advanced Memory Management System**: RS2 implements a sophisticated multi-layered memory management system that goes beyond simple eviction strategies. The current implementation uses several complementary approaches for optimal performance and memory efficiency:
+
+### **Multi-Strategy Memory Management**
+
+#### **1. Alphabetical Eviction (Base Strategy)**
+- **When**: Periodic cleanup every 1000 items processed
+- **How**: Removes entries in alphabetical order when `max_size` is exceeded
+- **Why**: Simple and fast for most streaming use cases
+
+#### **2. Complete Clear Eviction (Aggressive Strategy)**
+- **When**: Filter operations with high cardinality
+- **How**: Completely clears the key set and rebuilds
+- **Why**: More efficient for filter operations that don't need persistent state
+
+#### **3. Time-Based Cleanup (Window Strategy)**
+- **When**: Stream joins with time-based windows
+- **How**: Removes items older than the window duration
+- **Why**: Maintains only relevant items for time-based correlations
+
+#### **4. Size-Based Eviction (Buffer Strategy)**
+- **When**: Buffer overflow prevention
+- **How**: Removes oldest items when buffer exceeds configured size
+- **Why**: Prevents unbounded memory growth in join operations
+
+#### **5. Pattern Size Limits (Specialized Strategy)**
+- **When**: Pattern detection with large pattern buffers
+- **How**: Limits pattern buffer to prevent memory overflow
+- **Why**: Controls memory usage for complex pattern matching
+
+### **Resource Tracking & Batching**
+
+The system includes sophisticated resource tracking with batched operations every 100 items to minimize overhead while maintaining accurate memory usage statistics.
+
+### **Configuration Constants**
+
+```rust
+const MAX_HASHMAP_KEYS: usize = 10_000;        // Max keys per operation
+const MAX_GROUP_SIZE: usize = 10_000;          // Max items per group
+const MAX_PATTERN_SIZE: usize = 1_000;         // Max items per pattern
+const CLEANUP_INTERVAL: u64 = 1000;            // Cleanup every 1000 items
+const RESOURCE_TRACKING_INTERVAL: u64 = 100;   // Track resources every 100 items
+const DEFAULT_BUFFER_SIZE: usize = 1024;       // Default buffer size
+```
+
+This multi-strategy approach ensures optimal performance for different operation types while preventing memory leaks and maintaining predictable resource usage. For high-cardinality scenarios requiring true LRU behavior, consider implementing a custom storage backend with LRU capabilities.
 
 ## Trading Use Case Alignment
 

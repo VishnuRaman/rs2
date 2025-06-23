@@ -851,7 +851,7 @@ RS2 includes a comprehensive media streaming system with support for file and li
 
 ##### Basic File Streaming
 
-For examples of streaming media from a file, see [examples/media_streaming/basic_file_streaming.rs](examples/basic_file_streaming.rs).
+For examples of streaming media from a file, see [examples/media_streaming/basic_file_streaming.rs](examples/media_streaming/basic_file_streaming.rs).
 
 ```rust
 // This example demonstrates:
@@ -864,7 +864,7 @@ For examples of streaming media from a file, see [examples/media_streaming/basic
 
 ##### Live Streaming
 
-For examples of setting up a live stream, see [examples/media_streaming/live_streaming.rs](examples/live_streaming.rs).
+For examples of setting up a live stream, see [examples/media_streaming/live_streaming.rs](examples/media_streaming/live_streaming.rs).
 
 ```rust
 // This example demonstrates:
@@ -878,7 +878,7 @@ For examples of setting up a live stream, see [examples/media_streaming/live_str
 
 ##### Custom Codec Configuration
 
-For examples of configuring a custom codec, see [examples/media_streaming/custom_codec.rs](examples/custom_codec.rs).
+For examples of configuring a custom codec, see [examples/media_streaming/custom_codec.rs](examples/media_streaming/custom_codec.rs).
 
 ```rust
 // This example demonstrates:
@@ -891,7 +891,7 @@ For examples of configuring a custom codec, see [examples/media_streaming/custom
 
 ##### Handling Stream Events
 
-For examples of handling media stream events, see [examples/media_streaming/stream_events.rs](examples/stream_events.rs).
+For examples of handling media stream events, see [examples/media_streaming/stream_events.rs](examples/media_streaming/stream_events.rs).
 
 ```rust
 // This example demonstrates:
@@ -1282,6 +1282,54 @@ This example demonstrates:
 - Implementing a custom in-memory backend with atomic update logic
 - Simulating a Redis-like backend
 - Using your backend with stateful stream operations
+
+## Advanced Memory Management System
+
+RS2 implements a sophisticated multi-layered memory management system that goes beyond simple eviction strategies. The system uses several complementary approaches for optimal performance and memory efficiency:
+
+### **Multi-Strategy Memory Management**
+
+#### **1. Alphabetical Eviction (Base Strategy)**
+- **When**: Periodic cleanup every 1000 items processed
+- **How**: Removes entries in alphabetical order when `max_size` is exceeded
+- **Why**: Simple and fast for most streaming use cases
+
+#### **2. Complete Clear Eviction (Aggressive Strategy)**
+- **When**: Filter operations with high cardinality
+- **How**: Completely clears the key set and rebuilds
+- **Why**: More efficient for filter operations that don't need persistent state
+
+#### **3. Time-Based Cleanup (Window Strategy)**
+- **When**: Stream joins with time-based windows
+- **How**: Removes items older than the window duration
+- **Why**: Maintains only relevant items for time-based correlations
+
+#### **4. Size-Based Eviction (Buffer Strategy)**
+- **When**: Buffer overflow prevention
+- **How**: Removes oldest items when buffer exceeds configured size
+- **Why**: Prevents unbounded memory growth in join operations
+
+#### **5. Pattern Size Limits (Specialized Strategy)**
+- **When**: Pattern detection with large pattern buffers
+- **How**: Limits pattern buffer to prevent memory overflow
+- **Why**: Controls memory usage for complex pattern matching
+
+### **Resource Tracking & Batching**
+
+The system includes sophisticated resource tracking with batched operations every 100 items to minimize overhead while maintaining accurate memory usage statistics.
+
+### **Configuration Constants**
+
+```rust
+const MAX_HASHMAP_KEYS: usize = 10_000;        // Max keys per operation
+const MAX_GROUP_SIZE: usize = 10_000;          // Max items per group
+const MAX_PATTERN_SIZE: usize = 1_000;         // Max items per pattern
+const CLEANUP_INTERVAL: u64 = 1000;            // Cleanup every 1000 items
+const RESOURCE_TRACKING_INTERVAL: u64 = 100;   // Track resources every 100 items
+const DEFAULT_BUFFER_SIZE: usize = 1024;       // Default buffer size
+```
+
+This multi-strategy approach ensures optimal performance for different operation types while preventing memory leaks and maintaining predictable resource usage.
 
 ## Performance Optimization Guide
 
