@@ -535,11 +535,15 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         async move {
             let resource_manager = get_global_resource_manager();
             
-            if std::any::TypeId::of::<B>() == std::any::TypeId::of::<Vec<Self::Item>>() {
-                // Create Vec with smart capacity management
-                let mut vec = Vec::with_capacity(config.initial_capacity);
-                let mut items_collected = 0;
+            // Create collection with smart capacity management
+            let mut collection = B::default();
+            let mut items_collected = 0;
 
+            // For Vec<T>, we can optimize with capacity hints
+            if std::any::TypeId::of::<B>() == std::any::TypeId::of::<Vec<Self::Item>>() {
+                // Use a temporary Vec for optimized collection, then convert
+                let mut temp_vec = Vec::with_capacity(config.initial_capacity);
+                
                 // Track initial memory allocation
                 resource_manager.track_memory_allocation(config.initial_capacity as u64).await.ok();
 
@@ -552,14 +556,14 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
                     }
 
                     // Apply growth strategy when needed
-                    if vec.len() == vec.capacity() {
-                        let old_capacity = vec.capacity();
+                    if temp_vec.len() == temp_vec.capacity() {
+                        let old_capacity = temp_vec.capacity();
                         let new_capacity = match config.growth_strategy {
-                            GrowthStrategy::Linear(step) => vec.capacity() + step,
+                            GrowthStrategy::Linear(step) => temp_vec.capacity() + step,
                             GrowthStrategy::Exponential(factor) => {
-                                (vec.capacity() as f64 * factor) as usize
+                                (temp_vec.capacity() as f64 * factor) as usize
                             }
-                            GrowthStrategy::Fixed => vec.capacity(), // No growth
+                            GrowthStrategy::Fixed => temp_vec.capacity(), // No growth
                         };
 
                         let capped_capacity = if let Some(max_cap) = config.max_capacity {
@@ -568,40 +572,43 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
                             new_capacity
                         };
 
-                        vec.reserve(capped_capacity - vec.capacity());
+                        temp_vec.reserve(capped_capacity - temp_vec.capacity());
                         
                         // Track memory allocation for capacity increase
-                        let capacity_increase = vec.capacity() - old_capacity;
+                        let capacity_increase = temp_vec.capacity() - old_capacity;
                         if capacity_increase > 0 {
                             resource_manager.track_memory_allocation(capacity_increase as u64).await.ok();
                         }
                     }
 
-                    vec.push(item);
+                    temp_vec.push(item);
                     items_collected += 1;
                     
                     // Track memory allocation for each item
                     resource_manager.track_memory_allocation(1).await.ok();
                 }
 
-                // Safe transmute back to B
-                let result = unsafe {
-                    let ptr = &vec as *const Vec<Self::Item> as *const B;
-                    let result = std::ptr::read(ptr);
-                    std::mem::forget(vec);
-                    result
-                };
-                result
+                // Type-safe conversion: extend the target collection with the temp_vec
+                collection.extend(temp_vec);
             } else {
                 // Fallback for other collection types
-                let mut collection = B::default();
                 while let Some(item) = stream.next().await {
+                    // Check max_capacity limit
+                    if let Some(max_cap) = config.max_capacity {
+                        if items_collected >= max_cap {
+                            break; // Respect size limit
+                        }
+                    }
+
                     collection.extend(std::iter::once(item));
+                    items_collected += 1;
+                    
                     // Track memory allocation for each item
                     resource_manager.track_memory_allocation(1).await.ok();
                 }
-                collection
             }
+            
+            collection
         }
     }
 

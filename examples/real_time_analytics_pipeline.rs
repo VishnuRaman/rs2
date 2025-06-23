@@ -175,15 +175,16 @@ fn stream_from_vec<T: Send + Sync + Clone + 'static>(v: Vec<T>) -> impl Stream<I
     struct VecStream<T> {
         data: VecDeque<T>,
     }
+    
     impl<T: Send + Sync + Clone + 'static> Stream for VecStream<T> {
         type Item = T;
         fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<T>> {
             Poll::Ready(self.data.pop_front())
         }
     }
+    
     impl<T: Send + Sync + Clone + 'static> Unpin for VecStream<T> {}
-    unsafe impl<T: Send + Sync + Clone + 'static> Sync for VecStream<T> {}
-    unsafe impl<T: Send + Sync + Clone + 'static> Send for VecStream<T> {}
+    
     VecStream { data: v.into() }
 }
 
