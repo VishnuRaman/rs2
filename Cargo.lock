@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "rs2-stream"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1796,6 +1796,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "jsonschema",
+ "lazy_static",
  "log",
  "num_cpus",
  "once_cell",

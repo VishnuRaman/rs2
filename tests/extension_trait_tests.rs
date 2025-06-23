@@ -1,14 +1,14 @@
-use rs2_stream::rs2::*;
-use rs2_stream::error::StreamError;
-use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
 use async_stream::stream;
-use std::time::Duration;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use std::collections::{HashSet, BTreeSet};
+use futures_util::stream::StreamExt;
+use rs2_stream::error::StreamError;
+use rs2_stream::rs2::*;
+use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
 use rs2_stream::stream_performance_metrics::HealthThresholds;
+use std::collections::{BTreeSet, HashSet};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::runtime::Runtime;
+use tokio::sync::Mutex;
 
 // Tests for RResultStreamExt trait
 #[test]
@@ -39,12 +39,10 @@ fn test_on_error_resume_next_rs2() {
         let stream = from_iter(vec![Ok(1), Err("error1"), Ok(3), Err("error2")]);
 
         let result = stream
-            .on_error_resume_next_rs2(|e| {
-                match e {
-                    "error1" => from_iter(vec![42]),
-                    "error2" => from_iter(vec![43]),
-                    _ => from_iter(vec![0]),
-                }
+            .on_error_resume_next_rs2(|e| match e {
+                "error1" => from_iter(vec![42]),
+                "error2" => from_iter(vec![43]),
+                _ => from_iter(vec![0]),
             })
             .collect::<Vec<_>>()
             .await;
@@ -84,7 +82,7 @@ fn test_retry_rs2() {
                                     } else {
                                         Ok(i)
                                     }
-                                },
+                                }
                                 _ => Err("permanent error"),
                             }
                         }
@@ -95,22 +93,28 @@ fn test_retry_rs2() {
 
         let stream = make_stream();
 
-        let result = stream
-            .retry_rs2(3, make_stream)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.retry_rs2(3, make_stream).collect::<Vec<_>>().await;
 
         // The retry_rs2 function yields all items from all attempts, not just the final result
         // First attempt: Ok(0), Err("temp error")
         // Second attempt: Ok(0), Err("temp error")
         // Third attempt: Ok(0), Ok(1), Err("permanent error")
         // Fourth attempt: Ok(0), Ok(1), Err("permanent error")
-        assert_eq!(result, vec![
-            Ok(0), Err("temp error"),  // First attempt
-            Ok(0), Err("temp error"),  // Second attempt
-            Ok(0), Ok(1), Err("permanent error"),  // Third attempt
-            Ok(0), Ok(1), Err("permanent error"),  // Fourth attempt
-        ]);
+        assert_eq!(
+            result,
+            vec![
+                Ok(0),
+                Err("temp error"), // First attempt
+                Ok(0),
+                Err("temp error"), // Second attempt
+                Ok(0),
+                Ok(1),
+                Err("permanent error"), // Third attempt
+                Ok(0),
+                Ok(1),
+                Err("permanent error"), // Fourth attempt
+            ]
+        );
 
         // Check retry counts
         // The retry_rs2 function restarts the rs2_stream from the beginning each time
@@ -129,10 +133,7 @@ fn test_map_rs2() {
     rt.block_on(async {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
-        let result = stream
-            .map_rs2(|x| x * 2)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.map_rs2(|x| x * 2).collect::<Vec<_>>().await;
 
         assert_eq!(result, vec![2, 4, 6, 8, 10]);
     });
@@ -144,10 +145,7 @@ fn test_filter_rs2() {
     rt.block_on(async {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
-        let result = stream
-            .filter_rs2(|x| x % 2 == 0)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.filter_rs2(|x| x % 2 == 0).collect::<Vec<_>>().await;
 
         assert_eq!(result, vec![2, 4]);
     });
@@ -190,10 +188,7 @@ fn test_merge_rs2() {
         let stream1 = from_iter(vec![1, 3, 5]);
         let stream2 = from_iter(vec![2, 4, 6]);
 
-        let result = stream1
-            .merge_rs2(stream2)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream1.merge_rs2(stream2).collect::<Vec<_>>().await;
 
         // Sort since merge doesn't guarantee order
         let mut sorted_result = result.clone();
@@ -210,10 +205,7 @@ fn test_zip_rs2() {
         let stream1 = from_iter(vec![1, 2, 3]);
         let stream2 = from_iter(vec![4, 5, 6]);
 
-        let result = stream1
-            .zip_rs2(stream2)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream1.zip_rs2(stream2).collect::<Vec<_>>().await;
 
         assert_eq!(result, vec![(1, 4), (2, 5), (3, 6)]);
     });
@@ -227,10 +219,7 @@ fn test_throttle_rs2() {
         let delay = std::time::Duration::from_millis(50);
 
         let start = std::time::Instant::now();
-        let result = stream
-            .throttle_rs2(delay)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.throttle_rs2(delay).collect::<Vec<_>>().await;
         let elapsed = start.elapsed();
 
         assert_eq!(result, vec![1, 2, 3, 4, 5]);
@@ -306,7 +295,10 @@ fn test_zip_with_rs2_different_types() {
             .collect::<Vec<_>>()
             .await;
 
-        assert_eq!(result, vec!["1a".to_string(), "2b".to_string(), "3c".to_string()]);
+        assert_eq!(
+            result,
+            vec!["1a".to_string(), "2b".to_string(), "3c".to_string()]
+        );
     });
 }
 
@@ -747,17 +739,10 @@ fn test_sliding_window_rs2() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
         // Apply sliding window with size 3
-        let result = stream
-            .sliding_window_rs2(3)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.sliding_window_rs2(3).collect::<Vec<_>>().await;
 
         // Check that the sliding windows are correct
-        assert_eq!(result, vec![
-            vec![1, 2, 3],
-            vec![2, 3, 4],
-            vec![3, 4, 5],
-        ]);
+        assert_eq!(result, vec![vec![1, 2, 3], vec![2, 3, 4], vec![3, 4, 5],]);
     });
 }
 
@@ -769,10 +754,7 @@ fn test_sliding_window_rs2_small_stream() {
         let stream = from_iter(vec![1, 2]);
 
         // Apply sliding window with size 3
-        let result = stream
-            .sliding_window_rs2(3)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.sliding_window_rs2(3).collect::<Vec<_>>().await;
 
         // Check that no windows are emitted
         assert_eq!(result, Vec::<Vec<i32>>::new());
@@ -787,10 +769,7 @@ fn test_sliding_window_rs2_empty_stream() {
         let stream: RS2Stream<i32> = from_iter(vec![]);
 
         // Apply sliding window with size 3
-        let result = stream
-            .sliding_window_rs2(3)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.sliding_window_rs2(3).collect::<Vec<_>>().await;
 
         // Check that no windows are emitted
         assert_eq!(result, Vec::<Vec<i32>>::new());
@@ -805,10 +784,7 @@ fn test_sliding_window_rs2_size_zero() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
         // Apply sliding window with size 0
-        let result = stream
-            .sliding_window_rs2(0)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.sliding_window_rs2(0).collect::<Vec<_>>().await;
 
         // Check that no windows are emitted
         assert_eq!(result, Vec::<Vec<i32>>::new());
@@ -886,7 +862,8 @@ fn test_with_metrics_rs2() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
         // Apply with_metrics
-        let (metrics_stream, metrics) = stream.with_metrics_rs2("test_stream".to_string(), HealthThresholds::default());
+        let (metrics_stream, metrics) =
+            stream.with_metrics_rs2("test_stream".to_string(), HealthThresholds::default());
 
         // Collect the stream to ensure all items are processed
         let result = metrics_stream.collect::<Vec<_>>().await;
@@ -909,7 +886,8 @@ fn test_with_metrics_rs2_empty_stream() {
         let stream: RS2Stream<i32> = from_iter(vec![]);
 
         // Apply with_metrics
-        let (metrics_stream, metrics) = stream.with_metrics_rs2("empty_stream".to_string(), HealthThresholds::default());
+        let (metrics_stream, metrics) =
+            stream.with_metrics_rs2("empty_stream".to_string(), HealthThresholds::default());
 
         // Collect the stream to ensure all items are processed
         let result = metrics_stream.collect::<Vec<_>>().await;
@@ -1008,14 +986,10 @@ fn test_tick_rs() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Create a stream that emits a value at a fixed rate
-        let stream = empty::<i32>()
-            .tick_rs(Duration::from_millis(50), 42);
+        let stream = empty::<i32>().tick_rs(Duration::from_millis(50), 42);
 
         // Take only 3 items to keep the test short
-        let result = stream
-            .take(3)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.take(3).collect::<Vec<_>>().await;
 
         // Check that the stream emits the expected value
         assert_eq!(result, vec![42, 42, 42]);
@@ -1034,21 +1008,20 @@ fn test_bracket_rs() {
         let released_clone = Arc::clone(&released);
 
         // Create a stream using bracket_rs
-        let stream = empty::<i32>()
-            .bracket_rs(
-                async move {
-                    *acquired_clone.lock().unwrap() = true;
-                    "resource"
-                },
-                |resource| {
-                    assert_eq!(resource, "resource");
-                    from_iter(vec![1, 2, 3])
-                },
-                move |resource| async move {
-                    assert_eq!(resource, "resource");
-                    *released_clone.lock().unwrap() = true;
-                }
-            );
+        let stream = empty::<i32>().bracket_rs(
+            async move {
+                *acquired_clone.lock().unwrap() = true;
+                "resource"
+            },
+            |resource| {
+                assert_eq!(resource, "resource");
+                from_iter(vec![1, 2, 3])
+            },
+            move |resource| async move {
+                assert_eq!(resource, "resource");
+                *released_clone.lock().unwrap() = true;
+            },
+        );
 
         // Collect the stream
         let result = stream.collect::<Vec<_>>().await;
@@ -1094,22 +1067,21 @@ fn test_bracket_case_extension() {
         let exit_case_clone = Arc::clone(&exit_case);
 
         // Create a stream using bracket_case extension method
-        let stream = from_iter(vec![Ok(1), Ok(2), Ok(3)])
-            .bracket_case_rs2(
-                async move {
-                    *acquired_clone.lock().unwrap() = true;
-                    "resource"
-                },
-                |resource| {
-                    assert_eq!(resource, "resource");
-                    from_iter(vec![Ok(4), Ok(5), Ok(6)])
-                },
-                move |resource, case: ExitCase<&str>| async move {
-                    assert_eq!(resource, "resource");
-                    *released_clone.lock().unwrap() = true;
-                    *exit_case_clone.lock().unwrap() = Some(format!("{:?}", case));
-                }
-            );
+        let stream = from_iter(vec![Ok(1), Ok(2), Ok(3)]).bracket_case_rs2(
+            async move {
+                *acquired_clone.lock().unwrap() = true;
+                "resource"
+            },
+            |resource| {
+                assert_eq!(resource, "resource");
+                from_iter(vec![Ok(4), Ok(5), Ok(6)])
+            },
+            move |resource, case: ExitCase<&str>| async move {
+                assert_eq!(resource, "resource");
+                *released_clone.lock().unwrap() = true;
+                *exit_case_clone.lock().unwrap() = Some(format!("{:?}", case));
+            },
+        );
 
         // Collect the stream
         let result = stream.collect::<Vec<_>>().await;
@@ -1141,22 +1113,21 @@ fn test_bracket_case_extension_with_error() {
         let exit_case_clone = Arc::clone(&exit_case);
 
         // Create a stream using bracket_case extension method with an error
-        let stream = from_iter(vec![Ok(1), Ok(2), Ok(3)])
-            .bracket_case_rs2(
-                async move {
-                    *acquired_clone.lock().unwrap() = true;
-                    "resource"
-                },
-                |resource| {
-                    assert_eq!(resource, "resource");
-                    from_iter(vec![Ok(4), Err("error"), Ok(6)])
-                },
-                move |resource, case: ExitCase<&str>| async move {
-                    assert_eq!(resource, "resource");
-                    *released_clone.lock().unwrap() = true;
-                    *exit_case_clone.lock().unwrap() = Some(format!("{:?}", case));
-                }
-            );
+        let stream = from_iter(vec![Ok(1), Ok(2), Ok(3)]).bracket_case_rs2(
+            async move {
+                *acquired_clone.lock().unwrap() = true;
+                "resource"
+            },
+            |resource| {
+                assert_eq!(resource, "resource");
+                from_iter(vec![Ok(4), Err("error"), Ok(6)])
+            },
+            move |resource, case: ExitCase<&str>| async move {
+                assert_eq!(resource, "resource");
+                *released_clone.lock().unwrap() = true;
+                *exit_case_clone.lock().unwrap() = Some(format!("{:?}", case));
+            },
+        );
 
         // Collect the stream
         let result = stream.collect::<Vec<_>>().await;
@@ -1182,17 +1153,10 @@ fn test_chunk_rs2() {
         let stream = from_iter(vec![1, 2, 3, 4, 5, 6]);
 
         // Apply chunking with size 2
-        let result = stream
-            .chunk_rs2(2)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.chunk_rs2(2).collect::<Vec<_>>().await;
 
         // Check that the chunks are correct
-        assert_eq!(result, vec![
-            vec![1, 2],
-            vec![3, 4],
-            vec![5, 6],
-        ]);
+        assert_eq!(result, vec![vec![1, 2], vec![3, 4], vec![5, 6],]);
     });
 }
 
@@ -1204,17 +1168,10 @@ fn test_chunk_rs2_uneven_chunks() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
         // Apply chunking with size 2
-        let result = stream
-            .chunk_rs2(2)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.chunk_rs2(2).collect::<Vec<_>>().await;
 
         // Check that the chunks are correct, including the last uneven chunk
-        assert_eq!(result, vec![
-            vec![1, 2],
-            vec![3, 4],
-            vec![5],
-        ]);
+        assert_eq!(result, vec![vec![1, 2], vec![3, 4], vec![5],]);
     });
 }
 
@@ -1226,10 +1183,7 @@ fn test_chunk_rs2_empty_stream() {
         let stream: RS2Stream<i32> = from_iter(vec![]);
 
         // Apply chunking with size 2
-        let result = stream
-            .chunk_rs2(2)
-            .collect::<Vec<_>>()
-            .await;
+        let result = stream.chunk_rs2(2).collect::<Vec<_>>().await;
 
         // Check that no chunks are emitted
         assert_eq!(result, Vec::<Vec<i32>>::new());
@@ -1245,8 +1199,7 @@ fn test_map_parallel_rs2() {
         let source_data: Vec<usize> = (0..item_count).collect();
 
         // Apply parallel mapping
-        let stream = from_iter(source_data.clone())
-            .map_parallel_rs2(|x| x * 2);
+        let stream = from_iter(source_data.clone()).map_parallel_rs2(|x| x * 2);
 
         // Collect the results
         let results: Vec<usize> = stream.collect().await;
@@ -1264,7 +1217,10 @@ fn test_map_parallel_rs2() {
         sorted_expected.sort();
 
         // Verify that the results are correctly transformed
-        assert_eq!(sorted_results, sorted_expected, "Results should match expected transformations");
+        assert_eq!(
+            sorted_results, sorted_expected,
+            "Results should match expected transformations"
+        );
     });
 }
 
@@ -1297,6 +1253,9 @@ fn test_map_parallel_with_concurrency_rs2() {
         sorted_expected.sort();
 
         // Verify that the results are correctly transformed
-        assert_eq!(sorted_results, sorted_expected, "Results should match expected transformations");
+        assert_eq!(
+            sorted_results, sorted_expected,
+            "Results should match expected transformations"
+        );
     });
 }

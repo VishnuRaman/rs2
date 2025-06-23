@@ -1,8 +1,8 @@
-use rs2_stream::rs2::*;
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::{Duration, Instant};
 use async_stream::stream;
+use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
+use std::time::{Duration, Instant};
+use tokio::runtime::Runtime;
 use tokio::time::sleep;
 
 #[test]
@@ -29,20 +29,20 @@ fn test_throttle() {
         let delay = Duration::from_millis(50);
 
         let start = Instant::now();
-        let result = throttle(stream, delay)
-            .collect::<Vec<_>>()
-            .await;
+        let result = throttle(stream, delay).collect::<Vec<_>>().await;
         let elapsed = start.elapsed();
 
         // Verify all items are processed
         assert_eq!(result, vec![1, 2, 3, 4, 5]);
 
         // Verify throttling occurred (at least 4 * 50ms = 200ms)
-        // We expect at least 4 delays because after the first item, 
+        // We expect at least 4 delays because after the first item,
         // each subsequent item should be delayed
-        assert!(elapsed.as_millis() >= 200, 
-                "Expected at least 200ms delay, got {}ms", 
-                elapsed.as_millis());
+        assert!(
+            elapsed.as_millis() >= 200,
+            "Expected at least 200ms delay, got {}ms",
+            elapsed.as_millis()
+        );
     });
 }
 
@@ -54,21 +54,20 @@ fn test_tick() {
         let item = 42;
 
         let start = Instant::now();
-        let result = tick(period, item)
-            .take(5)
-            .collect::<Vec<_>>()
-            .await;
+        let result = tick(period, item).take(5).collect::<Vec<_>>().await;
         let elapsed = start.elapsed();
 
         // Verify we got 5 items, all equal to 42
         assert_eq!(result, vec![42, 42, 42, 42, 42]);
 
         // Verify timing (at least 4 * 50ms = 200ms)
-        // We expect at least 4 periods because after the first item, 
+        // We expect at least 4 periods because after the first item,
         // each subsequent item should be delayed by one period
-        assert!(elapsed.as_millis() >= 200, 
-                "Expected at least 200ms delay, got {}ms", 
-                elapsed.as_millis());
+        assert!(
+            elapsed.as_millis() >= 200,
+            "Expected at least 200ms delay, got {}ms",
+            elapsed.as_millis()
+        );
     });
 }
 
@@ -126,14 +125,10 @@ fn test_par_eval_map_with_delays() {
         let concurrency = 3;
 
         let start = Instant::now();
-        let result = par_eval_map(
-            stream, 
-            concurrency,
-            |(n, delay_ms)| async move {
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                n * 2
-            }
-        )
+        let result = par_eval_map(stream, concurrency, |(n, delay_ms)| async move {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            n * 2
+        })
         .collect::<Vec<_>>()
         .await;
         let elapsed = start.elapsed();
@@ -146,7 +141,10 @@ fn test_par_eval_map_with_delays() {
         // With concurrency=3, the total time should be less than the sum of all delays
         // but more than the sum of the longest delays that would need to be processed sequentially
         // In this case, with optimal scheduling, we'd expect around 175ms (100+75 or 150+25)
-        assert!(elapsed.as_millis() < 400, "Expected parallel execution to be faster");
+        assert!(
+            elapsed.as_millis() < 400,
+            "Expected parallel execution to be faster"
+        );
     });
 }
 
@@ -157,9 +155,7 @@ fn test_prefetch() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
         let prefetch_count = 2;
 
-        let result = prefetch(stream, prefetch_count)
-            .collect::<Vec<_>>()
-            .await;
+        let result = prefetch(stream, prefetch_count).collect::<Vec<_>>().await;
 
         // Verify all items are processed in the correct order
         assert_eq!(result, vec![1, 2, 3, 4, 5]);
@@ -195,19 +191,16 @@ fn test_prefetch_performance() {
         let create_stream = || {
             // Copy the values to avoid capturing references
             let delay = process_time_ms;
-            from_iter(0..item_count)
-                .eval_map_rs2(move |n| async move {
-                    // Simulate processing time
-                    tokio::time::sleep(Duration::from_millis(delay)).await;
-                    n
-                })
+            from_iter(0..item_count).eval_map_rs2(move |n| async move {
+                // Simulate processing time
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                n
+            })
         };
 
         // Test without prefetch
         let start_without_prefetch = Instant::now();
-        let result_without_prefetch = create_stream()
-            .collect::<Vec<_>>()
-            .await;
+        let result_without_prefetch = create_stream().collect::<Vec<_>>().await;
         let elapsed_without_prefetch = start_without_prefetch.elapsed();
 
         // Test with prefetch
@@ -224,7 +217,10 @@ fn test_prefetch_performance() {
         // Without prefetch, processing is sequential, so time should be approximately item_count * process_time_ms
         // With prefetch, items are processed in parallel, so time should be less
         // However, the exact improvement depends on many factors, so we just check that it's faster
-        println!("Without prefetch: {:?}, With prefetch: {:?}", elapsed_without_prefetch, elapsed_with_prefetch);
+        println!(
+            "Without prefetch: {:?}, With prefetch: {:?}",
+            elapsed_without_prefetch, elapsed_with_prefetch
+        );
 
         // The prefetch version should be at least a little faster, but we don't make a strict assertion
         // because the exact timing can vary based on system load and other factors
@@ -397,15 +393,16 @@ fn test_par_join_with_delays() {
                     sleep(Duration::from_millis(delay_ms)).await;
                     yield value;
                 }
-            }.boxed()
+            }
+            .boxed()
         };
 
         // Create a rs2_stream of streams with different delays
         let streams = vec![
-            create_delayed_stream(vec![1, 2, 3], 50),   // 3 items, 50ms each = 150ms total
-            create_delayed_stream(vec![4, 5], 100),     // 2 items, 100ms each = 200ms total
-            create_delayed_stream(vec![6, 7, 8], 30),   // 3 items, 30ms each = 90ms total
-            create_delayed_stream(vec![9, 10], 80),     // 2 items, 80ms each = 160ms total
+            create_delayed_stream(vec![1, 2, 3], 50), // 3 items, 50ms each = 150ms total
+            create_delayed_stream(vec![4, 5], 100),   // 2 items, 100ms each = 200ms total
+            create_delayed_stream(vec![6, 7, 8], 30), // 3 items, 30ms each = 90ms total
+            create_delayed_stream(vec![9, 10], 80),   // 2 items, 80ms each = 160ms total
         ];
         let stream_of_streams = from_iter(streams);
         let concurrency = 2;
@@ -428,8 +425,10 @@ fn test_par_join_with_delays() {
         // Total sequential time would be 150 + 200 + 90 + 160 = 600ms
         // With optimal scheduling of 2 concurrent streams, we'd expect around 300-350ms
         // Allow a large margin for test environment variability
-        assert!(elapsed.as_millis() < 700, 
-                "Expected parallel execution to be faster, got {}ms", 
-                elapsed.as_millis());
+        assert!(
+            elapsed.as_millis() < 700,
+            "Expected parallel execution to be faster, got {}ms",
+            elapsed.as_millis()
+        );
     });
 }

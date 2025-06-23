@@ -4,7 +4,6 @@ use super::types::*;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MediaStreamEvent {
     StreamStarted {
@@ -74,26 +73,41 @@ impl From<MediaStreamEvent> for super::types::UserActivity {
             MediaStreamEvent::StreamStarted { quality, .. } => {
                 metadata.insert("quality".to_string(), format!("{:?}", quality));
                 "media_stream_started".to_string()
-            },
-            MediaStreamEvent::StreamStopped { duration_seconds, bytes_transferred, .. } => {
+            }
+            MediaStreamEvent::StreamStopped {
+                duration_seconds,
+                bytes_transferred,
+                ..
+            } => {
                 metadata.insert("duration_seconds".to_string(), duration_seconds.to_string());
-                metadata.insert("bytes_transferred".to_string(), bytes_transferred.to_string());
+                metadata.insert(
+                    "bytes_transferred".to_string(),
+                    bytes_transferred.to_string(),
+                );
                 "media_stream_stopped".to_string()
-            },
-            MediaStreamEvent::QualityChanged { old_quality, new_quality, .. } => {
+            }
+            MediaStreamEvent::QualityChanged {
+                old_quality,
+                new_quality,
+                ..
+            } => {
                 metadata.insert("old_quality".to_string(), format!("{:?}", old_quality));
                 metadata.insert("new_quality".to_string(), format!("{:?}", new_quality));
                 "media_quality_changed".to_string()
-            },
+            }
             MediaStreamEvent::BufferUnderrun { buffer_level, .. } => {
                 metadata.insert("buffer_level".to_string(), buffer_level.to_string());
                 "media_buffer_underrun".to_string()
-            },
-            MediaStreamEvent::ChunkDropped { sequence_number, reason, .. } => {
+            }
+            MediaStreamEvent::ChunkDropped {
+                sequence_number,
+                reason,
+                ..
+            } => {
                 metadata.insert("sequence_number".to_string(), sequence_number.to_string());
                 metadata.insert("reason".to_string(), reason.clone());
                 "media_chunk_dropped".to_string()
-            },
+            }
         };
 
         metadata.insert("stream_id".to_string(), event.stream_id().to_string());

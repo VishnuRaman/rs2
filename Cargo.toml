@@ -1,6 +1,6 @@
 [package]
 name = "rs2-stream"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Vishnu Raman <vishnu310592@gmail.com>"]
 description = "A high-performance, production-ready async streaming library for Rust."
@@ -8,7 +8,7 @@ repository = "https://github.com/VishnuRaman/rs2"
 homepage = "https://github.com/VishnuRaman/rs2"
 documentation = "https://docs.rs/rs2"
 readme = "README.md"
-keywords = ["stream", "async", "pipeline", "analytics", "kafka"]
+keywords = ["stream", "async", "pipeline", "analytics", "kafka", "state-management"]
 categories = ["asynchronous", "data-structures", "network-programming", "concurrency"]
 license = "Apache-2.0"
 
@@ -39,16 +39,16 @@ futures = "0.3"
 async-stream = "0.3"
 
 # Tokio runtime, spawning tasks and timers
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.0", features = ["full"] }
 tokio-stream = "0.1.17"
 
 # Core futures traits
 futures-core = "0.3.31"
 futures-util = "0.3.31"
-async-trait = "0.1.88"
-serde = { version = "1.0.219", features = ["derive"] }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
 rdkafka = { version = "0.37.0"}
-serde_json = "1.0.140"
+serde_json = "1.0"
 log = "0.4.27"
 uuid = { version = "1.17.0", features = ["v4"] }
 chrono = { version = "0.4.41", features = ["serde"] }
@@ -59,12 +59,13 @@ rand = "0.8.5"
 thiserror = "1.0.69"
 base64 = "0.21.7"
 jsonschema = "0.30.0"
+lazy_static = "1.4"
 
 
 
 [dev-dependencies]
 testcontainers = { version = "0.24.0", features = ["blocking"] }
-testcontainers-modules = { version = "0.12.1", features = ["kafka"] }
+testcontainers-modules = { version = "0.12.1", features = ["kafka", "redis"] }
 tokio-test = "0.4.4"
 once_cell = "1.19.0"
 serial_test = "3.0.0"
@@ -90,4 +91,8 @@ harness = false
 
 [[bench]]
 name = "ecosystem_comparison"
+harness = false
+
+[[bench]]
+name = "state_operations"
 harness = false

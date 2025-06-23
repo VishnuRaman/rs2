@@ -1,10 +1,10 @@
-use rs2_stream::rs2::*;
-use rs2_stream::error::StreamError;
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::time::{Duration, Instant};
-use std::error::Error;
 use async_stream::stream;
+use futures_util::stream::StreamExt;
+use rs2_stream::error::StreamError;
+use rs2_stream::rs2::*;
+use std::error::Error;
+use std::time::{Duration, Instant};
+use tokio::runtime::Runtime;
 
 // Simulate a slow operation that might time out
 async fn slow_operation(id: u32, delay_ms: u64) -> Result<String, Box<dyn Error + Send + Sync>> {
@@ -21,10 +21,10 @@ fn main() {
 
         // Create a stream of operations with different delays
         let operations = from_iter(vec![
-            (1, 50),   // Fast operation (50ms)
-            (2, 150),  // Medium operation (150ms)
-            (3, 300),  // Slow operation (300ms)
-            (4, 500),  // Very slow operation (500ms)
+            (1, 50),  // Fast operation (50ms)
+            (2, 150), // Medium operation (150ms)
+            (3, 300), // Slow operation (300ms)
+            (4, 500), // Very slow operation (500ms)
         ]);
 
         // Apply a timeout of 200ms to each operation
@@ -32,13 +32,13 @@ fn main() {
         let results = operations
             .eval_map_rs2(move |(id, delay)| async move {
                 // Add timeout to the operation
-                match tokio::time::timeout(
-                    timeout_duration,
-                    slow_operation(id, delay)
-                ).await {
+                match tokio::time::timeout(timeout_duration, slow_operation(id, delay)).await {
                     Ok(Ok(result)) => (id, format!("Success: {}", result)),
                     Ok(Err(e)) => (id, format!("Error: {}", e)),
-                    Err(_) => (id, format!("Timeout after {}ms", timeout_duration.as_millis())),
+                    Err(_) => (
+                        id,
+                        format!("Timeout after {}ms", timeout_duration.as_millis()),
+                    ),
                 }
             })
             .collect::<Vec<_>>()
@@ -53,8 +53,8 @@ fn main() {
         println!("\n=== 2. Using timeout_rs2 ===");
 
         let operations = from_iter(vec![
-            (1, 50),   // Fast operation (50ms)
-            (2, 250),  // Slow operation (250ms)
+            (1, 50),  // Fast operation (50ms)
+            (2, 250), // Slow operation (250ms)
         ]);
 
         let results = operations
@@ -87,7 +87,10 @@ fn main() {
 
         let elapsed = start.elapsed();
         println!("\nThrottled {} elements in {:?}", throttled.len(), elapsed);
-        println!("Expected minimum time: {:?}", Duration::from_millis(100 * (throttled.len() as u64 - 1)));
+        println!(
+            "Expected minimum time: {:?}",
+            Duration::from_millis(100 * (throttled.len() as u64 - 1))
+        );
         println!("Elements: {:?}", throttled);
 
         println!("\n=== 4. Debounce Example ===");
@@ -97,11 +100,11 @@ fn main() {
 
         // Create a stream of (value, delay_before_next) pairs
         let input_events = vec![
-            ("a", 10), // 10ms gap
-            ("b", 20), // 20ms gap
-            ("c", 30), // 30ms gap
+            ("a", 10),  // 10ms gap
+            ("b", 20),  // 20ms gap
+            ("c", 30),  // 30ms gap
             ("d", 200), // 200ms gap (longer than debounce period)
-            ("e", 10), // 10ms gap
+            ("e", 10),  // 10ms gap
             ("f", 300), // 300ms gap (longer than debounce period)
         ];
 
@@ -111,7 +114,8 @@ fn main() {
                 yield value;
                 tokio::time::sleep(Duration::from_millis(delay as u64)).await;
             }
-        }.boxed();
+        }
+        .boxed();
 
         // Debounce with a 100ms quiet period
         let debounced = input_stream
@@ -142,7 +146,8 @@ fn main() {
                     break;
                 }
             }
-        }.boxed();
+        }
+        .boxed();
 
         // Sample the stream every 100ms
         let sampled = fast_stream
@@ -152,7 +157,10 @@ fn main() {
 
         let elapsed = start.elapsed();
         println!("\nSampled stream collected in {:?}", elapsed);
-        println!("Expected approximately {} samples", elapsed.as_millis() / 100);
+        println!(
+            "Expected approximately {} samples",
+            elapsed.as_millis() / 100
+        );
         println!("Actual samples: {} - {:?}", sampled.len(), sampled);
 
         println!("\n=== 6. Emit After Example ===");

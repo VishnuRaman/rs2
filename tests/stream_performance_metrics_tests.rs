@@ -366,7 +366,6 @@ fn test_multiple_name_changes() {
     assert_eq!(metrics.name.unwrap(), "final_name");
 }
 
-
 #[test]
 fn test_with_health_thresholds() {
     // Test that with_health_thresholds() sets the thresholds correctly
@@ -374,8 +373,14 @@ fn test_with_health_thresholds() {
     let metrics = StreamMetrics::new().with_health_thresholds(thresholds.clone());
 
     // Check that thresholds are set correctly
-    assert_eq!(metrics.health_thresholds.max_error_rate, thresholds.max_error_rate);
-    assert_eq!(metrics.health_thresholds.max_consecutive_errors, thresholds.max_consecutive_errors);
+    assert_eq!(
+        metrics.health_thresholds.max_error_rate,
+        thresholds.max_error_rate
+    );
+    assert_eq!(
+        metrics.health_thresholds.max_consecutive_errors,
+        thresholds.max_consecutive_errors
+    );
 
     // Test with custom thresholds
     let custom_thresholds = HealthThresholds::custom(0.05, 3);
@@ -394,16 +399,28 @@ fn test_set_health_thresholds() {
     metrics.set_health_thresholds(thresholds.clone());
 
     // Check that thresholds are set correctly
-    assert_eq!(metrics.health_thresholds.max_error_rate, thresholds.max_error_rate);
-    assert_eq!(metrics.health_thresholds.max_consecutive_errors, thresholds.max_consecutive_errors);
+    assert_eq!(
+        metrics.health_thresholds.max_error_rate,
+        thresholds.max_error_rate
+    );
+    assert_eq!(
+        metrics.health_thresholds.max_consecutive_errors,
+        thresholds.max_consecutive_errors
+    );
 
     // Test changing the thresholds
     let new_thresholds = HealthThresholds::strict();
     metrics.set_health_thresholds(new_thresholds.clone());
 
     // Check that thresholds are updated correctly
-    assert_eq!(metrics.health_thresholds.max_error_rate, new_thresholds.max_error_rate);
-    assert_eq!(metrics.health_thresholds.max_consecutive_errors, new_thresholds.max_consecutive_errors);
+    assert_eq!(
+        metrics.health_thresholds.max_error_rate,
+        new_thresholds.max_error_rate
+    );
+    assert_eq!(
+        metrics.health_thresholds.max_consecutive_errors,
+        new_thresholds.max_consecutive_errors
+    );
 }
 
 #[test]
@@ -437,12 +454,12 @@ fn test_health_thresholds_custom() {
 #[test]
 fn test_edge_case_zero_items() {
     let mut metrics = StreamMetrics::new();
-    
+
     // Test with no items processed
     metrics.update_derived_metrics();
     assert_eq!(metrics.average_item_size, 0.0);
     assert_eq!(metrics.error_rate, 0.0);
-    
+
     // Test throughput with zero items
     assert_eq!(metrics.throughput_items_per_sec(), 0.0);
     assert_eq!(metrics.throughput_bytes_per_sec(), 0.0);
@@ -451,11 +468,11 @@ fn test_edge_case_zero_items() {
 #[test]
 fn test_edge_case_only_errors() {
     let mut metrics = StreamMetrics::new();
-    
+
     // Record only errors, no successful items
     metrics.record_error();
     metrics.record_error();
-    
+
     // Error rate should be 100% (2 errors, 0 successful items)
     assert_eq!(metrics.error_rate, 1.0);
     assert_eq!(metrics.consecutive_errors, 2);
@@ -465,12 +482,12 @@ fn test_edge_case_only_errors() {
 #[test]
 fn test_throughput_calculation_precision() {
     let mut metrics = StreamMetrics::new();
-    
+
     // Set up precise values
     metrics.items_processed = 1000;
     metrics.bytes_processed = 50000;
     metrics.processing_time = Duration::from_secs(2);
-    
+
     // Test precise calculations
     assert_eq!(metrics.throughput_items_per_sec(), 500.0);
     assert_eq!(metrics.throughput_bytes_per_sec(), 25000.0);
@@ -479,37 +496,40 @@ fn test_throughput_calculation_precision() {
 #[test]
 fn test_summary_formatting_edge_cases() {
     let mut metrics = StreamMetrics::new();
-    
+
     // Test with zero values
     metrics.items_per_second = 0.0;
     metrics.bytes_per_second = 0.0;
     assert_eq!(metrics.throughput_summary(), "0.0 items/sec, 0.0 KB/sec");
-    
+
     // Test with very small values
     metrics.items_per_second = 0.1;
     metrics.bytes_per_second = 50.0;
     assert_eq!(metrics.throughput_summary(), "0.1 items/sec, 0.1 KB/sec");
-    
+
     // Test with large values
     metrics.items_per_second = 10000.0;
     metrics.bytes_per_second = 1000000.0;
-    assert_eq!(metrics.throughput_summary(), "10000.0 items/sec, 1000.0 KB/sec");
+    assert_eq!(
+        metrics.throughput_summary(),
+        "10000.0 items/sec, 1000.0 KB/sec"
+    );
 }
 
 #[test]
 fn test_consecutive_errors_reset_behavior() {
     let mut metrics = StreamMetrics::new();
-    
+
     // Record multiple errors
     metrics.record_error();
     metrics.record_error();
     metrics.record_error();
     assert_eq!(metrics.consecutive_errors, 3);
-    
+
     // Record a successful item - should reset consecutive errors
     metrics.record_item(100);
     assert_eq!(metrics.consecutive_errors, 0);
-    
+
     // Record another error - should start counting again
     metrics.record_error();
     assert_eq!(metrics.consecutive_errors, 1);
@@ -518,18 +538,18 @@ fn test_consecutive_errors_reset_behavior() {
 #[test]
 fn test_peak_processing_time_behavior() {
     let mut metrics = StreamMetrics::new();
-    
+
     // Record increasing processing times
     metrics.record_processing_time(Duration::from_millis(100));
     assert_eq!(metrics.peak_processing_time, Duration::from_millis(100));
-    
+
     metrics.record_processing_time(Duration::from_millis(200));
     assert_eq!(metrics.peak_processing_time, Duration::from_millis(200));
-    
+
     // Record a shorter time - peak should remain the same
     metrics.record_processing_time(Duration::from_millis(150));
     assert_eq!(metrics.peak_processing_time, Duration::from_millis(200));
-    
+
     // Record an even longer time - peak should update
     metrics.record_processing_time(Duration::from_millis(300));
     assert_eq!(metrics.peak_processing_time, Duration::from_millis(300));
@@ -540,7 +560,7 @@ fn test_metrics_integration_scenario() {
     let mut metrics = StreamMetrics::new()
         .with_name("integration_test".to_string())
         .with_health_thresholds(HealthThresholds::strict());
-    
+
     // Simulate a realistic processing scenario
     for i in 0..100 {
         if i % 10 == 0 {
@@ -550,25 +570,25 @@ fn test_metrics_integration_scenario() {
             // Successful items
             metrics.record_item(100 + (i % 50));
         }
-        
+
         // Record some processing time
         metrics.record_processing_time(Duration::from_millis(10 + (i % 20)));
-        
+
         // Occasionally record backpressure
         if i % 25 == 0 {
             metrics.record_backpressure();
         }
     }
-    
+
     // Verify final state
     assert_eq!(metrics.items_processed, 90); // 90 successful items
     assert_eq!(metrics.errors, 10); // 10 errors
     assert_eq!(metrics.backpressure_events, 4); // 4 backpressure events
     assert_eq!(metrics.error_rate, 10.0 / 100.0); // 10% error rate
-    
+
     // Should be unhealthy due to 10% error rate > 1% threshold
     assert!(!metrics.is_healthy());
-    
+
     // Verify name was set correctly
     assert_eq!(metrics.name.unwrap(), "integration_test");
 }

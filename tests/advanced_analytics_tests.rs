@@ -1,6 +1,6 @@
-use rs2_stream::rs2::*;
-use rs2_stream::advanced_analytics::*;
 use futures_util::stream::StreamExt;
+use rs2_stream::advanced_analytics::*;
+use rs2_stream::rs2::*;
 use std::time::{Duration, SystemTime};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,11 +36,10 @@ async fn test_time_windowed_aggregations() {
         allowed_lateness: Duration::from_secs(2),
     };
 
-    let windowed_stream = from_iter(events)
-        .window_by_time_rs2(config, |event| event.timestamp);
+    let windowed_stream = from_iter(events).window_by_time_rs2(config, |event| event.timestamp);
 
     let windows: Vec<_> = windowed_stream.collect().await;
-    
+
     assert!(!windows.is_empty());
     for window in &windows {
         assert!(!window.events.is_empty());
@@ -67,20 +66,31 @@ async fn test_time_windowed_joins() {
         watermark_delay: Duration::from_secs(5),
     };
 
-    let joined_stream = from_iter(events1)
-        .join_with_time_window_rs2(
-            from_iter(events2),
-            config,
-            |e| e.timestamp,
-            |e| e.timestamp,
-            |e1, e2| (e1, e2),
-            Some((|e: &TestEvent| e.id, |e: &TestEvent| e.id)),
-        );
+    let joined_stream = from_iter(events1).join_with_time_window_rs2(
+        from_iter(events2),
+        config,
+        |e| e.timestamp,
+        |e| e.timestamp,
+        |e1, e2| (e1, e2),
+        Some((|e: &TestEvent| e.id, |e: &TestEvent| e.id)),
+    );
 
     let results: Vec<_> = joined_stream.collect().await;
     // Should have all pairs with matching ids in the window
-    assert_eq!(results.iter().filter(|(e1, e2)| e1.id == 1 && e2.id == 1).count(), 2);
-    assert_eq!(results.iter().filter(|(e1, e2)| e1.id == 2 && e2.id == 2).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|(e1, e2)| e1.id == 1 && e2.id == 1)
+            .count(),
+        2
+    );
+    assert_eq!(
+        results
+            .iter()
+            .filter(|(e1, e2)| e1.id == 2 && e2.id == 2)
+            .count(),
+        1
+    );
     for (e1, e2) in results {
         assert_eq!(e1.id, e2.id);
     }
@@ -106,16 +116,16 @@ async fn test_time_join_config_default() {
 async fn test_time_window_operations() {
     let start_time = SystemTime::now();
     let end_time = start_time + Duration::from_secs(60);
-    
+
     let mut window = TimeWindow::new(start_time, end_time);
     let event = TestEvent::new(1, "test", start_time);
-    
+
     window.add_event(event);
     assert_eq!(window.events.len(), 1);
-    
+
     let watermark = end_time + Duration::from_secs(5);
     assert!(window.is_complete(watermark));
-    
+
     let early_watermark = start_time + Duration::from_secs(30);
     assert!(!window.is_complete(early_watermark));
 }
@@ -126,10 +136,7 @@ async fn test_extension_trait_methods() {
     let events = vec![TestEvent::new(1, "test", now)];
     let stream = from_iter(events);
     // Test that extension trait methods are available
-    let _windowed = stream.window_by_time_rs2(
-        TimeWindowConfig::default(),
-        |e| e.timestamp,
-    );
+    let _windowed = stream.window_by_time_rs2(TimeWindowConfig::default(), |e| e.timestamp);
     let _joined = from_iter(vec![TestEvent::new(1, "test", now)])
         .join_with_time_window_rs2::<TestEvent, _, _, _, (), fn(&TestEvent) -> (), fn(&TestEvent) -> ()>(
             from_iter(vec![TestEvent::new(1, "test", now)]),
@@ -139,4 +146,4 @@ async fn test_extension_trait_methods() {
             |e1, e2| (e1, e2),
             None::<(fn(&TestEvent) -> (), fn(&TestEvent) -> ())>,
         );
-} 
+}

@@ -1,7 +1,6 @@
-
 use futures_util::StreamExt;
-use tokio::runtime::Runtime;
 use rs2_stream::queue::Queue;
+use tokio::runtime::Runtime;
 
 #[test]
 fn test_queue_basic() {
@@ -79,7 +78,8 @@ fn test_queue_unbounded() {
         let queue = Queue::<i32>::unbounded();
 
         // Enqueue many items (should not fail for unbounded)
-        for i in 0..100 { // Reduced from 1000 for faster testing
+        for i in 0..100 {
+            // Reduced from 1000 for faster testing
             assert!(queue.enqueue(i).await.is_ok());
         }
 
@@ -98,7 +98,8 @@ fn test_queue_try_enqueue_unbounded() {
         let queue = Queue::<i32>::unbounded();
 
         // For unbounded queues, try_enqueue should always succeed
-        for i in 0..50 { // Reduced for faster testing
+        for i in 0..50 {
+            // Reduced for faster testing
             assert!(queue.try_enqueue(i).await.is_ok());
         }
 
@@ -195,13 +196,15 @@ fn test_queue_dequeue_empty() {
         // Dequeue from empty queue should either block indefinitely or return None
         // Using a timeout to test this behavior
         let mut dequeue_stream = queue.dequeue();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            dequeue_stream.next()
-        ).await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(100), dequeue_stream.next())
+                .await;
 
         // Should timeout because queue is empty and dequeue blocks
-        assert!(result.is_err(), "dequeue() should block/timeout on empty queue");
+        assert!(
+            result.is_err(),
+            "dequeue() should block/timeout on empty queue"
+        );
     });
 }
 

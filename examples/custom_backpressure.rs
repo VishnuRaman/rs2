@@ -1,7 +1,7 @@
-use rs2_stream::rs2::*;
 use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
+use rs2_stream::rs2::*;
 use std::time::Duration;
+use tokio::runtime::Runtime;
 
 fn main() {
     let rt = Runtime::new().unwrap();

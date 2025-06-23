@@ -61,29 +61,22 @@
 //! ---
 //! This example is intended as a real-world, extensible template for streaming pipelines using `rs2` and the new Pipeline builder.
 
-use rs2_stream::connectors::{KafkaConnector, StreamConnector};
-use rs2_stream::connectors::kafka_connector::KafkaConfig;
-use rs2_stream::rs2::*;
-use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
-use rs2_stream::error::{RetryPolicy, StreamError, StreamResult};
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use rand::{thread_rng, Rng};
-use chrono::{DateTime, Utc};
 use async_stream::stream;
+use chrono::{DateTime, Utc};
+use futures_util::stream::StreamExt;
+use rand::{thread_rng, Rng};
 use rdkafka::consumer::Consumer;
-use rdkafka::producer::Producer;
-use rs2_stream::pipeline::builder::{Pipeline, PipelineNode};
-use tokio::sync::broadcast;
-use futures_util::stream;
+use rs2_stream::connectors::kafka_connector::KafkaConfig;
+use rs2_stream::connectors::{KafkaConnector, StreamConnector};
+use rs2_stream::pipeline::builder::Pipeline;
+use rs2_stream::rs2::*;
+use rs2_stream::schema_validation::JsonSchemaValidator;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use futures_util::FutureExt;
-use rs2_stream::schema_validation::{JsonSchemaValidator, SchemaValidator, SchemaError};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::broadcast;
 
 // ================================
 // Data Models
@@ -161,10 +154,19 @@ fn generate_random_activity() -> UserActivity {
     // Generate random metadata
     let mut metadata = HashMap::new();
     if activity_type == "purchase" {
-        metadata.insert("amount".to_string(), format!("{:.2}", rng.gen_range(1.0..1000.0)));
-        metadata.insert("product_id".to_string(), format!("PROD-{}", rng.gen_range(1000..9999)));
+        metadata.insert(
+            "amount".to_string(),
+            format!("{:.2}", rng.gen_range(1.0..1000.0)),
+        );
+        metadata.insert(
+            "product_id".to_string(),
+            format!("PROD-{}", rng.gen_range(1000..9999)),
+        );
     } else if activity_type == "view" {
-        metadata.insert("page".to_string(), format!("/product/{}", rng.gen_range(1000..9999)));
+        metadata.insert(
+            "page".to_string(),
+            format!("/product/{}", rng.gen_range(1000..9999)),
+        );
         metadata.insert("duration".to_string(), format!("{}", rng.gen_range(5..300)));
     } else if activity_type == "search" {
         metadata.insert("query".to_string(), "example search query".to_string());
@@ -194,7 +196,9 @@ fn validate_activity(activity: UserActivity) -> ValidatedActivity {
                 validation_message = Some("Purchase activity missing amount".to_string());
             } else {
                 // Parse amount and validate
-                let amount = activity.metadata.get("amount")
+                let amount = activity
+                    .metadata
+                    .get("amount")
                     .and_then(|a| a.parse::<f64>().ok())
                     .unwrap_or(0.0);
 
@@ -203,14 +207,14 @@ fn validate_activity(activity: UserActivity) -> ValidatedActivity {
                     validation_message = Some("Invalid purchase amount".to_string());
                 }
             }
-        },
+        }
         "view" => {
             // Check if page is present for views
             if !activity.metadata.contains_key("page") {
                 is_valid = false;
                 validation_message = Some("View activity missing page".to_string());
             }
-        },
+        }
         _ => {
             // Other activity types are always valid
         }
@@ -231,8 +235,10 @@ fn check_for_alerts(activity: &ValidatedActivity) -> Option<ActivityAlert> {
         return Some(ActivityAlert {
             user_id: activity.activity.user_id,
             alert_type: "INVALID_ACTIVITY".to_string(),
-            message: format!("Invalid activity detected: {}", 
-                            activity.validation_message.clone().unwrap_or_default()),
+            message: format!(
+                "Invalid activity detected: {}",
+                activity.validation_message.clone().unwrap_or_default()
+            ),
             timestamp: Utc::now(),
             severity: 2,
         });
@@ -257,7 +263,8 @@ fn check_for_alerts(activity: &ValidatedActivity) -> Option<ActivityAlert> {
 
     // Check for rapid succession of activities (would require state in a real implementation)
     // This is just a placeholder for demonstration purposes
-    if thread_rng().gen_ratio(1, 20) {  // 5% chance of triggering this alert
+    if thread_rng().gen_ratio(1, 20) {
+        // 5% chance of triggering this alert
         return Some(ActivityAlert {
             user_id: activity.activity.user_id,
             alert_type: "RAPID_ACTIVITY".to_string(),
@@ -275,9 +282,9 @@ fn analytics_transform<S>(mut stream: S) -> RS2Stream<ActivityAnalytics>
 where
     S: futures_util::Stream<Item = ValidatedActivity> + Unpin + Send + 'static,
 {
-    use tokio::time::interval;
-    use std::collections::HashMap;
     use chrono::Utc;
+    use std::collections::HashMap;
+    use tokio::time::interval;
     stream! {
         let mut buffer: Vec<ValidatedActivity> = Vec::new();
         let mut window_start = Utc::now();
@@ -344,8 +351,8 @@ async fn kafka_sink<T: Serialize + std::fmt::Debug>(
     mut stream: RS2Stream<T>,
     metrics: Arc<SinkMetrics>,
 ) {
-    use rs2_stream::connectors::StreamConnector;
     use futures_util::stream;
+    use rs2_stream::connectors::StreamConnector;
     use tokio::time::sleep;
     while let Some(item) = stream.next().await {
         let msg = serde_json::to_string(&item).unwrap();
@@ -355,17 +362,28 @@ async fn kafka_sink<T: Serialize + std::fmt::Debug>(
             let msg_clone = msg.clone();
             let single_item_stream = stream::once(async move { msg_clone }).boxed();
             let result = <KafkaConnector as StreamConnector<String>>::to_sink(
-                connector, single_item_stream, config.clone()
-            ).await;
+                connector,
+                single_item_stream,
+                config.clone(),
+            )
+            .await;
             if result.is_ok() {
                 metrics.processed.fetch_add(1, Ordering::Relaxed);
-                println!("[Kafka] Topic: {} | {} | Processed: {}", config.topic, msg, metrics.processed.load(Ordering::Relaxed));
+                println!(
+                    "[Kafka] Topic: {} | {} | Processed: {}",
+                    config.topic,
+                    msg,
+                    metrics.processed.load(Ordering::Relaxed)
+                );
                 break;
             } else {
                 metrics.errors.fetch_add(1, Ordering::Relaxed);
                 attempts += 1;
                 if attempts > max_retries {
-                    eprintln!("Failed to send to Kafka after {} attempts: {}", attempts, msg);
+                    eprintln!(
+                        "Failed to send to Kafka after {} attempts: {}",
+                        attempts, msg
+                    );
                     break;
                 }
                 let backoff = Duration::from_millis(100 * 2u64.pow(attempts as u32));
@@ -384,22 +402,41 @@ async fn main() {
     // 1. Setup connectors and configs
     let kafka_brokers = "localhost:9092";
     let connector = KafkaConnector::new(kafka_brokers).with_consumer_group("prod-group");
-    let producer_config = KafkaConfig { topic: "validated-activity".to_string(), ..Default::default() };
-    let alert_config = KafkaConfig { topic: "activity-alerts".to_string(), ..Default::default() };
-    let analytics_config = KafkaConfig { topic: "activity-analytics".to_string(), ..Default::default() };
-    let source_config = KafkaConfig { topic: "user-activity".to_string(), group_id: Some("prod-group".to_string()), ..Default::default() };
+    let producer_config = KafkaConfig {
+        topic: "validated-activity".to_string(),
+        ..Default::default()
+    };
+    let alert_config = KafkaConfig {
+        topic: "activity-alerts".to_string(),
+        ..Default::default()
+    };
+    let analytics_config = KafkaConfig {
+        topic: "activity-analytics".to_string(),
+        ..Default::default()
+    };
+    let source_config = KafkaConfig {
+        topic: "user-activity".to_string(),
+        group_id: Some("prod-group".to_string()),
+        ..Default::default()
+    };
 
     // --- Inject random activities into Kafka for demo/testing ---
     let connector_clone = connector.clone();
     tokio::spawn(async move {
-        let producer_config = KafkaConfig { topic: "user-activity".to_string(), ..Default::default() };
+        let producer_config = KafkaConfig {
+            topic: "user-activity".to_string(),
+            ..Default::default()
+        };
         loop {
             let activity = generate_random_activity();
             let msg = serde_json::to_string(&activity).unwrap();
             let single_item_stream = futures_util::stream::once(async move { msg }).boxed();
             let _ = <KafkaConnector as StreamConnector<String>>::to_sink(
-                &connector_clone, single_item_stream, producer_config.clone()
-            ).await;
+                &connector_clone,
+                single_item_stream,
+                producer_config.clone(),
+            )
+            .await;
             tokio::time::sleep(Duration::from_millis(500)).await; // Adjust rate as needed
         }
     });
@@ -409,9 +446,18 @@ async fn main() {
     let producer_config = Arc::new(producer_config);
     let alert_config = Arc::new(alert_config);
     let analytics_config = Arc::new(analytics_config);
-    let validated_metrics = Arc::new(SinkMetrics { processed: AtomicUsize::new(0), errors: AtomicUsize::new(0) });
-    let analytics_metrics = Arc::new(SinkMetrics { processed: AtomicUsize::new(0), errors: AtomicUsize::new(0) });
-    let alert_metrics = Arc::new(SinkMetrics { processed: AtomicUsize::new(0), errors: AtomicUsize::new(0) });
+    let validated_metrics = Arc::new(SinkMetrics {
+        processed: AtomicUsize::new(0),
+        errors: AtomicUsize::new(0),
+    });
+    let analytics_metrics = Arc::new(SinkMetrics {
+        processed: AtomicUsize::new(0),
+        errors: AtomicUsize::new(0),
+    });
+    let alert_metrics = Arc::new(SinkMetrics {
+        processed: AtomicUsize::new(0),
+        errors: AtomicUsize::new(0),
+    });
 
     // --- Example JSON schema for UserActivity ---
     let user_activity_schema = serde_json::json!({
@@ -431,14 +477,14 @@ async fn main() {
     let raw_activity_stream = <KafkaConnector as StreamConnector<String>>::from_source(
         &*connector,
         source_config.clone(),
-    ).await.expect("Failed to connect to Kafka source");
+    )
+    .await
+    .expect("Failed to connect to Kafka source");
     let schema_validated_stream = raw_activity_stream
         .with_schema_validation_rs2(schema_validator)
         .filter_map(|json| async move { serde_json::from_str::<UserActivity>(&json).ok() })
         .boxed();
-    let validated_stream = schema_validated_stream
-        .map_rs2(validate_activity)
-        .boxed();
+    let validated_stream = schema_validated_stream.map_rs2(validate_activity).boxed();
 
     // --- Broadcast validated stream ---
     let (tx, _) = broadcast::channel(100);
@@ -546,7 +592,19 @@ async fn main() {
         .expect("Pipeline run failed");
 
     // --- Print final metrics ---
-    println!("Validated Sink: processed={}, errors={}", validated_metrics.processed.load(Ordering::Relaxed), validated_metrics.errors.load(Ordering::Relaxed));
-    println!("Analytics Sink: processed={}, errors={}", analytics_metrics.processed.load(Ordering::Relaxed), analytics_metrics.errors.load(Ordering::Relaxed));
-    println!("Alert Sink: processed={}, errors={}", alert_metrics.processed.load(Ordering::Relaxed), alert_metrics.errors.load(Ordering::Relaxed));
+    println!(
+        "Validated Sink: processed={}, errors={}",
+        validated_metrics.processed.load(Ordering::Relaxed),
+        validated_metrics.errors.load(Ordering::Relaxed)
+    );
+    println!(
+        "Analytics Sink: processed={}, errors={}",
+        analytics_metrics.processed.load(Ordering::Relaxed),
+        analytics_metrics.errors.load(Ordering::Relaxed)
+    );
+    println!(
+        "Alert Sink: processed={}, errors={}",
+        alert_metrics.processed.load(Ordering::Relaxed),
+        alert_metrics.errors.load(Ordering::Relaxed)
+    );
 }

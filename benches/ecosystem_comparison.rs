@@ -1,8 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use futures::StreamExt as FuturesStreamExt;
 use rs2_stream::rs2::*;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use futures::StreamExt as FuturesStreamExt;
 use tokio_stream::StreamExt as TokioStreamExt;
 
 // === OPTIMIZED TEST DATA AND OPERATIONS ===
@@ -14,7 +14,6 @@ async fn simulate_async_work(x: u32) -> u32 {
     }
     x * 2
 }
-
 
 async fn cpu_work(x: u32) -> u32 {
     // Consistent CPU work
@@ -46,40 +45,35 @@ fn bench_basic_pipeline_comparison(c: &mut Criterion) {
 
     for size in [1_000, 10_000].iter() {
         // RS2 basic pipeline
-        group.bench_with_input(
-            BenchmarkId::new("rs2_basic", size),
-            size,
-            |b, &size| {
-                b.to_async(&rt).iter(|| async {
-                    let result = from_iter(0..size)
-                        .map_rs2(|x| sync_transform(x))
-                        .filter_rs2(|x| sync_filter(x))
-                        .take_rs2((size / 4) as usize)
-                        .collect_rs2::<Vec<_>>()
-                        .await;
-                    black_box(result)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("rs2_basic", size), size, |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let result = from_iter(0..size)
+                    .map_rs2(|x| sync_transform(x))
+                    .filter_rs2(|x| sync_filter(x))
+                    .take_rs2((size / 4) as usize)
+                    .collect_rs2::<Vec<_>>()
+                    .await;
+                black_box(result)
+            });
+        });
 
-        // tokio-stream basic pipeline  
+        // tokio-stream basic pipeline
         group.bench_with_input(
             BenchmarkId::new("tokio_stream_basic", size),
             size,
             |b, &size| {
                 b.to_async(&rt).iter(|| async {
-                    let result: Vec<_> = tokio_stream::StreamExt::collect(
-                        tokio_stream::StreamExt::take(
+                    let result: Vec<_> =
+                        tokio_stream::StreamExt::collect(tokio_stream::StreamExt::take(
                             tokio_stream::StreamExt::filter(
-                                tokio_stream::StreamExt::map(
-                                    tokio_stream::iter(0..size),
-                                    |x| sync_transform(x)
-                                ),
-                                |x| sync_filter(x)
+                                tokio_stream::StreamExt::map(tokio_stream::iter(0..size), |x| {
+                                    sync_transform(x)
+                                }),
+                                |x| sync_filter(x),
                             ),
-                            (size / 4) as usize
-                        )
-                    ).await;
+                            (size / 4) as usize,
+                        ))
+                        .await;
                     black_box(result)
                 });
             },
@@ -99,21 +93,17 @@ fn bench_async_operations_comparison(c: &mut Criterion) {
 
     for size in [500, 2_000].iter() {
         // RS2 async operations
-        group.bench_with_input(
-            BenchmarkId::new("rs2_async", size),
-            size,
-            |b, &size| {
-                b.to_async(&rt).iter(|| async {
-                    let result = from_iter(0..size)
-                        .eval_map_rs2(|x| simulate_async_work(x))
-                        .filter_rs2(|x| sync_filter(x))
-                        .take_rs2((size / 2) as usize)
-                        .collect_rs2::<Vec<_>>()
-                        .await;
-                    black_box(result)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("rs2_async", size), size, |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let result = from_iter(0..size)
+                    .eval_map_rs2(|x| simulate_async_work(x))
+                    .filter_rs2(|x| sync_filter(x))
+                    .take_rs2((size / 2) as usize)
+                    .collect_rs2::<Vec<_>>()
+                    .await;
+                black_box(result)
+            });
+        });
 
         // tokio-stream async operations
         group.bench_with_input(
@@ -121,18 +111,17 @@ fn bench_async_operations_comparison(c: &mut Criterion) {
             size,
             |b, &size| {
                 b.to_async(&rt).iter(|| async {
-                    let result: Vec<_> = tokio_stream::StreamExt::collect(
-                        tokio_stream::StreamExt::take(
+                    let result: Vec<_> =
+                        tokio_stream::StreamExt::collect(tokio_stream::StreamExt::take(
                             tokio_stream::StreamExt::filter(
-                                tokio_stream::StreamExt::then(
-                                    tokio_stream::iter(0..size),
-                                    |x| simulate_async_work(x)
-                                ),
-                                |x| sync_filter(x)
+                                tokio_stream::StreamExt::then(tokio_stream::iter(0..size), |x| {
+                                    simulate_async_work(x)
+                                }),
+                                |x| sync_filter(x),
                             ),
-                            (size / 2) as usize
-                        )
-                    ).await;
+                            (size / 2) as usize,
+                        ))
+                        .await;
                     black_box(result)
                 });
             },
@@ -170,19 +159,18 @@ fn bench_chunking_comparison(c: &mut Criterion) {
     // tokio-stream chunking
     group.bench_function("tokio_stream_chunked", |b| {
         b.to_async(&rt).iter(|| async {
-            let result: Vec<_> = tokio_stream::StreamExt::collect(
-                tokio_stream::StreamExt::map(
-                    tokio_stream::StreamExt::chunks_timeout(
-                        tokio_stream::iter(0..data_size),
-                        100,
-                        Duration::from_secs(10)
-                    ),
-                    |chunk| {
-                        let sum: u32 = chunk.iter().sum();
-                        black_box(sum)
-                    }
-                )
-            ).await;
+            let result: Vec<_> = tokio_stream::StreamExt::collect(tokio_stream::StreamExt::map(
+                tokio_stream::StreamExt::chunks_timeout(
+                    tokio_stream::iter(0..data_size),
+                    100,
+                    Duration::from_secs(10),
+                ),
+                |chunk| {
+                    let sum: u32 = chunk.iter().sum();
+                    black_box(sum)
+                },
+            ))
+            .await;
             black_box(result)
         });
     });
@@ -203,12 +191,11 @@ fn bench_sequential_vs_parallel(c: &mut Criterion) {
     // tokio-stream sequential (baseline)
     group.bench_function("tokio_stream_sequential", |b| {
         b.to_async(&rt).iter(|| async {
-            let result: Vec<_> = tokio_stream::StreamExt::collect(
-                tokio_stream::StreamExt::then(
-                    tokio_stream::iter(0..data_size),
-                    |x| cpu_work(x)
-                )
-            ).await;
+            let result: Vec<_> = tokio_stream::StreamExt::collect(tokio_stream::StreamExt::then(
+                tokio_stream::iter(0..data_size),
+                |x| cpu_work(x),
+            ))
+            .await;
             black_box(result)
         });
     });
@@ -364,18 +351,14 @@ fn bench_practical_scenarios(c: &mut Criterion) {
 
     group.bench_function("tokio_stream_async_io", |b| {
         b.to_async(&rt).iter(|| async {
-            let result: Vec<_> = tokio_stream::StreamExt::collect(
-                tokio_stream::StreamExt::filter(
-                    tokio_stream::StreamExt::then(
-                        tokio_stream::iter(0..500),
-                        |x| async move {
-                            tokio::time::sleep(Duration::from_nanos(x as u64 % 100)).await;
-                            x * 2
-                        }
-                    ),
-                    |&x| x % 8 == 0
-                )
-            ).await;
+            let result: Vec<_> = tokio_stream::StreamExt::collect(tokio_stream::StreamExt::filter(
+                tokio_stream::StreamExt::then(tokio_stream::iter(0..500), |x| async move {
+                    tokio::time::sleep(Duration::from_nanos(x as u64 % 100)).await;
+                    x * 2
+                }),
+                |&x| x % 8 == 0,
+            ))
+            .await;
             black_box(result)
         });
     });
@@ -405,15 +388,11 @@ fn bench_quick_validation(c: &mut Criterion) {
 
     group.bench_function("tokio_stream_simple", |b| {
         b.to_async(&rt).iter(|| async {
-            let result: Vec<_> = tokio_stream::StreamExt::collect(
-                tokio_stream::StreamExt::filter(
-                    tokio_stream::StreamExt::map(
-                        tokio_stream::iter(0..1000),
-                        |x| x * 2
-                    ),
-                    |&x| x % 4 == 0
-                )
-            ).await;
+            let result: Vec<_> = tokio_stream::StreamExt::collect(tokio_stream::StreamExt::filter(
+                tokio_stream::StreamExt::map(tokio_stream::iter(0..1000), |x| x * 2),
+                |&x| x % 4 == 0,
+            ))
+            .await;
             black_box(result)
         });
     });

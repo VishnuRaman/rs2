@@ -1,10 +1,9 @@
+use crate::RS2Stream;
+use async_stream::stream;
+use futures_util::StreamExt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
-use futures_util::StreamExt;
 use tokio::sync::broadcast;
-use async_stream::stream;
-use crate::RS2Stream;
 
 #[derive(Debug)]
 pub enum PipelineError {
@@ -44,7 +43,9 @@ pub enum PipelineNode<T> {
     },
     Branch {
         name: String,
-        sinks: Vec<Box<dyn Fn(RS2Stream<T>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>,
+        sinks: Vec<
+            Box<dyn Fn(RS2Stream<T>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+        >,
     },
 }
 
@@ -160,7 +161,9 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
         for node in &self.nodes {
             match node {
                 PipelineNode::Source { .. } => has_source = true,
-                PipelineNode::Sink { .. } | PipelineNode::Branch { .. } => has_sink_or_branch = true,
+                PipelineNode::Sink { .. } | PipelineNode::Branch { .. } => {
+                    has_sink_or_branch = true
+                }
                 _ => {}
             }
         }
@@ -183,35 +186,21 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
 
         for node in self.nodes {
             match node {
-                PipelineNode::Source { name, func } => {
-                    if self.config.enable_metrics {
-                        println!("Pipeline '{}': Starting source '{}'", self.config.name, name);
-                    }
+                PipelineNode::Source { name: _name, func } => {
                     stream = Some(func());
                 }
-                PipelineNode::Transform { name, func } => {
+                PipelineNode::Transform { name: _name, func } => {
                     if let Some(s) = stream.take() {
-                        if self.config.enable_metrics {
-                            println!("Pipeline '{}': Applying transform '{}'", self.config.name, name);
-                        }
                         stream = Some(func(s));
                     }
                 }
-                PipelineNode::Sink { name, func } => {
+                PipelineNode::Sink { name: _name, func } => {
                     if let Some(s) = stream.take() {
-                        if self.config.enable_metrics {
-                            println!("Pipeline '{}': Running sink '{}'", self.config.name, name);
-                        }
                         func(s).await;
                     }
                 }
-                PipelineNode::Branch { name, sinks } => {
+                PipelineNode::Branch { name: _name, sinks } => {
                     if let Some(s) = stream.take() {
-                        if self.config.enable_metrics {
-                            println!("Pipeline '{}': Branching to {} sinks at '{}'",
-                                     self.config.name, sinks.len(), name);
-                        }
-
                         // Use broadcast to fan out to multiple sinks
                         let (tx, _) = broadcast::channel(self.config.buffer_size);
 
@@ -236,7 +225,8 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
                                 while let Ok(item) = rx.recv().await {
                                     yield item;
                                 }
-                            }.boxed();
+                            }
+                            .boxed();
 
                             handles.push(tokio::spawn(async move {
                                 sink_func(sink_stream).await;

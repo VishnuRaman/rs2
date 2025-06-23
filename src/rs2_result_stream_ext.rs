@@ -1,13 +1,13 @@
 use async_stream::stream;
 use futures_core::Stream;
 use futures_util::pin_mut;
-use futures_util::stream::{BoxStream, StreamExt};
+use futures_util::stream::StreamExt;
 use std::future::Future;
 use std::time::Duration;
 use tokio::time::sleep;
 
-use crate::error::{RetryPolicy, StreamResult};
-use crate::{RS2Stream, ExitCase, bracket_case, rate_limit_backpressure};
+use crate::error::RetryPolicy;
+use crate::{bracket_case, rate_limit_backpressure, ExitCase, RS2Stream};
 
 /// Extension trait for streams containing Result types
 pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
@@ -109,7 +109,8 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
                     Err(e) => yield Err(f(e)),
                 }
             }
-        }.boxed()
+        }
+        .boxed()
     }
 
     /// Replace errors with fallback values
@@ -127,7 +128,8 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
                     Err(e) => yield f(e),
                 }
             }
-        }.boxed()
+        }
+        .boxed()
     }
 
     /// Collect only successful values into a Vec
@@ -145,7 +147,8 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
                 }
             }
             yield successes;
-        }.boxed()
+        }
+        .boxed()
     }
 
     /// Collect only errors into a Vec
@@ -163,11 +166,16 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
                 }
             }
             yield errors;
-        }.boxed()
+        }
+        .boxed()
     }
 
     /// Retry with policy
-    fn retry_with_policy_rs2<F>(self, policy: RetryPolicy, mut factory: F) -> RS2Stream<Result<T, E>>
+    fn retry_with_policy_rs2<F>(
+        self,
+        policy: RetryPolicy,
+        mut factory: F,
+    ) -> RS2Stream<Result<T, E>>
     where
         F: FnMut() -> Self + Send + 'static,
         T: Clone + Send + 'static,

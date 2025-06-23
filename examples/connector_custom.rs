@@ -1,7 +1,7 @@
-use rs2_stream::connectors::{ConnectorError, StreamConnector, CommonConfig};
-use rs2_stream::rs2::*;
 use async_trait::async_trait;
 use futures_util::stream::StreamExt;
+use rs2_stream::connectors::{CommonConfig, ConnectorError, StreamConnector};
+use rs2_stream::rs2::*;
 
 // Custom connector for a hypothetical message queue
 struct MyQueueConnector {
@@ -39,7 +39,10 @@ impl StreamConnector<String> for MyQueueConnector {
     async fn from_source(&self, config: Self::Config) -> Result<RS2Stream<String>, Self::Error> {
         // In a real implementation, you would connect to your message queue
         // and create a stream of messages
-        println!("Connecting to {} with queue {}", self.connection_string, config.queue_name);
+        println!(
+            "Connecting to {} with queue {}",
+            self.connection_string, config.queue_name
+        );
 
         // For this example, we'll just return a stream of mock messages
         let messages = vec![
@@ -51,10 +54,17 @@ impl StreamConnector<String> for MyQueueConnector {
         Ok(from_iter(messages))
     }
 
-    async fn to_sink(&self, stream: RS2Stream<String>, config: Self::Config) -> Result<Self::Metadata, Self::Error> {
+    async fn to_sink(
+        &self,
+        stream: RS2Stream<String>,
+        config: Self::Config,
+    ) -> Result<Self::Metadata, Self::Error> {
         // In a real implementation, you would send each message in the stream
         // to your message queue
-        println!("Sending to {} with queue {}", self.connection_string, config.queue_name);
+        println!(
+            "Sending to {} with queue {}",
+            self.connection_string, config.queue_name
+        );
 
         // For this example, we'll just count the messages
         let messages: Vec<String> = stream.collect().await;
@@ -104,13 +114,14 @@ fn main() {
         let stream = connector.from_source(config.clone()).await.unwrap();
 
         // Process the stream
-        let processed_stream = stream
-            .map_rs2(|msg| format!("Processed: {}", msg));
+        let processed_stream = stream.map_rs2(|msg| format!("Processed: {}", msg));
 
         // Send the processed stream back to the connector
         let metadata = connector.to_sink(processed_stream, config).await.unwrap();
 
-        println!("Processed {} messages for queue {}", 
-                 metadata.messages_processed, metadata.queue_name);
+        println!(
+            "Processed {} messages for queue {}",
+            metadata.messages_processed, metadata.queue_name
+        );
     });
 }

@@ -1,22 +1,21 @@
-use rs2_stream::connectors::{KafkaConnector, StreamConnector};
 use rs2_stream::connectors::kafka_connector::KafkaConfig;
+use rs2_stream::connectors::{KafkaConnector, StreamConnector};
 use rs2_stream::rs2::*;
-use futures_util::stream::StreamExt;
-use tokio::runtime::Runtime;
 use std::collections::HashMap;
 use std::time::Duration;
+use tokio::runtime::Runtime;
 
 fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Create a Kafka connector
-        let connector = KafkaConnector::new("localhost:9092")
-            .with_consumer_group("my-consumer-group");
+        let connector =
+            KafkaConnector::new("localhost:9092").with_consumer_group("my-consumer-group");
 
         // Create a Kafka configuration
         let config = KafkaConfig {
             topic: "my-topic".to_string(),
-            group_id: None, // Use the connector's consumer group
+            group_id: None,  // Use the connector's consumer group
             partition: None, // All partitions
             from_beginning: true,
             kafka_config: None,
@@ -27,14 +26,18 @@ fn main() {
         };
 
         // Check if the connector is healthy
-        let healthy = <KafkaConnector as StreamConnector<String>>::health_check(&connector).await.unwrap();
+        let healthy = <KafkaConnector as StreamConnector<String>>::health_check(&connector)
+            .await
+            .unwrap();
         if !healthy {
             println!("Kafka connector is not healthy!");
             return;
         }
 
         // Create a stream from Kafka
-        let stream = <KafkaConnector as StreamConnector<String>>::from_source(&connector, config).await.unwrap();
+        let stream = <KafkaConnector as StreamConnector<String>>::from_source(&connector, config)
+            .await
+            .unwrap();
 
         // Process the stream with RS2 transformations
         let processed_stream = stream
@@ -63,7 +66,13 @@ fn main() {
         };
 
         // Send to sink
-        let metadata = <KafkaConnector as StreamConnector<String>>::to_sink(&connector, processed_stream, sink_config).await.unwrap();
+        let metadata = <KafkaConnector as StreamConnector<String>>::to_sink(
+            &connector,
+            processed_stream,
+            sink_config,
+        )
+        .await
+        .unwrap();
         println!("Processed messages sent to Kafka: {:?}", metadata);
     });
 }

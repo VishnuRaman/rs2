@@ -3,7 +3,7 @@
 //! Handles chunk validation, sequencing, buffering, and delivery.
 //! Integrates with RS2Stream for backpressure and parallel processing.
 
-use super::codec::{CodecError, MediaCodec};
+use super::codec::MediaCodec;
 use super::types::*;
 use crate::queue::Queue;
 use crate::*;
@@ -105,19 +105,38 @@ impl ReorderBuffer {
         self.last_received_time = Instant::now();
 
         // Check for duplicates using O(1) HashSet lookup
-        let seq_num = chunk.sequence_number;
-        if self.sequence_numbers.contains(&seq_num) {
-            return Err(ChunkProcessingError::DuplicateChunk(seq_num));
+        let _seq_num = chunk.sequence_number;
+        if self.sequence_numbers.contains(&_seq_num) {
+            return Err(ChunkProcessingError::DuplicateChunk(_seq_num));
+        }
+
+        // Check for sequence gaps
+        if _seq_num > self.next_expected_sequence && !self.buffer.is_empty() {
+            // If we have a gap and the buffer is not empty, check if the gap is too large
+            // A gap is considered too large if it's more than the reorder window size
+            let max_allowed = self.next_expected_sequence + self.max_size as u64;
+            if _seq_num > max_allowed {
+                return Err(ChunkProcessingError::SequenceGap {
+                    expected: self.next_expected_sequence,
+                    received: _seq_num,
+                });
+            }
+        } else if _seq_num > self.next_expected_sequence + self.max_size as u64 {
+            // Even if buffer is empty, if the gap is too large, it's an error
+            return Err(ChunkProcessingError::SequenceGap {
+                expected: self.next_expected_sequence,
+                received: _seq_num,
+            });
         }
 
         // Insert in order
         let insert_pos = self
             .buffer
-            .binary_search_by_key(&seq_num, |c| c.sequence_number)
+            .binary_search_by_key(&_seq_num, |c| c.sequence_number)
             .unwrap_or_else(|pos| pos);
 
         // Add to sequence numbers set
-        self.sequence_numbers.insert(seq_num);
+        self.sequence_numbers.insert(_seq_num);
 
         // Insert chunk into buffer
         self.buffer.insert(insert_pos, chunk);
@@ -128,13 +147,14 @@ impl ReorderBuffer {
 
     fn extract_ready_chunks(&mut self) -> Result<Vec<MediaChunk>, ChunkProcessingError> {
         let mut ready_chunks = Vec::new();
-
+        
         while let Some(chunk) = self.buffer.front() {
             if chunk.sequence_number == self.next_expected_sequence {
+                let _seq_num = chunk.sequence_number;
                 let chunk = self.buffer.pop_front().unwrap();
 
                 // Remove from sequence numbers set
-                self.sequence_numbers.remove(&chunk.sequence_number);
+                self.sequence_numbers.remove(&_seq_num);
 
                 self.next_expected_sequence += 1;
                 ready_chunks.push(chunk);
@@ -214,7 +234,6 @@ impl ChunkProcessor {
         auto_backpressure_block(stream, self.config.max_buffer_size)
     }
 
-
     /// Process a single chunk
     async fn process_single_chunk(
         &self,
@@ -229,11 +248,14 @@ impl ChunkProcessor {
 
         // Step 1: Validate chunk if enabled
         if self.config.enable_validation {
-            self.validate_chunk(&chunk).await
-                .map_err(|e| {
-                    log::warn!("Chunk validation failed for stream {}: {:?}", chunk.stream_id, e);
+            self.validate_chunk(&chunk).await.map_err(|e| {
+                log::warn!(
+                    "Chunk validation failed for stream {}: {:?}",
+                    chunk.stream_id,
                     e
-                })?;
+                );
+                e
+            })?;
         }
 
         // Step 2: Set sequence number if not set
@@ -243,11 +265,14 @@ impl ChunkProcessor {
 
         // Step 3: Handle reordering if enabled
         let ready_chunks = if self.config.enable_reordering {
-            self.handle_reordering(chunk).await
-                .map_err(|e| {
-                    log::warn!("Reordering failed for stream {}: {:?}", original_stream_id, e);
+            self.handle_reordering(chunk).await.map_err(|e| {
+                log::warn!(
+                    "Reordering failed for stream {}: {:?}",
+                    original_stream_id,
                     e
-                })?
+                );
+                e
+            })?
         } else {
             vec![chunk]
         };
@@ -419,8 +444,8 @@ impl ChunkProcessor {
                 let flushed_chunks = buffer.force_flush();
 
                 log::debug!(
-                    "Flushing expired buffer for stream {}: {} chunks", 
-                    stream_id, 
+                    "Flushing expired buffer for stream {}: {} chunks",
+                    stream_id,
                     flushed_chunks.len()
                 );
 
@@ -429,8 +454,8 @@ impl ChunkProcessor {
                     if let Err(e) = self.output_queue.try_enqueue(chunk).await {
                         dropped_chunks += 1;
                         log::debug!(
-                            "Failed to enqueue flushed chunk from stream {}: {:?}", 
-                            stream_id, 
+                            "Failed to enqueue flushed chunk from stream {}: {:?}",
+                            stream_id,
                             e
                         );
                     }

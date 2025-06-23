@@ -1,9 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rs2_stream::rs2::*;
-use tokio::runtime::Runtime;
-use std::time::Duration;
-use sha2::{Sha256, Digest};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::time::Duration;
+use tokio::runtime::Runtime;
 
 // Lightweight CPU task - should show minimal parallel benefit
 async fn light_cpu_task(x: i32) -> i32 {
@@ -33,7 +33,8 @@ async fn medium_cpu_task(x: i32) -> String {
 // Heavy CPU task - should show significant parallel benefits
 async fn heavy_cpu_task(x: i32) -> (String, f64) {
     // Complex JSON processing + mathematical computation
-    let json_data = format!(r#"{{
+    let json_data = format!(
+        r#"{{
         "id": {},
         "data": [{}],
         "metadata": {{
@@ -41,7 +42,14 @@ async fn heavy_cpu_task(x: i32) -> (String, f64) {
             "timestamp": {},
             "values": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         }}
-    }}"#, x, (0..50).map(|i| (i * x).to_string()).collect::<Vec<_>>().join(","), x * 1000);
+    }}"#,
+        x,
+        (0..50)
+            .map(|i| (i * x).to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        x * 1000
+    );
 
     // Parse and process JSON (CPU intensive)
     let parsed: Value = serde_json::from_str(&json_data).unwrap();
@@ -69,10 +77,10 @@ async fn heavy_cpu_task(x: i32) -> (String, f64) {
 async fn io_simulation_task(x: i32) -> String {
     // Simulate variable database/network delays
     let delay = match x % 10 {
-        0..=2 => Duration::from_millis(5),   // Fast queries
-        3..=6 => Duration::from_millis(15),  // Medium queries  
-        7..=8 => Duration::from_millis(30),  // Slow queries
-        _ => Duration::from_millis(50),      // Very slow queries
+        0..=2 => Duration::from_millis(5),  // Fast queries
+        3..=6 => Duration::from_millis(15), // Medium queries
+        7..=8 => Duration::from_millis(30), // Slow queries
+        _ => Duration::from_millis(50),     // Very slow queries
     };
 
     tokio::time::sleep(delay).await;
@@ -87,10 +95,10 @@ async fn io_simulation_task(x: i32) -> String {
 async fn variable_workload_task(x: i32) -> i32 {
     // Create highly variable workloads to test load balancing
     let work_amount = match x % 20 {
-        0..=4 => 10,      // Light work (25% of tasks)
-        5..=14 => 100,    // Medium work (50% of tasks)  
-        15..=17 => 1000,  // Heavy work (15% of tasks)
-        _ => 5000,        // Very heavy work (10% of tasks)
+        0..=4 => 10,     // Light work (25% of tasks)
+        5..=14 => 100,   // Medium work (50% of tasks)
+        15..=17 => 1000, // Heavy work (15% of tasks)
+        _ => 5000,       // Very heavy work (10% of tasks)
     };
 
     let mut result = x;
@@ -115,11 +123,31 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
 
     // Test configurations: (task_name, data_size, description)
     let test_configs = vec![
-        ("light_cpu", 2000, "Light CPU work - minimal parallel benefit expected"),
-        ("medium_cpu", 500, "Medium CPU work - good parallel benefits"),
-        ("heavy_cpu", 100, "Heavy CPU work - significant parallel benefits"),
-        ("io_simulation", 200, "I/O simulation - excellent parallel benefits"),
-        ("variable_workload", 400, "Variable workload - tests load balancing"),
+        (
+            "light_cpu",
+            2000,
+            "Light CPU work - minimal parallel benefit expected",
+        ),
+        (
+            "medium_cpu",
+            500,
+            "Medium CPU work - good parallel benefits",
+        ),
+        (
+            "heavy_cpu",
+            100,
+            "Heavy CPU work - significant parallel benefits",
+        ),
+        (
+            "io_simulation",
+            200,
+            "I/O simulation - excellent parallel benefits",
+        ),
+        (
+            "variable_workload",
+            400,
+            "Variable workload - tests load balancing",
+        ),
     ];
 
     for (task_name, data_size, _description) in test_configs {
@@ -136,35 +164,35 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
                                 .map_rs2(|_| 1) // Normalize result type
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         "medium_cpu" => {
                             from_iter(0..size)
                                 .eval_map_rs2(|x| medium_cpu_task(x))
                                 .map_rs2(|_| 1)
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         "heavy_cpu" => {
                             from_iter(0..size)
                                 .eval_map_rs2(|x| heavy_cpu_task(x))
                                 .map_rs2(|_| 1)
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         "io_simulation" => {
                             from_iter(0..size)
                                 .eval_map_rs2(|x| io_simulation_task(x))
                                 .map_rs2(|_| 1)
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         "variable_workload" => {
                             from_iter(0..size)
                                 .eval_map_rs2(|x| variable_workload_task(x))
                                 .map_rs2(|_| 1)
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         _ => vec![],
                     };
                     black_box(result)
@@ -174,7 +202,7 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
 
         // Optimal concurrency levels per task type
         let concurrency_levels = match task_name {
-            "light_cpu" => vec![2, 4], // Lower concurrency for light tasks
+            "light_cpu" => vec![2, 4],     // Lower concurrency for light tasks
             "medium_cpu" => vec![2, 4, 8], // Moderate concurrency
             "heavy_cpu" => vec![2, 4, 8, num_cpus::get()], // Up to CPU count
             "io_simulation" => vec![8, 16, 32, 64], // High concurrency for I/O
@@ -185,7 +213,10 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
         for concurrency in concurrency_levels {
             // Parallel ordered processing
             group.bench_with_input(
-                BenchmarkId::new(format!("{}_parallel_ordered", task_name), format!("{}_{}", data_size, concurrency)),
+                BenchmarkId::new(
+                    format!("{}_parallel_ordered", task_name),
+                    format!("{}_{}", data_size, concurrency),
+                ),
                 &(task_name, data_size, concurrency),
                 |b, &(task_type, size, conc)| {
                     b.to_async(&rt).iter(|| async {
@@ -196,35 +227,35 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "medium_cpu" => {
                                 from_iter(0..size)
                                     .par_eval_map_rs2(conc, |x| medium_cpu_task(x))
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "heavy_cpu" => {
                                 from_iter(0..size)
                                     .par_eval_map_rs2(conc, |x| heavy_cpu_task(x))
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "io_simulation" => {
                                 from_iter(0..size)
                                     .par_eval_map_rs2(conc, |x| io_simulation_task(x))
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "variable_workload" => {
                                 from_iter(0..size)
                                     .par_eval_map_rs2(conc, |x| variable_workload_task(x))
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             _ => vec![],
                         };
                         black_box(result)
@@ -234,7 +265,10 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
 
             // Parallel unordered processing (should be faster)
             group.bench_with_input(
-                BenchmarkId::new(format!("{}_parallel_unordered", task_name), format!("{}_{}", data_size, concurrency)),
+                BenchmarkId::new(
+                    format!("{}_parallel_unordered", task_name),
+                    format!("{}_{}", data_size, concurrency),
+                ),
                 &(task_name, data_size, concurrency),
                 |b, &(task_type, size, conc)| {
                     b.to_async(&rt).iter(|| async {
@@ -245,35 +279,35 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "medium_cpu" => {
                                 from_iter(0..size)
                                     .par_eval_map_unordered_rs2(conc, |x| medium_cpu_task(x))
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "heavy_cpu" => {
                                 from_iter(0..size)
                                     .par_eval_map_unordered_rs2(conc, |x| heavy_cpu_task(x))
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "io_simulation" => {
                                 from_iter(0..size)
                                     .par_eval_map_unordered_rs2(conc, |x| io_simulation_task(x))
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "variable_workload" => {
                                 from_iter(0..size)
                                     .par_eval_map_unordered_rs2(conc, |x| variable_workload_task(x))
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             _ => vec![],
                         };
                         black_box(result)
@@ -297,7 +331,10 @@ fn bench_parallel_scaling(c: &mut Criterion) {
     let max_concurrency = (num_cpus::get() * 2).min(32); // Cap at 32 to keep benchmarks reasonable
 
     // Test scaling from 1 to max_concurrency for different workload types
-    for concurrency in [1, 2, 4, 8, 16, max_concurrency].iter().filter(|&&c| c <= max_concurrency) {
+    for concurrency in [1, 2, 4, 8, 16, max_concurrency]
+        .iter()
+        .filter(|&&c| c <= max_concurrency)
+    {
         let concurrency = *concurrency;
 
         // CPU-bound scaling test
@@ -324,7 +361,7 @@ fn bench_parallel_scaling(c: &mut Criterion) {
             },
         );
 
-        // I/O-bound scaling test  
+        // I/O-bound scaling test
         group.bench_with_input(
             BenchmarkId::new("io_simulation_scaling", concurrency),
             &concurrency,
@@ -404,20 +441,20 @@ fn bench_ordered_vs_unordered(c: &mut Criterion) {
                                     .par_eval_map_rs2(concurrency, |x| light_cpu_task(x))
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "uniform_slow" => {
                                 from_iter(0..data_size)
                                     .par_eval_map_rs2(concurrency, |x| medium_cpu_task(x))
                                     .map_rs2(|_| 1) // Map to i32 to match other arms
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "variable_mixed" => {
                                 from_iter(0..data_size)
                                     .par_eval_map_rs2(concurrency, |x| variable_workload_task(x))
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             _ => vec![],
                         };
                         black_box(result)
@@ -440,20 +477,22 @@ fn bench_ordered_vs_unordered(c: &mut Criterion) {
                                     .par_eval_map_unordered_rs2(concurrency, |x| light_cpu_task(x))
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "uniform_slow" => {
                                 from_iter(0..data_size)
                                     .par_eval_map_unordered_rs2(concurrency, |x| medium_cpu_task(x))
                                     .map_rs2(|_| 1) // Map to i32 to match other arms
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "variable_mixed" => {
                                 from_iter(0..data_size)
-                                    .par_eval_map_unordered_rs2(concurrency, |x| variable_workload_task(x))
+                                    .par_eval_map_unordered_rs2(concurrency, |x| {
+                                        variable_workload_task(x)
+                                    })
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             _ => vec![],
                         };
                         black_box(result)
@@ -477,7 +516,10 @@ fn bench_concurrency_optimization(c: &mut Criterion) {
     let max_concurrency = num_cpus::get() * 4; // Test beyond CPU count
 
     // Find optimal concurrency for I/O-bound tasks
-    for concurrency in [1, 2, 4, 8, 16, 32, 64].iter().filter(|&&c| c <= max_concurrency) {
+    for concurrency in [1, 2, 4, 8, 16, 32, 64]
+        .iter()
+        .filter(|&&c| c <= max_concurrency)
+    {
         let concurrency = *concurrency;
 
         group.bench_with_input(
@@ -544,11 +586,31 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
 
     // Test configurations: (task_name, data_size, description)
     let test_configs = vec![
-        ("light_cpu", 2000, "Light CPU work - minimal parallel benefit expected"),
-        ("medium_cpu", 500, "Medium CPU work - good parallel benefits"),
-        ("heavy_cpu", 100, "Heavy CPU work - significant parallel benefits"),
-        ("io_simulation", 200, "I/O simulation - excellent parallel benefits"),
-        ("variable_workload", 400, "Variable workload - tests load balancing"),
+        (
+            "light_cpu",
+            2000,
+            "Light CPU work - minimal parallel benefit expected",
+        ),
+        (
+            "medium_cpu",
+            500,
+            "Medium CPU work - good parallel benefits",
+        ),
+        (
+            "heavy_cpu",
+            100,
+            "Heavy CPU work - significant parallel benefits",
+        ),
+        (
+            "io_simulation",
+            200,
+            "I/O simulation - excellent parallel benefits",
+        ),
+        (
+            "variable_workload",
+            400,
+            "Variable workload - tests load balancing",
+        ),
     ];
 
     // Synchronous versions of the async tasks for map_parallel_rs2
@@ -573,7 +635,8 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
     };
 
     let heavy_cpu_sync = |x: i32| -> (String, f64) {
-        let json_data = format!(r#"{{
+        let json_data = format!(
+            r#"{{
             "id": {},
             "data": [{}],
             "metadata": {{
@@ -581,7 +644,14 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
                 "timestamp": {},
                 "values": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             }}
-        }}"#, x, (0..50).map(|i| (i * x).to_string()).collect::<Vec<_>>().join(","), x * 1000);
+        }}"#,
+            x,
+            (0..50)
+                .map(|i| (i * x).to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            x * 1000
+        );
 
         let parsed: Value = serde_json::from_str(&json_data).unwrap();
 
@@ -624,21 +694,21 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
                                 .map_rs2(|_| 1) // Normalize result type
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         "medium_cpu" => {
                             from_iter(0..size)
                                 .map_rs2(medium_cpu_sync)
                                 .map_rs2(|_| 1)
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         "heavy_cpu" => {
                             from_iter(0..size)
                                 .map_rs2(heavy_cpu_sync)
                                 .map_rs2(|_| 1)
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         _ => vec![],
                     };
                     black_box(result)
@@ -659,21 +729,21 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
                                 .map_rs2(|_| 1) // Normalize result type
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         "medium_cpu" => {
                             from_iter(0..size)
                                 .map_parallel_rs2(medium_cpu_sync)
                                 .map_rs2(|_| 1)
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         "heavy_cpu" => {
                             from_iter(0..size)
                                 .map_parallel_rs2(heavy_cpu_sync)
                                 .map_rs2(|_| 1)
                                 .collect_rs2::<Vec<_>>()
                                 .await
-                        },
+                        }
                         _ => vec![],
                     };
                     black_box(result)
@@ -683,7 +753,7 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
 
         // Optimal concurrency levels per task type for map_parallel_with_concurrency_rs2
         let concurrency_levels = match task_name {
-            "light_cpu" => vec![2, 4], // Lower concurrency for light tasks
+            "light_cpu" => vec![2, 4],     // Lower concurrency for light tasks
             "medium_cpu" => vec![2, 4, 8], // Moderate concurrency
             "heavy_cpu" => vec![2, 4, 8, num_cpus::get()], // Up to CPU count
             _ => vec![4],
@@ -692,7 +762,10 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
         for concurrency in concurrency_levels {
             // map_parallel_with_concurrency_rs2 (custom concurrency)
             group.bench_with_input(
-                BenchmarkId::new(format!("{}_map_parallel_with_concurrency", task_name), format!("{}_{}", data_size, concurrency)),
+                BenchmarkId::new(
+                    format!("{}_map_parallel_with_concurrency", task_name),
+                    format!("{}_{}", data_size, concurrency),
+                ),
                 &(task_name, data_size, concurrency),
                 |b, &(task_type, size, conc)| {
                     b.to_async(&rt).iter(|| async {
@@ -703,21 +776,21 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
                                     .map_rs2(|_| 1) // Normalize result type
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "medium_cpu" => {
                                 from_iter(0..size)
                                     .map_parallel_with_concurrency_rs2(conc, medium_cpu_sync)
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             "heavy_cpu" => {
                                 from_iter(0..size)
                                     .map_parallel_with_concurrency_rs2(conc, heavy_cpu_sync)
                                     .map_rs2(|_| 1)
                                     .collect_rs2::<Vec<_>>()
                                     .await
-                            },
+                            }
                             _ => vec![],
                         };
                         black_box(result)
@@ -732,7 +805,8 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
 
 // Define a static function for heavy CPU work to avoid lifetime issues
 fn heavy_cpu_work(x: i32) -> (String, f64) {
-    let json_data = format!(r#"{{
+    let json_data = format!(
+        r#"{{
         "id": {},
         "data": [{}],
         "metadata": {{
@@ -740,7 +814,14 @@ fn heavy_cpu_work(x: i32) -> (String, f64) {
             "timestamp": {},
             "values": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         }}
-    }}"#, x, (0..50).map(|i| (i * x).to_string()).collect::<Vec<_>>().join(","), x * 1000);
+    }}"#,
+        x,
+        (0..50)
+            .map(|i| (i * x).to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        x * 1000
+    );
 
     let parsed: Value = serde_json::from_str(&json_data).unwrap();
 
