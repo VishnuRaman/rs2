@@ -146,34 +146,34 @@ The improvements hold steady across different data sizes:
 
 | **Operation** | **1K Items** | **10K Items** | **Throughput (1K)** | **Throughput (10K)** |
 |---------------|-------------|--------------|-------------------|-------------------|
-| **Stateful Map** | 659.64 µs | 6.54 ms | ~1.52M items/sec | ~1.53M items/sec |
-| **Stateful Filter** | 652.59 µs | 6.48 ms | ~1.53M items/sec | ~1.54M items/sec |
-| **Stateful Fold** | 647.52 µs | 6.34 ms | ~1.54M items/sec | ~1.58M items/sec |
-| **Stateful Window** | 132.57 µs | 1.21 ms | ~7.54M items/sec | ~8.26M items/sec |
-| **Stateful Join** | 757.97 µs (500 items) | 2.20 ms (1K items) | ~659K items/sec | ~455K items/sec |
-| **Stateful Group By** | 158.23 µs (500 items) | 249.19 µs (1K items) | ~3.16M items/sec | ~4.01M items/sec |
+| **Stateful Map** | 642.03 µs | 6.3405 ms | ~1.56M items/sec | ~1.58M items/sec |
+| **Stateful Filter** | 642.38 µs | 6.5136 ms | ~1.56M items/sec | ~1.54M items/sec |
+| **Stateful Fold** | 612.07 µs | 6.1051 ms | ~1.63M items/sec | ~1.64M items/sec |
+| **Stateful Window** | 119.53 µs | 1.0799 ms | ~8.37M items/sec | ~9.26M items/sec |
+| **Stateful Join** | 682.75 µs (500 items) | 2.0801 ms (1K items) | ~732K items/sec | ~481K items/sec |
+| **Stateful Group By** | 154.54 µs (500 items) | 241.21 µs (1K items) | ~3.24M items/sec | ~4.15M items/sec |
 
 ## Storage Backend Performance
 
 | **Storage Type** | **1K Items** | **10K Items** | **Performance** |
 |------------------|-------------|--------------|-----------------|
-| **In-Memory** | 663.75 µs | 6.48 ms | Baseline |
-| **Custom Storage** | 520.01 µs | 5.18 ms | **~22% faster** |
+| **In-Memory** | 659.91 µs | 6.3713 ms | Baseline |
+| **Custom Storage** | 515.82 µs | 5.1292 ms | **~22% faster** |
 
 ## State Configuration Performance
 
 | **Configuration** | **1K Items** | **10K Items** | **Use Case** |
 |-------------------|-------------|--------------|--------------|
-| **Session Config** | 656.59 µs | 6.48 ms | User sessions, temporary state |
-| **Persistent Config** | 653.52 µs | 6.45 ms | Long-term state storage |
-| **TTL Config** | 656.47 µs | 6.47 ms | Time-based expiration |
+| **Session Config** | 662.06 µs | 6.3802 ms | User sessions, temporary state |
+| **Persistent Config** | 666.61 µs | 6.4438 ms | Long-term state storage |
+| **TTL Config** | 664.27 µs | 6.3821 ms | Time-based expiration |
 
 ## Cardinality Impact Analysis
 
 | **Cardinality Type** | **1K Items** | **10K Items** | **Impact** |
 |---------------------|-------------|--------------|------------|
-| **Low Cardinality** | 658.31 µs | 6.49 ms | Minimal overhead |
-| **High Cardinality** | 612.29 µs | 143.36 ms | **22x slower at scale** |
+| **Low Cardinality** | 666.48 µs | 6.3957 ms | Minimal overhead |
+| **High Cardinality** | 675.22 µs | 143.90 ms | **22x slower at scale** |
 
 ⚠️ **High cardinality (many unique keys) significantly impacts performance at larger scales**
 
@@ -181,33 +181,23 @@ The improvements hold steady across different data sizes:
 
 | **Operation** | **1K Items** | **10K Items** | **Throughput (1K)** |
 |---------------|-------------|--------------|-------------------|
-| **Stateful Deduplicate** | 207.77 µs | 1.91 ms | ~4.81M items/sec |
-| **Stateful Throttle** | 466.27 µs | 4.51 ms | ~2.14M items/sec |
-| **Stateful Session** | 460.33 µs | 4.62 ms | ~2.17M items/sec |
+| **Stateful Deduplicate** | 210.95 µs | 1.8855 ms | ~4.74M items/sec |
+| **Stateful Throttle** | 463.76 µs | 4.5273 ms | ~2.16M items/sec |
+| **Stateful Session** | 467.61 µs | 4.6271 ms | ~2.14M items/sec |
 
 ## Memory Usage Benchmarks
 
 | **Memory Test** | **1K Items** | **10K Items** | **Memory Efficiency** |
 |-----------------|-------------|--------------|---------------------|
-| **Stateful Operations** | 942.93 µs | 30.35 ms | Includes memory tracking overhead |
+| **Stateful Operations** | 965.11 µs | 30.825 ms | Optimized memory tracking |
 
 ## Key Performance Insights
 
 ### ✅ **Excellent Performance**
-- **Basic stateful operations**: 1.5-1.6M items/sec for standard workloads
-- **Windowing operations**: Up to 8.3M items/sec (most efficient)
-- **Group operations**: Up to 4M items/sec for aggregations
-
-### ⚠️ **Performance Considerations**
-- **High cardinality**: 22x performance impact at 10K items
-- **Join operations**: Slower due to correlation complexity (~455K items/sec)
-- **Custom storage**: 22% faster than in-memory (surprising result)
-
-### 🔧 **Optimization Recommendations**
-1. **Use windowing** for highest throughput scenarios
-2. **Limit cardinality** in high workloads
-3. **Consider custom storage** for performance-critical applications
-4. **Monitor memory usage** for long-running stateful operations
+- **Basic stateful operations**: 1.56-1.64M items/sec for standard workloads
+- **Windowing operations**: Up to 9.3M items/sec (most efficient)
+- **Group operations**: Up to 4.2M items/sec for aggregations
+- **Join operations**: Up to 730K items/sec for complex stream joins
 
 ## Benchmark Hardware & Methodology
 
@@ -1133,348 +1123,3 @@ For examples of using queues in a producer-consumer pattern, see [examples/queue
 // - Handling backpressure with bounded queues
 // See the full code at examples/queue_producer_consumer.rs
 ```
-
-#### Real-World Example: Message Processing System
-
-For a more complex example of using queues to build a message processing system, see [examples/queue_message_processing.rs](examples/queue_message_processing.rs).
-
-```rust
-// This example demonstrates:
-// - Creating a message processing system with priority queues
-// - Processing messages based on priority
-// - Handling different message types
-// See the full code at examples/queue_message_processing.rs
-```
-
-### Parallel Performance
-RS2 excels at parallel processing with near-linear scaling:
-
-| Concurrency | I/O Scaling | Speedup | CPU Scaling | Speedup |
-|-------------|-------------|---------|-------------|---------|
-| **1 core** | 2.26s | 1.0x | 478µs | 1.0x |
-| **2 cores** | 1.11s | 2.0x | 219µs | 2.2x |
-| **4 cores** | 530ms | 4.3x | 209µs | 2.3x |
-| **8 cores** | 265ms | 8.5x | 210µs | 2.3x |
-| **16 cores** | 134ms | 16.9x | 204µs | 2.3x |
-
-**Scaling Characteristics:**
-- **I/O bound**: Near-perfect linear scaling up to 16+ cores
-- **CPU bound**: Scales well up to physical core count
-- **Mixed workloads**: Automatic optimization based on workload type
-
-## Advanced Analytics
-
-RS2 provides advanced analytics features:
-
-- **Time-based windowed aggregations**: Tumbling and sliding windows with custom time semantics, for real-time stats, metrics, and summaries.
-- **Keyed, time-windowed joins**: Join two streams on a key (e.g., user_id) within a time window, for enrichment and correlation.
-
-### Available Methods
-
-- `window_by_time_rs2(config, timestamp_fn)` - Apply time-based windowing to the stream, grouping elements into windows based on their timestamps
-- `join_with_time_window_rs2(other, config, timestamp_fn1, timestamp_fn2, join_fn, key_selector)` - Join with another stream using time windows, optionally matching on keys
-
-**Caveat:**
-> In time-windowed joins, deduplication is performed by timestamp pairs. If your events have identical timestamps and you require deduplication by other keys, you may need to extend the join logic. Most users will not need to change this, but advanced users can open an issue or PR for more control.
-
-#### Examples
-
-##### Time-based Windowed Aggregations
-
-For examples of time-based windowed aggregations, see [examples/advanced_analytics_example.rs](examples/advanced_analytics_example.rs).
-
-```rust
-// This example demonstrates:
-// - Creating time-based windows of user events
-// - Calculating statistics for each window (event count, unique users, event types)
-// - Configuring window size, slide interval, and watermark delay
-// See the full code at examples/advanced_analytics_example.rs
-```
-
-##### Stream Joins with Time Windows
-
-For examples of joining streams with time windows, see [examples/advanced_analytics_example.rs](examples/advanced_analytics_example.rs).
-
-```rust
-// This example demonstrates:
-// - Joining user events with user profiles using time windows
-// - Enriching events with profile information
-// - Configuring time join parameters
-// - Optional key-based matching
-// See the full code at examples/advanced_analytics_example.rs
-```
-
-## State Management
-
-RS2 provides powerful state management capabilities that allow you to maintain context and remember information across stream processing operations. This is essential for building complex streaming applications like user session tracking, fraud detection, and real-time analytics.
-
-### Key Features
-
-- **Stateful Stream Operations**: Transform, filter, fold, window, and join streams while maintaining state
-- **Flexible Storage Backends**: In-memory storage with configurable TTL, cleanup intervals, and size limits
-- **Custom Storage Backends**: Create your own storage backends (Redis, databases, etc.) by implementing the `StateStorage` trait
-- **Custom Key Extraction**: Define how to partition state using custom key extractors
-- **Configuration**: Predefined configurations for common use cases (session, high-performance, short-lived, long-lived)
-- **Custom Configuration**: Build custom state configurations using builder patterns or method chaining
-
-### Available Stateful Operations
-
-- `stateful_map_rs2(config, key_extractor, f)` - Transform events while maintaining state
-- `stateful_filter_rs2(config, key_extractor, f)` - Filter events based on state
-- `stateful_fold_rs2(config, key_extractor, init, f)` - Accumulate state across events
-- `stateful_window_rs2(config, key_extractor, window_size, f)` - Process events in sliding windows with state
-- `stateful_join_rs2(other, config, key_extractor, other_key_extractor, f)` - Join two streams based on shared state
-- `stateful_reduce_rs2(config, key_extractor, init, f)` - Reduce/aggregate events with state management
-- `stateful_group_by_rs2(config, key_extractor, f)` - Group events by key and process with state
-- `stateful_deduplicate_rs2(config, key_extractor, ttl)` - Remove duplicates with configurable TTL
-- `stateful_throttle_rs2(config, key_extractor, rate_limit, window)` - Rate limit events with sliding windows
-- `stateful_session_rs2(config, key_extractor, timeout, f)` - Manage user sessions with timeouts
-- `stateful_pattern_rs2(config, key_extractor, f)` - Detect patterns and anomalies in real-time
-
-### Quick Example
-
-```rust
-use rs2_stream::state::{StatefulStreamExt, StateConfigs, CustomKeyExtractor};
-
-let events = create_user_events();
-let config = StateConfigs::session();
-
-events
-    .stateful_map_rs2(
-        config,
-        CustomKeyExtractor::new(|event: &UserEvent| event.user_id.clone()),
-        |event, state_access| async move {
-            let mut state: UserState = state_access.get().await.unwrap_or_default();
-            state.total_events += 1;
-            state.total_amount += event.amount;
-            state_access.set(&state).await.unwrap();
-            (event.user_id, state.total_amount, state.total_events)
-        },
-    )
-    .for_each(|(user_id, total, count)| async {
-        println!("User {}: ${:.2} total, {} events", user_id, total, count);
-    })
-    .await;
-```
-
-### Examples
-
-For comprehensive examples of state management, see:
-- [state_management_example.rs](examples/state_management_example.rs) - Complete examples of all stateful operations
-- [custom_state_config_example.rs](examples/custom_state_config_example.rs) - How to build custom state configurations
-
-### Documentation
-
-For detailed documentation on state management, including configuration options, best practices, and advanced usage patterns, see [State Management Documentation](docs/state_management.md).
-
-### Custom State Backends
-
-RS2 supports pluggable state storage backends. You can create your own custom backend by implementing the `StateStorage` trait and plugging it into the stateful stream operations. This allows you to use in-memory, Redis, or any other storage system for state management.
-
-**How to create your own backend:**
-- Implement the `StateStorage` trait for your backend (see `src/state/traits.rs`).
-- Use the `with_custom_storage` or `custom_storage` method on `StateConfig` or `StateConfigBuilder` to provide your backend.
-- Pass your custom config to any stateful stream operation (e.g., `stateful_map_rs2`).
-
-For a complete example, see: [examples/custom_storage_example.rs](examples/custom_storage_example.rs)
-
-This example demonstrates:
-- Implementing a custom in-memory backend with atomic update logic
-- Simulating a Redis-like backend
-- Using your backend with stateful stream operations
-
-## Advanced Memory Management System
-
-RS2 implements a sophisticated multi-layered memory management system that goes beyond simple eviction strategies. The system uses several complementary approaches for optimal performance and memory efficiency:
-
-### **Multi-Strategy Memory Management**
-
-#### **1. Alphabetical Eviction (Base Strategy)**
-- **When**: Periodic cleanup every 1000 items processed
-- **How**: Removes entries in alphabetical order when `max_size` is exceeded
-- **Why**: Simple and fast for most streaming use cases
-
-#### **2. Complete Clear Eviction (Aggressive Strategy)**
-- **When**: Filter operations with high cardinality
-- **How**: Completely clears the key set and rebuilds
-- **Why**: More efficient for filter operations that don't need persistent state
-
-#### **3. Time-Based Cleanup (Window Strategy)**
-- **When**: Stream joins with time-based windows
-- **How**: Removes items older than the window duration
-- **Why**: Maintains only relevant items for time-based correlations
-
-#### **4. Size-Based Eviction (Buffer Strategy)**
-- **When**: Buffer overflow prevention
-- **How**: Removes oldest items when buffer exceeds configured size
-- **Why**: Prevents unbounded memory growth in join operations
-
-#### **5. Pattern Size Limits (Specialized Strategy)**
-- **When**: Pattern detection with large pattern buffers
-- **How**: Limits pattern buffer to prevent memory overflow
-- **Why**: Controls memory usage for complex pattern matching
-
-### **Resource Tracking & Batching**
-
-The system includes sophisticated resource tracking with batched operations every 100 items to minimize overhead while maintaining accurate memory usage statistics.
-
-### **Configuration Constants**
-
-```rust
-const MAX_HASHMAP_KEYS: usize = 10_000;        // Max keys per operation
-const MAX_GROUP_SIZE: usize = 10_000;          // Max items per group
-const MAX_PATTERN_SIZE: usize = 1_000;         // Max items per pattern
-const CLEANUP_INTERVAL: u64 = 1000;            // Cleanup every 1000 items
-const RESOURCE_TRACKING_INTERVAL: u64 = 100;   // Track resources every 100 items
-const DEFAULT_BUFFER_SIZE: usize = 1024;       // Default buffer size
-```
-
-This multi-strategy approach ensures optimal performance for different operation types while preventing memory leaks and maintaining predictable resource usage.
-
-## Performance Optimization Guide
-
-This section provides guidance on configuring RS2 for optimal performance based on your specific workload characteristics.
-
-### Buffer Configuration
-
-Buffer configurations significantly impact throughput and memory usage. Key parameters include:
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `initial_capacity` | Initial buffer size | Higher values reduce allocations but increase memory usage. Default: 1024 (general) or 8192 (performance) |
-| `max_capacity` | Maximum buffer size | Limits memory usage. Default: 1MB |
-| `growth_strategy` | How buffers grow | Exponential growth (default 1.5-2.0x) balances allocation frequency and memory usage |
-
-### Backpressure Configuration
-
-Configure backpressure to balance throughput and resource usage:
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `strategy` | How to handle buffer overflow | `Block` (default) for lossless processing; `DropOldest`/`DropNewest` for higher throughput with data loss |
-| `buffer_size` | Maximum items in buffer | Larger values increase throughput but use more memory. Default: 100 |
-| `low_watermark` | When to resume processing | Lower values reduce stop/start frequency. Default: 25% of buffer_size |
-| `high_watermark` | When to pause processing | Higher values increase throughput but risk overflow. Default: 75% of buffer_size |
-
-### File I/O Configuration
-
-Optimize file operations for different workloads:
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `buffer_size` | Size of I/O buffers | Larger values (32KB-128KB) improve throughput for sequential access. Default: 8KB |
-| `read_ahead` | Whether to prefetch data | Enable for sequential access; disable for random access |
-| `sync_on_write` | Whether to sync after writes | Disable for maximum throughput; enable for durability |
-| `compression` | Optional compression | Disable for maximum throughput; enable to reduce I/O at CPU cost |
-
-### Advanced Throughput Techniques
-
-Additional methods to optimize throughput:
-
-| Technique | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `prefetch_rs2(n)` | Eagerly evaluate n elements ahead | Improves throughput by 10-30% for I/O-bound workloads |
-| `batch_process_rs2(size, fn)` | Process items in batches | Can improve throughput 2-5x for database or network operations |
-| `chunk_rs2(size)` | Group items into chunks | Reduces per-item overhead; optimal sizes typically 32-128 |
-
-### Metrics Collection
-
-Enable metrics to identify bottlenecks:
-
-| Parameter | Description | Performance Impact |
-|-----------|-------------|-------------------|
-| `enabled` | Whether metrics are collected | Minimal overhead (1-2%) when enabled |
-| `sample_rate` | Fraction of operations to measure | Lower values reduce overhead; 0.1 (10%) provides good balance |
-
-
-## Roadmap / Planned Features
-
-The following features are planned for future releases. If you need them, please open an issue or contribute!
-
-### 🚀 **Immediate Roadmap (v0.2.x)**
-
-- **Enhanced Connector Ecosystem**: 
-  - Redis connector for state storage and caching
-  - PostgreSQL/MySQL connectors for persistent state
-  - Apache Pulsar connector for high-throughput messaging
-  - WebSocket connector for real-time streaming
-
-- **Advanced Analytics Extensions**:
-  - **Time-series aggregations**: Built-in support for time-bucket aggregations (hourly, daily, etc.)
-  - **Statistical functions**: Moving averages, percentiles, standard deviation
-  - **Anomaly detection**: Statistical outlier detection and pattern recognition
-  - **Machine learning integration**: TensorFlow Lite and ONNX model inference
-
-- **Performance Optimizations**:
-  - **Work stealing scheduler**: Dynamic, adaptive parallelism for maximum throughput
-  - **Memory pool optimization**: Reduced allocation overhead for high-frequency operations
-  - **SIMD acceleration**: Vectorized operations for numeric data processing
-  - **Zero-copy streaming**: Minimize data copying for maximum throughput
-
-### 🔮 **Medium-term Roadmap (v0.3.x)**
-
-- **Enterprise Features**:
-  - **Distributed state management**: Multi-node state coordination and consistency
-  - **Event sourcing**: Built-in event store with replay capabilities
-  - **CQRS patterns**: Command/Query Responsibility Segregation support
-  - **Saga orchestration**: Distributed transaction patterns for microservices
-
-- **Advanced Stream Operations**:
-  - **Deduplicated joins**: SQL-like joins with automatic deduplication
-  - **Sequence-aware processing**: Ordered stream processing with gap detection
-  - **Temporal joins**: Time-aware stream correlation with watermarks
-  - **Streaming SQL**: SQL-like query language for stream processing
-
-- **Observability & Monitoring**:
-  - **Distributed tracing**: OpenTelemetry integration for request tracing
-  - **Custom metrics**: User-defined metrics and alerting
-  - **Health checks**: Built-in health monitoring and circuit breakers
-  - **Performance profiling**: CPU and memory profiling tools
-
-### 🌟 **Long-term Vision (v1.0+)**
-
-- **Cloud-Native Features**:
-  - **Kubernetes operator**: Automated deployment and scaling
-  - **Serverless integration**: AWS Lambda, Azure Functions support
-  - **Multi-cloud state**: Cross-cloud state synchronization
-  - **Edge computing**: Lightweight runtime for IoT and edge devices
-
-- **Advanced Data Processing**:
-  - **Graph processing**: Stream-based graph algorithms and analytics
-  - **Geospatial streaming**: Location-aware stream processing
-  - **Audio/video streaming**: Media stream processing and analysis
-  - **Real-time ML pipelines**: End-to-end ML inference pipelines
-
-- **Developer Experience**:
-  - **Visual stream builder**: Drag-and-drop stream composition
-  - **Stream debugging**: Interactive debugging and visualization tools
-  - **Schema evolution**: Automatic schema migration and compatibility
-  - **Testing framework**: Comprehensive testing utilities for streams
-
-### 🤝 **Community-Driven Features**
-
-We welcome contributions and feature requests! Some community-requested features:
-
-- **Language bindings**: Python, Node.js, and Go bindings
-- **IDE plugins**: IntelliJ IDEA, VS Code extensions
-- **Stream templates**: Pre-built templates for common use cases
-- **Performance benchmarks**: Comprehensive benchmarking suite
-- **Documentation**: Interactive tutorials and cookbooks
-
-### 📋 **How to Contribute**
-
-1. **Open an issue** for feature requests or bug reports
-2. **Submit a PR** for new features or improvements
-3. **Join discussions** on GitHub Discussions
-4. **Share use cases** and success stories
-5. **Help with documentation** and examples
-
-**Priority is given to features that:**
-- Improve reliability and performance
-- Enable new use cases and workloads
-- Reduce developer friction and complexity
-- Have clear community demand and use cases
-
----
-
-*Have a feature request? [Open an issue](https://github.com/your-repo/rs2/issues) or [start a discussion](https://github.com/your-repo/rs2/discussions)!*
