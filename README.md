@@ -2,11 +2,11 @@
 
 **RS2** is a high-performance, async streaming library for Rust that combines the ergonomics of reactive streams with reliability features. Built for applications that demand both developer productivity and operational excellence.
 
-**RS2 is also a powerful stateful streaming library** with built-in state management capabilities, enabling complex stateful operations like session tracking, deduplication, windowing, and real-time analytics without external dependencies.
+**RS2 is also a stateful streaming library** with built-in state management capabilities, enabling complex stateful operations like session tracking, deduplication, windowing, and real-time analytics without external dependencies.
 
 ## 🚀 Why RS2?
 
-**Superior Scaling Performance**: While RS2 has modest sequential overhead (1.6x vs futures-rs, comparable to tokio-stream), it delivers exceptional parallel performance with **near-linear scaling up to 16+ cores** and **7.8-8.5x speedup** for I/O-bound workloads.
+**Scaling Performance**: While RS2 has modest sequential overhead (1.6x vs futures-rs, comparable to tokio-stream), it delivers parallel performance with **near-linear scaling up to 16+ cores** and **7.8-8.5x speedup** for I/O-bound workloads.
 
 **Reliability**: Unlike basic streaming libraries, RS2 includes built-in **automatic backpressure**, **retry policies with exponential backoff**, **circuit breakers**, **timeout handling**, and **resource management** - eliminating the need to manually implement these critical patterns.
 
@@ -18,10 +18,10 @@
 
 ## 🎯 Quick Start Examples
 
-**See RS2 in action with these comprehensive examples:**
+**See RS2 in action with these examples:**
 
 ### 🚀 [Parallel Processing Comprehensive](examples/parallel_processing_comprehensive.rs)
-**Perfect for understanding RS2's parallel processing capabilities:**
+**Understanding RS2's parallel processing capabilities:**
 - **Sequential vs Parallel Performance Comparison** - See actual speedup numbers
 - **Ordered vs Unordered Processing** - Learn when to use each approach
 - **Mixed Workload Processing** - CPU + I/O bound tasks
@@ -36,7 +36,7 @@ cargo run --example parallel_processing_comprehensive
 ```
 
 ### 📊 [Real-Time Analytics Pipeline](examples/real_time_analytics_pipeline.rs)
-**Complete stateful streaming analytics system:**
+**Stateful streaming analytics system:**
 - **Session Management** - Track user sessions with timeouts
 - **User Metrics Aggregation** - Real-time user behavior analytics
 - **Page Analytics** - Group by page URL for insights
@@ -50,154 +50,271 @@ cargo run --example parallel_processing_comprehensive
 cargo run --example real_time_analytics_pipeline
 ```
 
-**These examples demonstrate RS2's full capabilities - from basic parallel processing to complex stateful analytics pipelines. Perfect for understanding how to build streaming applications!**
+**These examples demonstrate RS2's capabilities - from basic parallel processing to complex stateful analytics pipelines. Understanding how to build streaming applications!**
 
 # RS2 Performance Benchmarks
 
-## Throughput Performance
+*Based on Criterion.rs benchmarks on test hardware*
 
-| **Workload Type** | **Sequential** | **Parallel (8 cores)** | **Parallel (16 cores)** |
-|-------------------|----------------|------------------------|--------------------------|
-| **Pure CPU Operations** | 1.1M/sec | 6.6-8.8M/sec | 11-13.2M/sec |
-| **Light Async I/O** | 110K-550K/sec | 550K-1.1M/sec | 880K-1.65M/sec |
-| **Heavy I/O (Network/DB)** | 11K-55K/sec | 55K-110K/sec | 88K-165K/sec |
-| **Message Queue Processing** | 5.5K-22K/sec | 22K-88K/sec | 44K-176K/sec |
-| **JSON/Data Transformation** | 110K-330K/sec | 440K-880K/sec | 660K-1.32M/sec |
-| **Real-time Analytics** | 220K-550K/sec | 880K-1.65M/sec | 1.32M-2.2M/sec |
+## Basic Operations Performance
 
-## Benchmark-Based Performance
+| **Operation** | **1K Items** | **10K Items** | **100K Items** | **1M Items** | **Throughput (1K)** |
+|---------------|--------------|---------------|----------------|--------------|-------------------|
+| **Map/Filter** | 4.05-4.15 µs | 38.73-38.75 µs | 393.94-394.84 µs | 4.04-4.07 ms | ~247K items/sec |
+| **Fold** | 2.69-2.70 µs | 26.81-26.90 µs | 269.63-270.28 µs | 2.68-2.69 ms | ~357K items/sec |
+| **Chunk Process** | 4.21-4.97 µs | 34.44-34.55 µs | 345.44-345.64 µs | 3.60-3.96 ms | ~260K items/sec |
 
-| **Operation** | **RS2 Performance** | **vs Baseline** | **Scaling Factor** |
-|---------------|---------------------|------------------|-------------------|
-| **Map + Filter** | ~1.54M records/sec | 3.2x vs tokio-stream | 7.8x parallel speedup |
-| **Chunking + Fold** | ~880K records/sec | Competitive with tokio-stream | 8.5x parallel speedup |
-| **Async Transform** | ~330K records/sec | Near-linear scaling | Up to 16 cores |
-| **Backpressure Handling** | ~220K records/sec | Built-in reliability | Automatic throttling |
+## Async Operations Performance
 
-## Key Performance Highlights
+| **Operation** | **1K Items** | **10K Items** | **50K Items** | **Throughput (1K)** |
+|---------------|--------------|---------------|---------------|-------------------|
+| **Eval Map** | 20.08-20.13 µs | 201.35-201.94 µs | 1.01-1.02 ms | ~50K items/sec |
 
-- ✅ **CPU-bound**: Up to 13.2M records/sec with 16 cores
-- ✅ **I/O-bound**: 110K-1.1M records/sec typical range
-- ✅ **Production**: 55K-550K records/sec for most real-world scenarios
-- ✅ **Scaling**: Near-linear performance gains with core count
-- ✅ **Parallel Speedup**: 7.8-8.5x performance improvement
-- ✅ **Built-in Reliability**: Automatic backpressure and error handling
-- ✅ **Optimized Memory**: 10% throughput improvement from BufferConfig optimization
+## Parallel Processing Performance
 
-### **Perfect For:**
-- **High-throughput data pipelines** processing millions of events per second
-- **Microservices** requiring resilient inter-service communication
-- **ETL workloads** that need automatic parallelization and error recovery
-- **Real-time analytics** with backpressure-aware stream processing
+### I/O Simulation (200 items)
 
-### **I/O Scaling Performance**
+| **Concurrency** | **Sequential** | **Parallel Ordered** | **Parallel Unordered** | **Speedup Factor** |
+|-----------------|----------------|---------------------|----------------------|-------------------|
+| **8 cores** | 4.07s | 530ms | 530ms | 7.7x |
+| **16 cores** | 4.07s | 281ms | 282ms | 14.5x |
+| **32 cores** | 4.07s | 160ms | 160ms | 25.4x |
+| **64 cores** | 4.07s | 99ms | 99ms | 41.1x |
 
-| **Concurrency** | **Time** | **Speedup** |
-|-----------------|----------|-------------|
-| Sequential | 4.22s | 1x |
-| 8 concurrent | 537ms | **7.8x** |
-| 16 concurrent | 284ms | **14.8x** |
-| 32 concurrent | 161ms | **26x** |
-| 64 concurrent | 99ms | **42x** |
+### Light CPU Workloads (2000 items)
 
-## ⚡ Performance Optimized
+| **Concurrency** | **Sequential** | **Parallel Ordered** | **Parallel Unordered** | **Speedup Factor** |
+|-----------------|----------------|---------------------|----------------------|-------------------|
+| **2 cores** | 7.06µs | 3.18ms | 3.15ms | 0.004x |
+| **4 cores** | 7.06µs | 1.79ms | 1.78ms | 0.004x |
 
-RS2 delivers **20-50% faster** stream processing compared to previous versions:
+### Medium CPU Workloads (500 items)
 
-- **Map/Filter chains**: Up to 50% faster
-- **Chunked processing**: Up to 45% faster
-- **Async operations**: Up to 29% faster
-- **Fold operations**: Up to 22% faster
+| **Concurrency** | **Sequential** | **Parallel Ordered** | **Parallel Unordered** | **Speedup Factor** |
+|-----------------|----------------|---------------------|----------------------|-------------------|
+| **2 cores** | 563µs | 743µs | 732µs | 0.76x |
+| **4 cores** | 563µs | 750µs | 733µs | 0.75x |
+| **8 cores** | 563µs | 778µs | 797µs | 0.72x |
 
-*Performance improvements scale consistently from 1K to 1M+ items*
+### Heavy CPU Workloads (100 items)
 
-### **Consistent Scaling Performance**
-The improvements hold steady across different data sizes:
+| **Concurrency** | **Sequential** | **Parallel Ordered** | **Parallel Unordered** | **Speedup Factor** |
+|-----------------|----------------|---------------------|----------------------|-------------------|
+| **2 cores** | 9.98ms | 10.77ms | 10.91ms | 0.93x |
+| **4 cores** | 9.98ms | 10.83ms | 10.83ms | 0.92x |
+| **8 cores** | 9.98ms | 10.82ms | 10.72ms | 0.93x |
+| **16 cores** | 9.98ms | 10.56ms | 10.42ms | 0.96x |
 
-| **Operation** | **1K items** | **10K items** | **100K items** | **1M items** |
-|---------------|--------------|---------------|----------------|--------------|
-| **Map/Filter** | 46% faster | 50% faster | 49% faster | 49% faster |
-| **Chunk Process** | 43% faster | 45% faster | 45% faster | 45% faster |
+### Variable Workloads (400 items)
 
-### **Consistent Scaling Performance**
-The improvements hold steady across different data sizes:
+| **Concurrency** | **Sequential** | **Parallel Ordered** | **Parallel Unordered** | **Speedup Factor** |
+|-----------------|----------------|---------------------|----------------------|-------------------|
+| **4 cores** | 676µs | 1.07ms | 1.02ms | 0.63x |
+| **8 cores** | 676µs | 1.01ms | 1.01ms | 0.67x |
+| **16 cores** | 676µs | 995µs | 991µs | 0.68x |
 
-| **Operation** | **1K items** | **10K items** | **100K items** | **1M items** |
-|---------------|--------------|---------------|----------------|--------------|
-| **Map/Filter** | 3.66µs vs 6.78µs | 32.6µs vs 65.2µs | 326µs vs 647µs | 3.30ms vs 6.60ms |
-| **Chunk Process** | 3.59µs vs 6.30µs | 34.9µs vs 63.5µs | 346µs vs 631µs | 3.45ms vs 6.33ms |
+### Parallel Scaling Analysis
 
-*Times shown as: **RS2 time vs Previous time***
+#### Heavy CPU Scaling (100 items)
 
-**No performance degradation at scale** - RS2 maintains its 46-50% speed advantage from 1,000 to 1,000,000 items.
+| **Cores** | **Time** | **vs Sequential** |
+|-----------|----------|-------------------|
+| **1** | 9.80ms | 1.00x |
+| **2** | 10.64ms | 0.92x |
+| **4** | 10.76ms | 0.91x |
+| **8** | 10.53ms | 0.93x |
+| **16** | 10.27ms | 0.95x |
+| **32** | 10.01ms | 0.98x |
 
-**Key Metrics:**
-- **Sequential Operations**: Comparable to tokio-stream (43µs vs 43µs for 10K items)
-- **Parallel I/O Scaling**: Linear scaling from 2.26s (1 core) → 134ms (16 cores)
-- **CPU-bound Tasks**: Optimal scaling up to physical core count
-- **Real-world Workloads**: 2.2-2.5s for complex data processing pipelines
-- **Memory Efficiency**: Chunked processing for large datasets (2.9ms for 100K items)
+#### I/O Simulation Scaling (200 items)
 
-# RS2 Stateful Operations - Measured Performance Results
+| **Cores** | **Time** | **vs Sequential** |
+|-----------|----------|-------------------|
+| **1** | 2.04s | 1.00x |
+| **2** | 1.03s | 1.98x |
+| **4** | 545ms | 3.74x |
+| **8** | 286ms | 7.12x |
+| **16** | 160ms | 12.7x |
+| **32** | 99ms | 20.6x |
+
+#### Variable Workload Scaling (400 items)
+
+| **Cores** | **Time** | **vs Sequential** |
+|-----------|----------|-------------------|
+| **1** | 168µs | 1.00x |
+| **2** | 348µs | 0.48x |
+| **4** | 256µs | 0.66x |
+| **8** | 241µs | 0.70x |
+| **16** | 207µs | 0.81x |
+| **32** | 195µs | 0.86x |
+
+### Concurrency Optimization
+
+#### I/O-Bound Concurrency (200 items)
+
+| **Concurrency** | **Time** | **vs Sequential** |
+|-----------------|----------|-------------------|
+| **1** | 3.05s | 1.00x |
+| **2** | 1.53s | 1.99x |
+| **4** | 781ms | 3.91x |
+| **8** | 406ms | 7.51x |
+| **16** | 219ms | 13.9x |
+| **32** | 129ms | 23.6x |
+| **64** | 83ms | 36.7x |
+
+#### CPU-Bound Concurrency (100 items)
+
+| **Concurrency** | **Time** | **vs Sequential** |
+|-----------------|----------|-------------------|
+| **1** | 14.89ms | 1.00x |
+| **2** | 16.57ms | 0.90x |
+| **4** | 16.74ms | 0.89x |
+| **8** | 16.50ms | 0.90x |
+| **16** | 16.10ms | 0.93x |
+
+### Map Parallel Functions
+
+#### Light CPU (2000 items)
+
+| **Method** | **Time** | **vs Sequential** |
+|------------|----------|-------------------|
+| **Sequential** | 5.98µs | 1.00x |
+| **Map Parallel** | 460µs | 0.013x |
+| **Map Parallel (2 cores)** | 3.14ms | 0.002x |
+| **Map Parallel (4 cores)** | 1.77ms | 0.003x |
+
+#### Medium CPU (500 items)
+
+| **Method** | **Time** | **vs Sequential** |
+|------------|----------|-------------------|
+| **Sequential** | 573µs | 1.00x |
+| **Map Parallel** | 742µs | 0.77x |
+| **Map Parallel (2 cores)** | 792µs | 0.72x |
+| **Map Parallel (4 cores)** | 742µs | 0.77x |
+| **Map Parallel (8 cores)** | 749µs | 0.76x |
+
+#### Heavy CPU (100 items)
+
+| **Method** | **Time** | **vs Sequential** |
+|------------|----------|-------------------|
+| **Sequential** | 9.78ms | 1.00x |
+| **Map Parallel** | 10.41ms | 0.94x |
+| **Map Parallel (2 cores)** | 10.81ms | 0.90x |
+| **Map Parallel (4 cores)** | 10.72ms | 0.91x |
+| **Map Parallel (8 cores)** | 10.64ms | 0.92x |
+| **Map Parallel (16 cores)** | 10.36ms | 0.94x |
+
+### Map Parallel vs Par Eval Map (200 items)
+
+| **Method** | **Time** | **vs Sequential** |
+|------------|----------|-------------------|
+| **Sequential** | 19.99ms | 1.00x |
+| **Map Parallel** | 21.60ms | 0.93x |
+| **Map Parallel (concurrency)** | 21.48ms | 0.93x |
+| **Par Eval Map** | 21.59ms | 0.93x |
+| **Par Eval Map (unordered)** | 21.46ms | 0.93x |
+
+## Performance Characteristics
+
+### **Optimized Operations**
+- **Deduplication**: Fastest at ~4.7M items/sec
+- **Windowing**: High performance at ~7.6M items/sec
+- **Group By**: Efficient at ~3.1M items/sec
+
+### **Core Operations**
+- **Stateful Map/Filter**: ~1.53-1.56M items/sec
+- **Stateful Fold**: ~1.59M items/sec
+- **Join operations**: ~658K items/sec
+
+### **Resource Management**
+- **Core operations**: Optimized by removing resource tracking overhead
+- **Stateful operations**: Selective resource tracking maintains safety
+- **Storage operations**: In-memory storage optimized, custom storage maintains performance
+- **High cardinality**: Controlled degradation (22x slowdown) vs system failure
+
+### **Performance Trade-offs**
+- **Sequential operations**: Maximum performance (no resource overhead)
+- **Stateful operations**: Resource-safe where needed
+- **Overall**: Balanced performance and safety across use cases
+
+## Benchmark Methodology
+
+- **Hardware**: Test hardware specifications
+- **Tool**: Criterion.rs with 100 samples per benchmark
+- **Warmup**: 3 seconds warmup period
+- **Outliers**: Outliers detected and reported (typically 1-27% of samples)
+- **Statistical significance**: p < 0.05 for all reported improvements
+- **Resource Management**: Selective resource tracking (disabled on core operations for performance)
+
+## Performance Notes
+
+- **Resource optimization**: Core operations optimized by removing resource tracking overhead
+- **Stateful operations**: Maintain resource safety where needed with minimal performance impact
+- **Deduplication**: Most improved operation
+- **Windowing/Joins**: Resource management requirements maintained
+- **Storage**: In-memory storage optimized, custom storage maintains performance
+- **High cardinality**: Graceful degradation (22x slowdown) vs system failure
+- **Overall**: Balanced improvements across operations with controlled trade-offs where safety is needed
+
+*These benchmarks represent actual performance on the test hardware. Results may vary based on system configuration and workload characteristics.*
+
+# RS2 Stateful Operations Performance
 
 *Based on Criterion.rs benchmarks on test hardware*
 
-## Core Stateful Operations Performance
+## Stateful Operations Performance
 
-| **Operation** | **1K Items** | **10K Items** | **Throughput (1K)** | **Throughput (10K)** |
-|---------------|-------------|--------------|-------------------|-------------------|
-| **Stateful Map** | 642.03 µs | 6.3405 ms | ~1.56M items/sec | ~1.58M items/sec |
-| **Stateful Filter** | 642.38 µs | 6.5136 ms | ~1.56M items/sec | ~1.54M items/sec |
-| **Stateful Fold** | 612.07 µs | 6.1051 ms | ~1.63M items/sec | ~1.64M items/sec |
-| **Stateful Window** | 119.53 µs | 1.0799 ms | ~8.37M items/sec | ~9.26M items/sec |
-| **Stateful Join** | 682.75 µs (500 items) | 2.0801 ms (1K items) | ~732K items/sec | ~481K items/sec |
-| **Stateful Group By** | 154.54 µs (500 items) | 241.21 µs (1K items) | ~3.24M items/sec | ~4.15M items/sec |
+| **Operation** | **1K Items** | **10K Items** | **Throughput (1K)** | **Notes** |
+|---------------|--------------|---------------|-------------------|-----------|
+| **Stateful Map** | 653.54-655.34 µs | 6.4788-6.4863 ms | ~1.53M items/sec | Standard stateful operation |
+| **Stateful Filter** | 638.71-640.32 µs | 6.4290-6.4758 ms | ~1.56M items/sec | Similar to stateful map |
+| **Stateful Fold** | 629.79-630.10 µs | 6.2187-6.2300 ms | ~1.59M items/sec | Most efficient stateful operation |
+| **Stateful Window** | 131.47-131.94 µs | 1.2135-1.2191 ms | ~7.6M items/sec | Highly optimized |
+| **Stateful Join** | 759.11-761.31 µs (500 items) | 2.2078-2.2149 ms (1K items) | ~658K items/sec | Complex operation |
+| **Stateful Group By** | 159.22-160.18 µs (500 items) | 255.12-255.42 µs (1K items) | ~3.1M items/sec | Efficient grouping |
 
-## Storage Backend Performance
+## Specialized Stateful Operations
+
+| **Operation** | **1K Items** | **10K Items** | **Throughput (1K)** | **Use Case** |
+|---------------|--------------|---------------|-------------------|--------------|
+| **Stateful Deduplicate** | 212.65-213.14 µs | 1.8903-1.8989 ms | ~4.7M items/sec | Remove duplicates |
+| **Stateful Throttle** | 466.61-468.10 µs | 4.4923-4.4998 ms | ~2.14M items/sec | Rate limiting |
+| **Stateful Session** | 463.59-466.12 µs | 4.6182-4.6219 ms | ~2.15M items/sec | Session tracking |
+
+## Storage Performance Comparison
 
 | **Storage Type** | **1K Items** | **10K Items** | **Performance** |
-|------------------|-------------|--------------|-----------------|
-| **In-Memory** | 659.91 µs | 6.3713 ms | Baseline |
-| **Custom Storage** | 515.82 µs | 5.1292 ms | **~22% faster** |
+|------------------|--------------|---------------|-----------------|
+| **In-Memory** | 670.86-673.17 µs | 6.4952-6.5164 ms | Baseline |
+| **Custom Storage** | 513.22-515.54 µs | 5.1436-5.1601 ms | ~22% faster |
 
-## State Configuration Performance
+## Cardinality Impact
 
-| **Configuration** | **1K Items** | **10K Items** | **Use Case** |
-|-------------------|-------------|--------------|--------------|
-| **Session Config** | 662.06 µs | 6.3802 ms | User sessions, temporary state |
-| **Persistent Config** | 666.61 µs | 6.4438 ms | Long-term state storage |
-| **TTL Config** | 664.27 µs | 6.3821 ms | Time-based expiration |
+| **Cardinality** | **1K Items** | **10K Items** | **Performance Impact** |
+|-----------------|--------------|---------------|----------------------|
+| **Low Cardinality** | 669.18-671.55 µs | 6.4367-6.4516 ms | Baseline performance |
+| **High Cardinality** | 664.73-669.03 µs | 142.89-143.85 ms | Significant degradation at scale |
 
-## Cardinality Impact Analysis
+**Note**: High cardinality shows predictable performance degradation rather than system failure, with 22x slowdown at 10K items being controlled and stable.
 
-| **Cardinality Type** | **1K Items** | **10K Items** | **Impact** |
-|---------------------|-------------|--------------|------------|
-| **Low Cardinality** | 666.48 µs | 6.3957 ms | Minimal overhead |
-| **High Cardinality** | 675.22 µs | 143.90 ms | **22x slower at scale** |
+## Performance Characteristics
 
-⚠️ **High cardinality (many unique keys) significantly impacts performance at larger scales**
+### **Efficient Operations**
+- **Windowing**: Fastest at ~8.4M items/sec
+- **Group By**: Efficient at ~3.2M items/sec  
+- **Deduplication**: High throughput at ~4.7M items/sec
 
-## Specialized Operations Performance
+### **Standard Operations**
+- **Stateful Map/Filter**: ~1.56M items/sec
+- **Stateful Fold**: ~1.63M items/sec
+- **Join operations**: ~732K items/sec (complex operation)
 
-| **Operation** | **1K Items** | **10K Items** | **Throughput (1K)** |
-|---------------|-------------|--------------|-------------------|
-| **Stateful Deduplicate** | 210.95 µs | 1.8855 ms | ~4.74M items/sec |
-| **Stateful Throttle** | 463.76 µs | 4.5273 ms | ~2.16M items/sec |
-| **Stateful Session** | 467.61 µs | 4.6271 ms | ~2.14M items/sec |
+### **Resource Management**
+- **Memory tracking**: Enabled for all stateful operations
+- **Automatic cleanup**: Prevents memory leaks
+- **Cardinality protection**: Graceful degradation under load
 
-## Memory Usage Benchmarks
-
-| **Memory Test** | **1K Items** | **10K Items** | **Memory Efficiency** |
-|-----------------|-------------|--------------|---------------------|
-| **Stateful Operations** | 965.11 µs | 30.825 ms | Optimized memory tracking |
-
-## Key Performance Insights
-
-### ✅ **Excellent Performance**
-- **Basic stateful operations**: 1.56-1.64M items/sec for standard workloads
-- **Windowing operations**: Up to 9.3M items/sec (most efficient)
-- **Group operations**: Up to 4.2M items/sec for aggregations
-- **Join operations**: Up to 730K items/sec for complex stream joins
+*Performance measurements based on Criterion.rs benchmarks. Results may vary based on hardware and workload characteristics.*
 
 ## Benchmark Hardware & Methodology
 
@@ -210,9 +327,9 @@ The improvements hold steady across different data sizes:
 
 Performance can vary by ±0.5-2.5% between runs, as shown in the benchmark change percentages. All measurements represent statistically significant results with outlier detection.
 
-*Benchmark results last updated: 2025-06-21*
+*Benchmark results last updated: 2025-01-21 (after resource management optimizations)*
 
-RS2 is optimized for the 95% of use cases where **developer productivity**, **operational reliability**, and **parallel performance** matter more than raw sequential speed. Perfect for microservices, data pipelines, API gateways, and any application requiring robust stream processing.
+RS2 is optimized for the 95% of use cases where **developer productivity**, **operational reliability**, and **parallel performance** matter more than raw sequential speed. Suitable for microservices, data pipelines, API gateways, and any application requiring stream processing.
 
 ## High Cardinality Protection - Already Built-In ✅
 
@@ -249,16 +366,16 @@ So the benchmark actually **validates** that RS2's high cardinality protection w
 - **Functional API**: Chain operations together in a fluent, functional style
 - **Backpressure Handling**: Built-in support for handling backpressure with configurable strategies
 - **Resource Management**: Safe resource acquisition and release with bracket patterns
-- **Error Handling**: Comprehensive error handling with retry policies
+- **Error Handling**: Error handling with retry policies
 - **Parallel Processing**: Process stream elements in parallel with bounded concurrency
 - **Time-based Operations**: Throttling, debouncing, sampling, and timeouts
-- **Transformations**: Rich set of stream transformation operations
+- **Transformations**: Stream transformation operations
 - **Stateful Operations**: Built-in state management for deduplication, windowing, session tracking, and real-time analytics
-- **Media Streaming**: Robust media streaming with codec, chunk processing, and priority-based delivery ([documentation](MEDIA_STREAMING.md))
+- **Media Streaming**: Media streaming with codec, chunk processing, and priority-based delivery ([documentation](MEDIA_STREAMING.md))
 
 ### Stateful Stream Processing
 
-RS2 provides comprehensive stateful stream processing capabilities:
+RS2 provides stateful stream processing capabilities:
 
 - **Stateful Deduplication**: Remove duplicate events based on configurable keys with automatic cleanup
 - **Sliding Windows**: Time-based and count-based windowing for real-time analytics
@@ -268,6 +385,63 @@ RS2 provides comprehensive stateful stream processing capabilities:
 - **Stateful Throttling**: Rate limiting with per-key state tracking
 - **Configurable Storage**: In-memory and custom storage backends with TTL support
 - **High Cardinality Protection**: Built-in safeguards for handling large numbers of unique keys
+
+### State Configuration
+
+RS2 provides flexible state configuration with predefined presets and custom options:
+
+```rust
+use rs2::state::{StateConfigs, StateConfigBuilder};
+
+// Predefined configurations
+let session_config = StateConfigs::session();        // 30min TTL, 5min cleanup
+let high_perf_config = StateConfigs::high_performance(); // 1hr TTL, 1min cleanup
+let short_lived_config = StateConfigs::short_lived();    // 5min TTL, 30s cleanup
+let long_lived_config = StateConfigs::long_lived();      // 7day TTL, 1hr cleanup
+
+// Custom configuration
+let custom_config = StateConfigBuilder::new()
+    .ttl(Duration::from_secs(3600))
+    .cleanup_interval(Duration::from_secs(300))
+    .max_size(50000)
+    .custom_storage(my_custom_storage)
+    .build()
+    .unwrap();
+```
+
+For comprehensive state management documentation, see [docs/state_management.md](docs/state_management.md).
+
+### Advanced Analytics
+
+RS2 provides advanced analytics capabilities for real-time data processing:
+
+- **Time-based Windowed Aggregations**: Process events in configurable time windows with watermark semantics
+- **Stream Joins with Time Windows**: Join multiple streams using time-based correlation windows
+- **Custom Time Semantics**: Configurable watermark delays and allowed lateness for out-of-order events
+- **Resource-aware Processing**: Automatic memory tracking and cleanup for large window operations
+
+#### Available Methods
+
+- `window_by_time_rs2(config, timestamp_fn)` - Create time-based windows from timestamped events
+- `join_with_time_window_rs2(other, config, timestamp_fn1, timestamp_fn2, join_fn, key_selector)` - Join streams with time windows
+
+#### Example: Advanced Analytics
+
+For examples of advanced analytics, see [examples/advanced_analytics_example.rs](examples/advanced_analytics_example.rs). This example demonstrates:
+
+- **Time-based windowed aggregations** for user behavior analysis
+- **Stream joins with time windows** for enriching events with profile data
+- **System monitoring** with real-time metrics aggregation
+- **Custom window configurations** with watermark and lateness handling
+
+```rust
+// This example demonstrates:
+// - Time-based windowed aggregations with custom time semantics
+// - Stream joins with time windows for event enrichment
+// - Real-world user behavior analysis scenarios
+// - System monitoring with time-based metrics
+// See the full code at examples/advanced_analytics_example.rs
+```
 
 ## Resource Management
 
@@ -317,11 +491,11 @@ let config = ResourceConfig {
 };
 ```
 
-For most users, the default configuration is robust.
+For most users, the default configuration is sufficient.
 
-#### Comprehensive Resource Management Examples
+#### Resource Management Examples
 
-For comprehensive examples of resource management, see [examples/resource_management_example.rs](examples/resource_management_example.rs). This example demonstrates:
+For examples of resource management, see [examples/resource_management_example.rs](examples/resource_management_example.rs). This example demonstrates:
 
 - **Basic resource tracking** with memory usage monitoring
 - **Circuit breaking** with configurable resource limits
@@ -344,9 +518,8 @@ Add RS2 to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rs2-stream = "0.3.2"
+rs2-stream = "0.3.3"
 ```
-### **Get Started*
 
 ## Basic Usage
 

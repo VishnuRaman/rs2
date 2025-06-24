@@ -1,6 +1,6 @@
 # State Management in RS2
 
-RS2 provides powerful state management capabilities that allow you to maintain context and remember information across stream processing operations. This is essential for building complex streaming applications like user session tracking, fraud detection, and real-time analytics.
+RS2 provides state management capabilities that allow you to maintain context and remember information across stream processing operations. This is essential for building streaming applications for user session tracking, fraud detection, and real-time analytics.
 
 ## Table of Contents
 
@@ -117,6 +117,7 @@ pub struct StateConfig {
     pub ttl: Duration,                     // Time-to-live for state entries
     pub cleanup_interval: Duration,        // How often to clean up expired entries
     pub max_size: Option<usize>,           // Maximum number of entries (in-memory only)
+    pub custom_storage: Option<Arc<dyn StateStorage + Send + Sync>>, // Custom storage backend
 }
 ```
 
@@ -296,6 +297,7 @@ let config = StateConfigBuilder::new()
     .ttl(Duration::from_secs(3600))        // 1 hour TTL
     .cleanup_interval(Duration::from_secs(300))  // 5 minute cleanup
     .max_size(50000)                       // 50k entry limit
+    .custom_storage(my_custom_storage)     // Custom storage backend
     .build()
     .unwrap();
 ```
@@ -358,104 +360,61 @@ Limits the number of entries in in-memory storage (simple eviction strategy):
 .max_size(usize::MAX)
 ```
 
-**⚠️ Advanced Memory Management System**: RS2 implements a sophisticated multi-layered memory management system that goes beyond simple eviction strategies. The current implementation uses several complementary approaches for optimal performance and memory efficiency:
-
-### **Multi-Strategy Memory Management**
-
-#### **1. Alphabetical Eviction (Base Strategy)**
+#### Custom Storage (`custom_storage`)
+Set a custom storage backend implementing the `StateStorage` trait:
 ```rust
-// Used for most stateful operations when max_size is exceeded
-evict_oldest_entries(&mut state, MAX_HASHMAP_KEYS);
-```
-- **When**: Periodic cleanup every 1000 items processed
-- **How**: Removes entries in alphabetical order when `max_size` is exceeded
-- **Why**: Simple and fast for most streaming use cases
+// Use a custom Redis storage backend
+.custom_storage(Arc::new(RedisStorage::new(redis_client)))
 
-#### **2. Complete Clear Eviction (Aggressive Strategy)**
-```rust
-// Used for stateful_filter operations
-if item_count % CLEANUP_INTERVAL == 0 && seen_keys.len() > MAX_HASHMAP_KEYS {
-    // More efficient cleanup - clear all and let it rebuild
-    let old_size = seen_keys.len();
-    seen_keys.clear();
-    pending_allocations = pending_allocations.saturating_sub(old_size as u64);
-}
-```
-- **When**: Filter operations with high cardinality
-- **How**: Completely clears the key set and rebuilds
-- **Why**: More efficient for filter operations that don't need persistent state
+// Use a custom PostgreSQL storage backend
+.custom_storage(Arc::new(PostgreSQLStorage::new(db_pool)))
 
-#### **3. Time-Based Cleanup (Window Strategy)**
-```rust
-// Used for join operations with time windows
-left_buffer.entry(key.clone()).or_default().retain(|x| now - x.timestamp <= window_ms);
-```
-- **When**: Stream joins with time-based windows
-- **How**: Removes items older than the window duration
-- **Why**: Maintains only relevant items for time-based correlations
-
-#### **4. Size-Based Eviction (Buffer Strategy)**
-```rust
-// Used for join buffers and pattern storage
-let max_size = config.max_size.unwrap_or(DEFAULT_BUFFER_SIZE);
-if left_buf.len() > max_size {
-    let removed = left_buf.len() - max_size;
-    left_buf.drain(0..removed);
-    pending_deallocations += removed as u64;
-    pending_buffer_overflows += 1;
-}
-```
-- **When**: Buffer overflow prevention
-- **How**: Removes oldest items when buffer exceeds configured size
-- **Why**: Prevents unbounded memory growth in join operations
-
-#### **5. Pattern Size Limits (Specialized Strategy)**
-```rust
-// Used for pattern detection operations
-if pattern.len() > MAX_PATTERN_SIZE {
-    let drained = pattern.len() - MAX_PATTERN_SIZE;
-    pattern.drain(0..drained);
-    pending_deallocations += drained as u64;
-    pending_buffer_overflows += 1;
-}
-```
-- **When**: Pattern detection with large pattern buffers
-- **How**: Limits pattern buffer to prevent memory overflow
-- **Why**: Controls memory usage for complex pattern matching
-
-### **Resource Tracking & Batching**
-
-The system includes sophisticated resource tracking:
-```rust
-// Batch resource tracking every 100 items
-if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-    pending_allocations = 0;
-    pending_deallocations = 0;
-    pending_buffer_overflows = 0;
-}
+// Use a custom in-memory storage with special features
+.custom_storage(Arc::new(CustomInMemoryStorage::new()))
 ```
 
-### **Why This Multi-Strategy Approach Works**
+**Note**: When using `custom_storage`, the `storage_type` is automatically set to `StateStorageType::Custom`.
 
-- **Streaming Context**: Most operations have natural boundaries (windows, sessions, timeouts)
-- **Key Cardinality**: 10k unique keys per operation is generous for most use cases  
-- **Performance**: Multiple strategies optimize for different operation types
-- **TTL Backup**: TTL expiration provides additional cleanup mechanisms
-- **Resource Awareness**: Built-in tracking prevents memory leaks
+### Direct StateConfig Methods
 
-### **Configuration Constants**
+You can also configure state directly on a `StateConfig` instance:
 
 ```rust
-const MAX_HASHMAP_KEYS: usize = 10_000;        // Max keys per operation
-const MAX_GROUP_SIZE: usize = 10_000;          // Max items per group
-const MAX_PATTERN_SIZE: usize = 1_000;         // Max items per pattern
-const CLEANUP_INTERVAL: u64 = 1000;            // Cleanup every 1000 items
-const RESOURCE_TRACKING_INTERVAL: u64 = 100;   // Track resources every 100 items
-const DEFAULT_BUFFER_SIZE: usize = 1024;       // Default buffer size
+let mut config = StateConfig::new();
+
+// Set storage type
+config = config.storage_type(StateStorageType::InMemory);
+
+// Set TTL
+config = config.ttl(Duration::from_secs(3600));
+
+// Set cleanup interval
+config = config.cleanup_interval(Duration::from_secs(300));
+
+// Set maximum size
+config = config.max_size(50000);
+
+// Set custom storage backend
+config = config.with_custom_storage(Arc::new(MyCustomStorage::new()));
 ```
 
-If you need true LRU behavior for high-cardinality scenarios, consider implementing a custom storage backend with LRU capabilities.
+The `with_custom_storage` method automatically sets the storage type to `StateStorageType::Custom` and stores your custom storage backend.
+
+### Storage Creation
+
+You can create storage instances directly from a `StateConfig`:
+
+```rust
+let config = StateConfigs::session();
+
+// Create a Box<dyn StateStorage> instance
+let storage: Box<dyn StateStorage + Send + Sync> = config.create_storage();
+
+// Create an Arc<dyn StateStorage> instance (for sharing across threads)
+let storage_arc: Arc<dyn StateStorage + Send + Sync> = config.create_storage_arc();
+```
+
+These methods handle the creation of the appropriate storage backend based on your configuration, including custom storage backends.
 
 ### Configuration Validation
 
@@ -1131,6 +1090,37 @@ Detect patterns and anomalies in real-time. This operation maintains pattern sta
 - Business intelligence
 - Anomaly detection
 
+#### 12. Advanced Stateful Group By
+**File**: [stateful_group_by_example.rs](../examples/stateful_group_by_example.rs)
+
+Advanced grouping with configurable emission triggers. This operation provides fine-grained control over when groups are emitted.
+
+**Parameters**:
+- `max_group_size`: Emit when group reaches this size
+- `group_timeout`: Emit group after this timeout
+- `emit_on_key_change`: Emit previous group when key changes
+
+**Use Cases**:
+- Batch processing with size limits
+- Time-based group emission
+- Real-time aggregations with triggers
+- Multi-tenant processing with timeouts
+
+#### 13. Advanced Stateful Window
+**File**: [stateful_window_example.rs](../examples/stateful_window_example.rs)
+
+Advanced windowing with sliding window support and partial emission control. This operation provides sophisticated window management.
+
+**Parameters**:
+- `slide_size`: Controls sliding window behavior (None for tumbling)
+- `emit_partial`: Whether to emit partial windows at stream end
+
+**Use Cases**:
+- Sliding window analytics
+- Tumbling window aggregations
+- Time-series analysis
+- Real-time dashboards with partial results
+
 ### Comprehensive Examples
 
 #### State Management Overview
@@ -1159,9 +1149,11 @@ This example shows how to:
 | **Filter** | ⭐⭐ | Medium | Event filtering | [stateful_filter_example.rs](../examples/stateful_filter_example.rs) |
 | **Fold** | ⭐⭐⭐ | High | State accumulation | [state_management_example.rs](../examples/state_management_example.rs) |
 | **Window** | ⭐⭐⭐ | High | Time-based processing | [state_management_example.rs](../examples/state_management_example.rs) |
+| **Window Advanced** | ⭐⭐⭐⭐ | High | Sliding/tumbling windows | [stateful_window_example.rs](../examples/stateful_window_example.rs) |
 | **Join** | ⭐⭐⭐⭐ | High | Stream correlation | [state_management_example.rs](../examples/state_management_example.rs) |
 | **Reduce** | ⭐⭐⭐ | High | Aggregations | [stateful_reduce_example.rs](../examples/stateful_reduce_example.rs) |
 | **Group By** | ⭐⭐⭐ | High | Group processing | [stateful_group_by_example.rs](../examples/stateful_group_by_example.rs) |
+| **Group By Advanced** | ⭐⭐⭐⭐ | High | Configurable group emission | [stateful_group_by_example.rs](../examples/stateful_group_by_example.rs) |
 | **Deduplicate** | ⭐⭐ | Low | Duplicate removal | [stateful_deduplicate_example.rs](../examples/stateful_deduplicate_example.rs) |
 | **Throttle** | ⭐⭐⭐ | Medium | Rate limiting | [stateful_throttle_example.rs](../examples/stateful_throttle_example.rs) |
 | **Session** | ⭐⭐ | Medium | Session management | [stateful_session_example.rs](../examples/stateful_session_example.rs) |

@@ -1,18 +1,25 @@
-use crate::error::StreamResult;
-use crate::stream_configuration::{BufferConfig, GrowthStrategy};
-use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
-use crate::resource_manager::get_global_resource_manager;
+use async_stream::stream;
+use async_trait;
 use futures_core::Stream;
 use futures_util::future;
-use futures_util::stream::StreamExt;
+use futures_util::pin_mut;
+use futures_util::stream::{BoxStream, StreamExt};
+use log;
+use num_cpus;
+use serde;
 use serde::Serialize;
+use serde_json;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::time::Duration;
 
+use crate::error::StreamResult;
+use crate::schema_validation::SchemaError;
 use crate::schema_validation::SchemaValidator;
+use crate::stream_configuration::{BufferConfig, GrowthStrategy};
+use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
 use crate::{
     auto_backpressure, batch_process, bracket, chunk, debounce, distinct_until_changed,
     distinct_until_changed_by, drop, drop_while, either, fold, group_adjacent_by, group_by,
@@ -373,16 +380,7 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         K: Eq + Clone + Send + 'static,
         F: FnMut(&Self::Item) -> K + Send + 'static,
     {
-        let resource_manager = get_global_resource_manager();
-        Box::pin(group_adjacent_by(self.boxed(), key_fn).map(move |(key, group)| {
-            // Track memory allocation for group
-            let group_size = group.len() as u64;
-            let rm = resource_manager.clone();
-            tokio::spawn(async move {
-                rm.track_memory_allocation(group_size).await.ok();
-            });
-            (key, group)
-        }))
+        group_adjacent_by(self.boxed(), key_fn)
     }
 
     /// Group consecutive elements that share a common key
@@ -396,16 +394,7 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         K: Eq + Clone + Send + 'static,
         F: FnMut(&Self::Item) -> K + Send + 'static,
     {
-        let resource_manager = get_global_resource_manager();
-        Box::pin(group_by(self.boxed(), key_fn).map(move |(key, group)| {
-            // Track memory allocation for group
-            let group_size = group.len() as u64;
-            let rm = resource_manager.clone();
-            tokio::spawn(async move {
-                rm.track_memory_allocation(group_size).await.ok();
-            });
-            (key, group)
-        }))
+        group_by(self.boxed(), key_fn)
     }
 
     /// Fold operation that accumulates a value over a stream
@@ -525,7 +514,7 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     /// This combinator collects all items from the stream into a collection of type B.
     /// It returns a Future that resolves to the collection.
     /// The buffer configuration allows for optimized memory allocation and growth strategies.
-    /// Enhanced version that uses all BufferConfig fields
+    // Enhanced version that uses all BufferConfig fields
     fn collect_with_config_rs2<B>(self, config: BufferConfig) -> impl Future<Output = B>
     where
         B: Default + Extend<Self::Item> + Send + 'static,
@@ -533,19 +522,10 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     {
         let mut stream = self.boxed();
         async move {
-            let resource_manager = get_global_resource_manager();
-            
-            // Create collection with smart capacity management
-            let mut collection = B::default();
-            let mut items_collected = 0;
-
-            // For Vec<T>, we can optimize with capacity hints
             if std::any::TypeId::of::<B>() == std::any::TypeId::of::<Vec<Self::Item>>() {
-                // Use a temporary Vec for optimized collection, then convert
-                let mut temp_vec = Vec::with_capacity(config.initial_capacity);
-                
-                // Track initial memory allocation
-                resource_manager.track_memory_allocation(config.initial_capacity as u64).await.ok();
+                // Create Vec with smart capacity management
+                let mut vec = Vec::with_capacity(config.initial_capacity);
+                let mut items_collected = 0;
 
                 while let Some(item) = stream.next().await {
                     // Check max_capacity limit
@@ -556,14 +536,13 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
                     }
 
                     // Apply growth strategy when needed
-                    if temp_vec.len() == temp_vec.capacity() {
-                        let old_capacity = temp_vec.capacity();
+                    if vec.len() == vec.capacity() {
                         let new_capacity = match config.growth_strategy {
-                            GrowthStrategy::Linear(step) => temp_vec.capacity() + step,
+                            GrowthStrategy::Linear(step) => vec.capacity() + step,
                             GrowthStrategy::Exponential(factor) => {
-                                (temp_vec.capacity() as f64 * factor) as usize
+                                (vec.capacity() as f64 * factor) as usize
                             }
-                            GrowthStrategy::Fixed => temp_vec.capacity(), // No growth
+                            GrowthStrategy::Fixed => vec.capacity(), // No growth
                         };
 
                         let capped_capacity = if let Some(max_cap) = config.max_capacity {
@@ -572,43 +551,29 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
                             new_capacity
                         };
 
-                        temp_vec.reserve(capped_capacity - temp_vec.capacity());
-                        
-                        // Track memory allocation for capacity increase
-                        let capacity_increase = temp_vec.capacity() - old_capacity;
-                        if capacity_increase > 0 {
-                            resource_manager.track_memory_allocation(capacity_increase as u64).await.ok();
-                        }
+                        vec.reserve(capped_capacity - vec.capacity());
                     }
 
-                    temp_vec.push(item);
+                    vec.push(item);
                     items_collected += 1;
-                    
-                    // Track memory allocation for each item
-                    resource_manager.track_memory_allocation(1).await.ok();
                 }
 
-                // Type-safe conversion: extend the target collection with the temp_vec
-                collection.extend(temp_vec);
+                // Safe transmute back to B
+                let result = unsafe {
+                    let ptr = &vec as *const Vec<Self::Item> as *const B;
+                    let result = std::ptr::read(ptr);
+                    std::mem::forget(vec);
+                    result
+                };
+                result
             } else {
                 // Fallback for other collection types
+                let mut collection = B::default();
                 while let Some(item) = stream.next().await {
-                    // Check max_capacity limit
-                    if let Some(max_cap) = config.max_capacity {
-                        if items_collected >= max_cap {
-                            break; // Respect size limit
-                        }
-                    }
-
                     collection.extend(std::iter::once(item));
-                    items_collected += 1;
-                    
-                    // Track memory allocation for each item
-                    resource_manager.track_memory_allocation(1).await.ok();
                 }
+                collection
             }
-            
-            collection
         }
     }
 
@@ -620,43 +585,20 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     where
         Self::Item: Clone + Send + 'static,
     {
-        let resource_manager = get_global_resource_manager();
-        Box::pin(sliding_window(self.boxed(), size).map(move |window| {
-            // Track memory allocation for window (synchronous tracking)
-            let window_size = window.len() as u64;
-            let rm = resource_manager.clone();
-            tokio::spawn(async move {
-                rm.track_memory_allocation(window_size).await.ok();
-            });
-            window
-        }))
+        sliding_window(self.boxed(), size)
     }
 
     /// Process items in batches for better throughput
     ///
     /// This combinator processes items in batches of the specified size,
     /// applying the processor function to each batch.
-    fn batch_process_rs2<U, F>(self, batch_size: usize, mut processor: F) -> RS2Stream<U>
+    fn batch_process_rs2<U, F>(self, batch_size: usize, processor: F) -> RS2Stream<U>
     where
         F: FnMut(Vec<Self::Item>) -> Vec<U> + Send + 'static,
         Self::Item: Send + 'static,
         U: Send + 'static,
     {
-        let resource_manager = get_global_resource_manager();
-        batch_process(self.boxed(), batch_size, move |batch| {
-            let resource_manager = resource_manager.clone();
-            let batch_size = batch.len();
-            let result = processor(batch);
-            let result_len = result.len();
-            
-            // Track memory allocation for batch processing and result
-            tokio::spawn(async move {
-                resource_manager.track_memory_allocation(batch_size as u64).await.ok();
-                resource_manager.track_memory_allocation(result_len as u64).await.ok();
-            });
-            
-            result
-        })
+        batch_process(self.boxed(), batch_size, processor)
     }
 
     /// Collect metrics while processing the stream
@@ -683,16 +625,8 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         S: Stream<Item = Self::Item> + Send + 'static + Unpin,
         Self::Item: Send + 'static,
     {
-        let resource_manager = get_global_resource_manager();
         let mut all_streams = vec![self.boxed()];
         all_streams.extend(streams.into_iter().map(|s| s.boxed()));
-        
-        // Track memory allocation for stream collection
-        let stream_count = all_streams.len() as u64;
-        tokio::spawn(async move {
-            resource_manager.track_memory_allocation(stream_count).await.ok();
-        });
-        
         interleave(all_streams)
     }
 
@@ -704,16 +638,7 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     where
         Self::Item: Send + 'static,
     {
-        let resource_manager = get_global_resource_manager();
-        Box::pin(chunk(self.boxed(), size).map(move |chunk| {
-            // Track memory allocation for chunk
-            let chunk_size = chunk.len() as u64;
-            let rm = resource_manager.clone();
-            tokio::spawn(async move {
-                rm.track_memory_allocation(chunk_size).await.ok();
-            });
-            chunk
-        }))
+        chunk(self.boxed(), size)
     }
 
     /// Create a stream that emits values at a fixed rate

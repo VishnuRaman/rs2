@@ -13,14 +13,13 @@ use futures_util::{
     SinkExt,
 };
 use std::future::Future;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use std::sync::Arc;
 use tokio::{spawn, time::sleep};
+use tokio::sync::Mutex;
 
-use crate::error::{StreamError, StreamResult};
+use crate::error::{StreamError, StreamResult, RetryPolicy};
 use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
-use crate::resource_manager::get_global_resource_manager;
 
 /// A boxed, heap-allocated Rust Stream analogous to RS2's Stream[F, O]
 pub type RS2Stream<O> = BoxStream<'static, O>;
@@ -30,7 +29,7 @@ pub type RS2Stream<O> = BoxStream<'static, O>;
 pub enum BackpressureStrategy {
     /// Drop oldest items when buffer is full
     DropOldest,
-    /// Drop newest items when buffer is full
+    /// Drop newest items when buffer is full  
     DropNewest,
     /// Block producer until consumer catches up
     Block,
@@ -120,8 +119,7 @@ where
     stream::once(async move {
         sleep(duration).await;
         item
-    })
-    .boxed()
+    }).boxed()
 }
 
 /// Generate a rs2_stream from a seed value and a function
@@ -133,7 +131,7 @@ where
 /// ```
 /// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
-///
+/// 
 /// # async fn example() {
 /// // Create a rs2_stream of Fibonacci numbers
 /// let fibonacci = unfold(
@@ -264,7 +262,7 @@ where
             yield std::mem::take(&mut buf);
         }
     }
-    .boxed()
+        .boxed()
 }
 
 /// Add timeout support to any rs2_stream
@@ -281,8 +279,7 @@ where
                 Err(_) => yield Err(StreamError::Timeout),
             }
         }
-    }
-    .boxed()
+    }.boxed()
 }
 
 /// Scan operation (like fold but emits intermediate results)
@@ -299,8 +296,7 @@ where
             acc = f(acc.clone(), item);
             yield acc.clone();
         }
-    }
-    .boxed()
+    }.boxed()
 }
 
 /// Fold operation that accumulates a value over a stream
@@ -386,8 +382,7 @@ where
                 break;
             }
         }
-    }
-    .boxed()
+    }.boxed()
 }
 
 /// Skip elements from a stream while a predicate returns true
@@ -424,8 +419,7 @@ where
                 yield item;
             }
         }
-    }
-    .boxed()
+    }.boxed()
 }
 
 /// Group consecutive elements that share a common key
@@ -504,12 +498,15 @@ where
                 yield window.clone();
             }
         }
-    }
-    .boxed()
+    }.boxed()
 }
 
 /// Batch processing for better throughput
-pub fn batch_process<T, U, F>(s: RS2Stream<T>, batch_size: usize, mut processor: F) -> RS2Stream<U>
+pub fn batch_process<T, U, F>(
+    s: RS2Stream<T>,
+    batch_size: usize,
+    mut processor: F
+) -> RS2Stream<U>
 where
     F: FnMut(Vec<T>) -> Vec<U> + Send + 'static,
     T: Send + 'static,
@@ -523,15 +520,14 @@ where
                 yield item;
             }
         }
-    }
-    .boxed()
+    }.boxed()
 }
 
 /// Collect metrics while processing rs2_stream
 pub fn with_metrics<T>(
     s: RS2Stream<T>,
     name: String,
-    thresholds: HealthThresholds,
+    thresholds: HealthThresholds
 ) -> (RS2Stream<T>, Arc<Mutex<StreamMetrics>>)
 where
     T: Send + 'static,
@@ -539,9 +535,9 @@ where
     let metrics = Arc::new(Mutex::new(
         StreamMetrics::new()
             .with_name(name)
-            .with_health_thresholds(thresholds),
+            .with_health_thresholds(thresholds)
     ));
-
+    
     let metrics_clone = Arc::clone(&metrics);
 
     let monitored_stream = stream! {
@@ -558,11 +554,11 @@ where
             let mut m = metrics_clone.lock().await;
             m.finalize();
         }
-    }
-    .boxed();
+    }.boxed();
 
     (monitored_stream, metrics)
 }
+
 
 // ================================
 // Backpressure Management
@@ -603,7 +599,7 @@ where
             yield item;
         }
     }
-    .boxed()
+        .boxed()
 }
 
 /// Automatic backpressure that drops oldest items when buffer is full
@@ -616,37 +612,35 @@ where
     let buffer = Arc::new(Mutex::new(VecDeque::<O>::new()));
     let buffer_clone = Arc::clone(&buffer);
     let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
-    let resource_manager = get_global_resource_manager();
-    let resource_manager_clone = resource_manager.clone();
 
     spawn(async move {
         pin_mut!(s);
         while let Some(item) = s.next().await {
             let mut buf = buffer_clone.lock().await;
+
             if buf.len() >= buffer_size {
                 buf.pop_front();
-                resource_manager_clone.track_buffer_overflow().await.ok();
             }
+
             buf.push_back(item);
-            resource_manager_clone.track_memory_allocation(1).await.ok(); // Approximate per-item
         }
+
         let _ = done_tx.send(()).await;
     });
 
     stream! {
         let mut source_done = false;
+
         loop {
             if let Ok(_) = done_rx.try_recv() {
                 source_done = true;
             }
+
             let item = {
                 let mut buf = buffer.lock().await;
-                let popped = buf.pop_front();
-                if popped.is_some() {
-                    resource_manager.track_memory_deallocation(1).await;
-                }
-                popped
+                buf.pop_front()
             };
+
             match item {
                 Some(item) => yield item,
                 None => {
@@ -658,7 +652,7 @@ where
             }
         }
     }
-    .boxed()
+        .boxed()
 }
 
 /// Automatic backpressure that drops newest items when buffer is full
@@ -671,37 +665,33 @@ where
     let buffer = Arc::new(Mutex::new(VecDeque::<O>::new()));
     let buffer_clone = Arc::clone(&buffer);
     let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
-    let resource_manager = get_global_resource_manager();
-    let resource_manager_clone = resource_manager.clone();
 
     spawn(async move {
         pin_mut!(s);
         while let Some(item) = s.next().await {
             let mut buf = buffer_clone.lock().await;
+
             if buf.len() < buffer_size {
                 buf.push_back(item);
-                resource_manager_clone.track_memory_allocation(1).await.ok();
-            } else {
-                resource_manager_clone.track_buffer_overflow().await.ok();
             }
         }
+
         let _ = done_tx.send(()).await;
     });
 
     stream! {
         let mut source_done = false;
+
         loop {
             if let Ok(_) = done_rx.try_recv() {
                 source_done = true;
             }
+
             let item = {
                 let mut buf = buffer.lock().await;
-                let popped = buf.pop_front();
-                if popped.is_some() {
-                    resource_manager.track_memory_deallocation(1).await;
-                }
-                popped
+                buf.pop_front()
             };
+
             match item {
                 Some(item) => yield item,
                 None => {
@@ -713,7 +703,7 @@ where
             }
         }
     }
-    .boxed()
+        .boxed()
 }
 
 /// Automatic backpressure that errors when buffer is full
@@ -739,7 +729,7 @@ where
             yield item;
         }
     }
-    .boxed()
+        .boxed()
 }
 
 // ================================
@@ -819,7 +809,7 @@ where
             }
         }
     }
-    .boxed()
+        .boxed()
 }
 
 /// Merge two streams into one interleaved output
@@ -840,8 +830,9 @@ where
             }
         }
     }
-    .boxed()
+        .boxed()
 }
+
 
 /// Interleave multiple streams in a round-robin fashion
 pub fn interleave<O, S>(streams: Vec<S>) -> RS2Stream<O>
@@ -873,7 +864,7 @@ where
             }
         }
     }
-    .boxed()
+        .boxed()
 }
 
 /// Combine two streams element-by-element using a provided function
@@ -1089,7 +1080,7 @@ where
 }
 
 /// Filter out consecutive duplicate elements from a rs2_stream
-///
+/// 
 /// This combinator only emits elements that are different from the previous element.
 /// It uses the default equality operator (`==`) to compare elements.
 /// The first element is always emitted.
@@ -1210,7 +1201,7 @@ where
 }
 
 /// Filter out consecutive duplicate elements from a rs2_stream using a custom equality function
-///
+/// 
 /// This combinator only emits elements that are different from the previous element.
 /// It uses the provided equality function to compare elements.
 /// The first element is always emitted.
@@ -1219,7 +1210,7 @@ where
 /// ```
 /// use rs2_stream::rs2::*;
 /// use futures_util::stream::StreamExt;
-///
+/// 
 /// # async fn example() {
 /// let rs2_stream = from_iter(vec![1, 1, 2, 2, 3, 3, 2, 1]);
 /// // Use a custom equality function that considers two numbers equal if they have the same parity
@@ -1304,7 +1295,7 @@ where
             sleep(duration).await;
         }
     }
-    .boxed()
+        .boxed()
 }
 
 /// Create a rs2_stream that emits values at a fixed rate
@@ -1318,7 +1309,7 @@ where
             sleep(period).await;
         }
     }
-    .boxed()
+        .boxed()
 }
 
 // ================================
@@ -1351,7 +1342,7 @@ where
             yield res;
         }
     }
-    .boxed()
+        .boxed()
 }
 
 /// Parallel evaluation unordered (parEvalMapUnordered) with automatic backpressure
@@ -1377,7 +1368,10 @@ where
 /// and starts new inner streams as others complete.
 ///
 /// Backpressure is maintained by using a bounded buffer for the outer rs2_stream.
-pub fn par_join<O, S>(s: RS2Stream<S>, concurrency: usize) -> RS2Stream<O>
+pub fn par_join<O, S>(
+    s: RS2Stream<S>,
+    concurrency: usize,
+) -> RS2Stream<O>
 where
     S: Stream<Item = O> + Send + 'static + Unpin,
     O: Send + 'static,
@@ -1452,7 +1446,7 @@ where
         }
         release(resource).await;
     }
-    .boxed()
+        .boxed()
 }
 
 /// BracketCase with exit case semantics for streams of Result<O,E>
@@ -1480,7 +1474,7 @@ where
         }
         release(resource, ExitCase::Completed).await;
     }
-    .boxed()
+        .boxed()
 }
 
 // ================================
