@@ -1,6 +1,6 @@
 # RS2: Rust Streaming Library
 
-**RS2** is a high-performance, async streaming library for Rust that combines the ergonomics of reactive streams with enterprise-grade reliability features. Built for real-world applications that demand both developer productivity and operational excellence.
+**RS2** is a high-performance, async streaming library for Rust that combines the ergonomics of reactive streams with reliability features. Built for applications that demand both developer productivity and operational excellence.
 
 **RS2 is also a powerful stateful streaming library** with built-in state management capabilities, enabling complex stateful operations like session tracking, deduplication, windowing, and real-time analytics without external dependencies.
 
@@ -14,7 +14,7 @@
 
 **Effortless Parallelization**: Transform any sequential stream into parallel processing with a single method call. RS2's `par_eval_map_rs2()` automatically handles concurrency, ordering, and error propagation.
 
-**Enterprise Integration**: First-class connector system for Kafka, and custom systems with health checks, metrics, and automatic retry logic built-in.
+**External streaming frameworks Integration**: First-class connector system for Kafka, and custom systems with health checks, metrics, and automatic retry logic built-in.
 
 ## 🎯 Quick Start Examples
 
