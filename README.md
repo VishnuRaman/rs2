@@ -8,7 +8,7 @@
 
 **Superior Scaling Performance**: While RS2 has modest sequential overhead (1.6x vs futures-rs, comparable to tokio-stream), it delivers exceptional parallel performance with **near-linear scaling up to 16+ cores** and **7.8-8.5x speedup** for I/O-bound workloads.
 
-**Reliability**: Unlike basic streaming libraries, RS2 includes built-in **automatic backpressure**, **retry policies with exponential backoff**, **circuit breakers**, **timeout handling**, and **resource management** - eliminating the need to manually implement these critical patterns.
+**Reliability**: Unlike basic streaming libraries, RS2 includes built-in **automatic backpressure**, **retry policies with exponential backoff**, **timeout handling**, and **simple resource management** - eliminating the need to manually implement these critical patterns.
 
 **Stateful Stream Processing**: RS2 provides **built-in state management** with support for stateful operations like deduplication, windowing, session tracking, and real-time analytics. No external state stores required - everything is handled internally with configurable storage backends.
 
@@ -276,67 +276,12 @@ RS2 provides **resource management** for all streaming operations. This includes
 - **Memory usage tracking**: All stateful and queue operations automatically track memory allocation and deallocation, giving you accurate metrics for monitoring and alerting.
 - **Circuit breaking**: If memory usage or buffer overflows exceed configurable thresholds, RS2 can trip a circuit breaker to prevent system overload.
 - **Automatic cleanup**: Periodic and emergency cleanup routines help prevent memory leaks and keep your application healthy.
-- **Global resource manager**: Access the global resource manager via `get_global_resource_manager()` for custom tracking or metrics.
 
 ### How It Works
 
 - **Stateful operations** (e.g., group by, window, join, deduplication) and **queue operations** automatically call the resource manager to track memory allocation and deallocation as items are added or removed.
 - **Backpressure and buffer overflow** events are tracked and can trigger circuit breaking if thresholds are exceeded.
-- **Custom resource management** is available for advanced use cases.
 
-#### Example: Custom Resource Tracking
-
-```rust
-use rs2_stream::resource_manager::get_global_resource_manager;
-
-let resource_manager = get_global_resource_manager();
-
-// Track allocation of a custom resource (e.g., 4096 bytes)
-resource_manager.track_memory_allocation(4096).await?;
-
-// ... use the resource ...
-
-// Track deallocation when done
-resource_manager.track_memory_deallocation(4096).await;
-```
-
-#### Configuration
-
-You can customize resource management thresholds and behavior via `ResourceConfig`:
-
-```rust
-use rs2_stream::resource_manager::ResourceConfig;
-
-let config = ResourceConfig {
-    max_memory_bytes: 512 * 1024 * 1024, // 512MB
-    max_keys: 50_000,
-    memory_threshold_percent: 75,
-    buffer_overflow_threshold: 5_000,
-    cleanup_interval: std::time::Duration::from_secs(60),
-    emergency_cleanup_threshold: 90,
-};
-```
-
-For most users, the default configuration is robust.
-
-#### Comprehensive Resource Management Examples
-
-For comprehensive examples of resource management, see [examples/resource_management_example.rs](examples/resource_management_example.rs). This example demonstrates:
-
-- **Basic resource tracking** with memory usage monitoring
-- **Circuit breaking** with configurable resource limits
-- **Custom resource configuration** for different use cases
-- **Resource cleanup and monitoring** with metrics collection
-- **Global resource manager usage** across multiple operations
-
-```rust
-// This example demonstrates:
-// - Memory tracking and circuit breaking
-// - Custom resource configurations
-// - Monitoring and cleanup strategies
-// - Global resource manager patterns
-// See the full code at examples/resource_management_example.rs
-```
 
 ## Installation
 

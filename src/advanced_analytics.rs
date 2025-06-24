@@ -4,13 +4,12 @@
 
 use crate::*;
 use async_stream::stream;
-use futures_core::Stream;
-use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
+use futures_util::pin_mut;
+use futures_core::Stream;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
-use crate::resource_manager::get_global_resource_manager;
+use std::collections::HashSet;
 
 // ================================
 // Time-based Windowed Aggregations
@@ -75,7 +74,6 @@ where
     stream! {
         let mut windows: HashMap<u64, TimeWindow<T>> = HashMap::new();
         let mut watermark = SystemTime::UNIX_EPOCH;
-        let resource_manager = get_global_resource_manager();
         pin_mut!(stream);
 
         while let Some(event) = stream.next().await {
@@ -93,15 +91,10 @@ where
             let window_id = window_start_secs;
 
             // Add event to appropriate window
-            let is_new_window = !windows.contains_key(&window_id);
             let window = windows.entry(window_id).or_insert_with(|| {
                 TimeWindow::new(window_start, window_end)
             });
-            if is_new_window {
-                resource_manager.track_memory_allocation(1).await.ok();
-            }
             window.add_event(event);
-            resource_manager.track_memory_allocation(1).await.ok();
 
             // Emit completed windows
             let mut to_remove = Vec::new();
@@ -112,7 +105,6 @@ where
             }
             for id in to_remove {
                 if let Some(window) = windows.remove(&id) {
-                    resource_manager.track_memory_deallocation(window.events.len() as u64).await;
                     yield window;
                 }
             }
@@ -120,7 +112,6 @@ where
 
         // Emit remaining windows
         for (_, window) in windows {
-            resource_manager.track_memory_deallocation(window.events.len() as u64).await;
             yield window;
         }
     }
@@ -168,10 +159,7 @@ where
     FK1: Fn(&T1) -> K + Send + Sync + 'static,
     FK2: Fn(&T2) -> K + Send + Sync + 'static,
 {
-    enum Either<L, R> {
-        Left(L),
-        Right(R),
-    }
+    enum Either<L, R> { Left(L), Right(R) }
     stream! {
         let mut buffer1: Vec<(T1, SystemTime)> = Vec::new();
         let mut buffer2: Vec<(T2, SystemTime)> = Vec::new();
@@ -268,16 +256,8 @@ pub trait AdvancedAnalyticsExt: Stream + Send + Sized + 'static {
         FK1: Fn(&Self::Item) -> K + Send + Sync + 'static,
         FK2: Fn(&T2) -> K + Send + Sync + 'static,
     {
-        join_with_time_window(
-            self.boxed(),
-            other,
-            config,
-            timestamp_fn1,
-            timestamp_fn2,
-            join_fn,
-            key_selector,
-        )
+        join_with_time_window(self.boxed(), other, config, timestamp_fn1, timestamp_fn2, join_fn, key_selector)
     }
 }
 
-impl<S> AdvancedAnalyticsExt for S where S: Stream + Send + Sized + 'static {}
+impl<S> AdvancedAnalyticsExt for S where S: Stream + Send + Sized + 'static {} 

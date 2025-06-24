@@ -19,8 +19,6 @@ pub mod schema_validation;
 pub mod advanced_analytics;
 pub mod state;
 
-pub mod resource_manager;
-
 pub use pipeline::*;
 // Re-export all items from rs2 module at the crate root
 pub use rs2::*;

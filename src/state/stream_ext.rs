@@ -1,5 +1,4 @@
 use crate::*;
-use crate::resource_manager::{get_global_resource_manager, ResourceManager};
 use async_stream::stream;
 use futures_core::Stream;
 use futures_util::pin_mut;
@@ -19,14 +18,11 @@ const MAX_HASHMAP_KEYS: usize = 10_000;
 const MAX_GROUP_SIZE: usize = 10_000; // Max items per group
 const MAX_PATTERN_SIZE: usize = 1_000; // Max items per pattern
 const CLEANUP_INTERVAL: u64 = 1000; // Cleanup every 1000 items (increased from 100)
-const RESOURCE_TRACKING_INTERVAL: u64 = 100; // Track resources every 100 items
 const DEFAULT_BUFFER_SIZE: usize = 1024;
 
 // Optimized constants for different operation types
 const MAP_CLEANUP_INTERVAL: u64 = 10000; // Much less frequent for simple operations
-const WINDOW_CLEANUP_INTERVAL: u64 = 5000; // Less frequent for windowing
 const JOIN_CLEANUP_INTERVAL: u64 = 500; // More frequent for complex operations
-const THROTTLE_CLEANUP_INTERVAL: u64 = 10000; // Very infrequent for timing operations
 
 // LRU eviction helper
 fn evict_oldest_entries<K, V>(map: &mut HashMap<K, V>, max_keys: usize)
@@ -41,24 +37,6 @@ where
         for key in entries.into_iter().take(to_remove) {
             map.remove(&key);
         }
-    }
-}
-
-// Optimized resource tracking - batch operations
-async fn track_resource_batch(
-    resource_manager: &Arc<ResourceManager>,
-    allocations: u64,
-    deallocations: u64,
-    buffer_overflows: u64,
-) {
-    if allocations > 0 {
-        resource_manager.track_memory_allocation(allocations).await.ok();
-    }
-    if deallocations > 0 {
-        resource_manager.track_memory_deallocation(deallocations).await;
-    }
-    for _ in 0..buffer_overflows {
-        resource_manager.track_buffer_overflow().await.ok();
     }
 }
 
