@@ -10,6 +10,7 @@ pub mod utility;
 pub mod select;
 pub mod rate;
 pub mod async_combinators;
+pub mod specialized;
 
 // Re-export core types
 pub use core::{Stream, StreamExt};
@@ -45,4 +46,11 @@ pub use rate::{
 // Re-export async/parallel combinators
 pub use async_combinators::{
     BufferUnordered, ForEachConcurrent, TryForEachConcurrent, AsyncStreamExt
+};
+
+// Re-export specialized combinators
+pub use specialized::{
+    TryStream, TryMap, TryFilter, TryFold, TryForEach,
+    Chunks, ChunksTimeout, TakeUntil, SkipUntil, Backpressure,
+    SpecializedStreamExt, BackpressureExt
 }; 
