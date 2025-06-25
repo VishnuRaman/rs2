@@ -20,6 +20,7 @@ pub mod advanced_analytics;
 pub mod state;
 
 pub mod resource_manager;
+pub mod stream;
 
 pub use pipeline::*;
 // Re-export all items from rs2 module at the crate root
