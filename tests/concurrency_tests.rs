@@ -1046,12 +1046,15 @@ async fn test_resource_cleanup() {
                             // Simulate some work
                             sleep(sleep_duration).await;
 
-                            // We'll skip the error simulation for now to make the test pass
+                            // Simulate errors for stress testing
+        if x % 100 == 0 {
+            return Err(format!("Simulated error for item {}", x));
+        }
                             // if x % 50 == 0 && x > 0 {
                             //     panic!("Simulated error for item {}", x);
                             // }
 
-                            x
+                            Ok(x)
                         }
                     }
                 })

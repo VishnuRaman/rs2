@@ -60,6 +60,9 @@ thiserror = "1.0.69"
 base64 = "0.21.7"
 jsonschema = "0.30.0"
 lazy_static = "1.4"
+pin-project-lite = "0.2.16"
+flate2 = "1.0"
+lz4 = "1.24"
 
 
 
@@ -95,4 +98,8 @@ harness = false
 
 [[bench]]
 name = "state_operations"
+harness = false
+
+[[bench]]
+name = "rs2_comparison"
 harness = false
