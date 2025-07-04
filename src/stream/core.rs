@@ -1,9 +1,11 @@
 //! Core stream combinators and trait definitions for RS2
 //! This file is moved from stream_types.rs for modularization.
 
+use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::marker::PhantomData;
 
 /// Custom stream trait - zero overhead replacement for futures_util::Stream
 pub trait Stream {
@@ -13,42 +15,133 @@ pub trait Stream {
 
 /// Extension trait providing stream combinators
 pub trait StreamExt: Stream + Sized {
-    fn map<U, F>(self, f: F) -> Map<Self, F>
+    /// Get the next item from the stream
+    fn next(&mut self) -> Next<'_, Self>;
+    fn map<U, F>(self, f: F) -> Map<Self, U, F>
     where F: FnMut(Self::Item) -> U;
     fn filter<F>(self, f: F) -> Filter<Self, F>
     where F: FnMut(&Self::Item) -> bool;
+    fn filter_map<U, F>(self, f: F) -> FilterMap<Self, U, F>
+    where F: FnMut(Self::Item) -> Option<U>;
     fn take(self, n: usize) -> Take<Self>;
     fn skip(self, n: usize) -> Skip<Self>;
-    fn then<U, Fut, F>(self, f: F) -> Then<Self, U, Fut, F>
-    where F: FnMut(Self::Item) -> Fut, Fut: Future<Output = U>;
-    fn collect<B>(self) -> Collect<Self, B>
-    where B: Default + Extend<Self::Item>;
-    fn enumerate(self) -> Enumerate<Self>;
-    fn chain<U>(self, other: U) -> Chain<Self, U>
-    where U: Stream<Item = Self::Item>;
-    fn next(self) -> Next<Self>;
+    fn then<F, Fut>(self, f: F) -> Then<Self, F, Fut>
+    where F: FnMut(Self::Item) -> Fut, Fut: Future;
     fn for_each<F, Fut>(self, f: F) -> ForEach<Self, F, Fut>
     where F: FnMut(Self::Item) -> Fut, Fut: Future<Output = ()>;
     fn fold<B, F, Fut>(self, init: B, f: F) -> Fold<Self, B, F, Fut>
-    where B: Default, F: FnMut(B, Self::Item) -> Fut, Fut: Future<Output = B>;
+    where F: FnMut(B, Self::Item) -> Fut, Fut: Future<Output = B>;
+    fn flatten(self) -> Flatten<Self>
+    where Self::Item: Stream;
+    fn collect<B>(self) -> Collect<Self, B>
+    where B: Default + Extend<Self::Item>;
+    fn collect_stream<B>(self) -> Collect<Self, B>
+    where B: Default + Extend<Self::Item>;
 }
 
-// ================================
-// Stream Combinators
-// ================================
+impl<S: Stream + Sized> StreamExt for S {
+    fn next(&mut self) -> Next<'_, Self> {
+        Next { stream: self }
+    }
 
-pub struct Map<S, F> {
-    stream: S,
-    f: F
+    fn map<U, F>(self, f: F) -> Map<Self, U, F>
+    where F: FnMut(Self::Item) -> U,
+    {
+        Map { stream: self, f, _phantom: PhantomData }
+    }
+
+    fn filter<F>(self, f: F) -> Filter<Self, F>
+    where F: FnMut(&Self::Item) -> bool,
+    {
+        Filter { stream: self, f }
+    }
+
+    fn filter_map<U, F>(self, f: F) -> FilterMap<Self, U, F>
+    where F: FnMut(Self::Item) -> Option<U>,
+    {
+        FilterMap { stream: self, f, _phantom: PhantomData }
+    }
+
+    fn take(self, n: usize) -> Take<Self> {
+        Take { stream: self, remaining: n }
+    }
+
+    fn skip(self, n: usize) -> Skip<Self> {
+        Skip { stream: self, remaining: n }
+    }
+
+    fn then<F, Fut>(self, f: F) -> Then<Self, F, Fut>
+    where F: FnMut(Self::Item) -> Fut, Fut: Future,
+    {
+        Then { stream: self, f, future: None, _phantom: PhantomData }
+    }
+
+    fn for_each<F, Fut>(self, f: F) -> ForEach<Self, F, Fut>
+    where F: FnMut(Self::Item) -> Fut, Fut: Future<Output = ()>,
+    {
+        ForEach { stream: self, f, state: ForEachState::Streaming, _phantom: PhantomData }
+    }
+
+    fn fold<B, F, Fut>(self, init: B, f: F) -> Fold<Self, B, F, Fut>
+    where F: FnMut(B, Self::Item) -> Fut, Fut: Future<Output = B>,
+    {
+        Fold { stream: self, acc: init, f, state: FoldState::Streaming, _phantom: PhantomData }
+    }
+
+    fn flatten(self) -> Flatten<Self>
+    where Self::Item: Stream,
+    {
+        Flatten { stream: self, inner: None }
+    }
+
+    fn collect<B>(self) -> Collect<Self, B>
+    where B: Default + Extend<Self::Item>,
+    {
+        Collect { stream: self, collection: B::default() }
+    }
+
+    fn collect_stream<B>(self) -> Collect<Self, B>
+    where B: Default + Extend<Self::Item>,
+    {
+        self.collect()
+    }
 }
 
-impl<S, F, U> Stream for Map<S, F>
-where S: Stream, F: FnMut(S::Item) -> U {
+// Combinator structs
+pin_project! {
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct Next<'a, S> {
+        stream: &'a mut S,
+    }
+}
+
+impl<'a, S: Stream + Unpin> Future for Next<'a, S> {
+    type Output = Option<S::Item>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut *self.stream).poll_next(cx)
+    }
+}
+
+pin_project! {
+    pub struct Map<S, U, F> {
+        #[pin]
+        stream: S,
+        f: F,
+        _phantom: PhantomData<U>,
+    }
+}
+
+impl<S, U, F> Stream for Map<S, U, F>
+where
+    S: Stream,
+    F: FnMut(S::Item) -> U,
+{
     type Item = U;
+
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let stream = unsafe { Pin::new_unchecked(&mut this.stream) };
-        match stream.poll_next(cx) {
+        let mut this = self.project();
+        match this.stream.as_mut().poll_next(cx) {
             Poll::Ready(Some(item)) => Poll::Ready(Some((this.f)(item))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
@@ -56,19 +149,25 @@ where S: Stream, F: FnMut(S::Item) -> U {
     }
 }
 
-pub struct Filter<S, F> {
-    stream: S,
-    f: F
+pin_project! {
+    pub struct Filter<S, F> {
+        #[pin]
+        stream: S,
+        f: F,
+    }
 }
 
 impl<S, F> Stream for Filter<S, F>
-where S: Stream, F: FnMut(&S::Item) -> bool {
+where
+    S: Stream,
+    F: FnMut(&S::Item) -> bool,
+{
     type Item = S::Item;
+
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let mut stream = unsafe { Pin::new_unchecked(&mut this.stream) };
+        let mut this = self.project();
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
                     if (this.f)(&item) {
                         return Poll::Ready(Some(item));
@@ -81,23 +180,57 @@ where S: Stream, F: FnMut(&S::Item) -> bool {
     }
 }
 
-pub struct Take<S> {
-    stream: S,
-    remaining: usize
+pin_project! {
+    pub struct FilterMap<S, U, F> {
+        #[pin]
+        stream: S,
+        f: F,
+        _phantom: PhantomData<U>,
+    }
 }
 
-impl<S> Stream for Take<S>
-where S: Stream {
-    type Item = S::Item;
+impl<S, U, F> Stream for FilterMap<S, U, F>
+where
+    S: Stream,
+    F: FnMut(S::Item) -> Option<U>,
+{
+    type Item = U;
+
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
-        if this.remaining == 0 {
+        let mut this = self.project();
+        loop {
+            match this.stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    if let Some(mapped) = (this.f)(item) {
+                        return Poll::Ready(Some(mapped));
+                    }
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+pin_project! {
+    pub struct Take<S> {
+        #[pin]
+        stream: S,
+        remaining: usize,
+    }
+}
+
+impl<S: Stream> Stream for Take<S> {
+    type Item = S::Item;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        if *this.remaining == 0 {
             return Poll::Ready(None);
         }
-        let stream = unsafe { Pin::new_unchecked(&mut this.stream) };
-        match stream.poll_next(cx) {
+        match this.stream.as_mut().poll_next(cx) {
             Poll::Ready(Some(item)) => {
-                this.remaining -= 1;
+                *this.remaining -= 1;
                 Poll::Ready(Some(item))
             }
             Poll::Ready(None) => Poll::Ready(None),
@@ -106,178 +239,92 @@ where S: Stream {
     }
 }
 
-pub struct Skip<S> {
-    stream: S,
-    remaining: usize
+pin_project! {
+    pub struct Skip<S> {
+        #[pin]
+        stream: S,
+        remaining: usize,
+    }
 }
 
-impl<S> Stream for Skip<S>
-where S: Stream {
+impl<S: Stream> Stream for Skip<S> {
     type Item = S::Item;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let mut stream = unsafe { Pin::new_unchecked(&mut this.stream) };
 
-        while this.remaining > 0 {
-            match stream.as_mut().poll_next(cx) {
-                Poll::Ready(Some(_)) => {
-                    this.remaining -= 1;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        while *this.remaining > 0 {
+            match this.stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(_)) => *this.remaining -= 1,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        this.stream.poll_next(cx)
+    }
+}
+
+pin_project! {
+    pub struct Then<S, F, Fut> {
+        #[pin]
+        stream: S,
+        f: F,
+        #[pin]
+        future: Option<Fut>,
+        _phantom: PhantomData<Fut>,
+    }
+}
+
+impl<S, F, Fut> Stream for Then<S, F, Fut>
+where
+    S: Stream,
+    F: FnMut(S::Item) -> Fut,
+    Fut: Future,
+{
+    type Item = Fut::Output;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            let mut this = self.as_mut().project();
+            
+            if let Some(fut) = this.future.as_mut().as_pin_mut() {
+                if let Poll::Ready(item) = fut.poll(cx) {
+                    this.future.set(None);
+                    return Poll::Ready(Some(item));
+                } else {
+                    return Poll::Pending;
+                }
+            }
+
+            match this.stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    let fut = (this.f)(item);
+                    this.future.set(Some(fut));
+                    // Continue loop to poll the newly set future
                 }
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
             }
         }
-        stream.poll_next(cx)
     }
 }
 
-enum ThenState<Fut> {
-    Streaming,
-    Processing(Pin<Box<Fut>>),
-}
-
-pub struct Then<S, U, Fut, F> {
-    stream: S,
-    f: F,
-    state: ThenState<Fut>,
-    _phantom: std::marker::PhantomData<U>,
-}
-
-impl<S, U, Fut, F> Stream for Then<S, U, Fut, F>
-where
-    S: Stream,
-    F: FnMut(S::Item) -> Fut,
-    Fut: Future<Output = U>,
-{
-    type Item = U;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let mut stream = unsafe { Pin::new_unchecked(&mut this.stream) };
-
-        loop {
-            match &mut this.state {
-                ThenState::Streaming => {
-                    match stream.as_mut().poll_next(cx) {
-                        Poll::Ready(Some(item)) => {
-                            let fut = (this.f)(item);
-                            this.state = ThenState::Processing(Box::pin(fut));
-                        }
-                        Poll::Ready(None) => return Poll::Ready(None),
-                        Poll::Pending => return Poll::Pending,
-                    }
-                }
-                ThenState::Processing(fut) => {
-                    match fut.as_mut().poll(cx) {
-                        Poll::Ready(val) => {
-                            this.state = ThenState::Streaming;
-                            return Poll::Ready(Some(val));
-                        }
-                        Poll::Pending => return Poll::Pending,
-                    }
-                }
-            }
-        }
+pin_project! {
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct ForEach<S, F, Fut> {
+        #[pin]
+        stream: S,
+        f: F,
+        #[pin]
+        state: ForEachState<Fut>,
+        _phantom: PhantomData<Fut>,
     }
 }
-
-pub struct Collect<S, B> {
-    stream: S,
-    collection: B
-}
-
-impl<S, B> Future for Collect<S, B>
-where S: Stream, B: Default + Extend<S::Item> {
-    type Output = B;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let mut stream = unsafe { Pin::new_unchecked(&mut this.stream) };
-
-        loop {
-            match stream.as_mut().poll_next(cx) {
-                Poll::Ready(Some(item)) => {
-                    this.collection.extend(std::iter::once(item));
-                }
-                Poll::Ready(None) => {
-                    return Poll::Ready(std::mem::take(&mut this.collection));
-                }
-                Poll::Pending => return Poll::Pending,
-            }
-        }
+pin_project! {
+    #[project = ForEachStateProj]
+    enum ForEachState<Fut> {
+        Streaming,
+        Processing { #[pin] future: Fut },
     }
-}
-
-pub struct Enumerate<S> {
-    stream: S,
-    index: usize
-}
-
-impl<S> Stream for Enumerate<S>
-where S: Stream {
-    type Item = (usize, S::Item);
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let stream = unsafe { Pin::new_unchecked(&mut this.stream) };
-        match stream.poll_next(cx) {
-            Poll::Ready(Some(item)) => {
-                let current_index = this.index;
-                this.index += 1;
-                Poll::Ready(Some((current_index, item)))
-            }
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-pub struct Chain<S1, S2> {
-    first: Option<S1>,
-    second: S2
-}
-
-impl<S1, S2> Stream for Chain<S1, S2>
-where S1: Stream, S2: Stream<Item = S1::Item> {
-    type Item = S1::Item;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let second = unsafe { Pin::new_unchecked(&mut this.second) };
-
-        if let Some(first_stream) = this.first.as_mut() {
-            let first_pinned = unsafe { Pin::new_unchecked(first_stream) };
-            match first_pinned.poll_next(cx) {
-                Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
-                Poll::Ready(None) => {
-                    this.first = None;
-                    second.poll_next(cx)
-                }
-                Poll::Pending => Poll::Pending,
-            }
-        } else {
-            second.poll_next(cx)
-        }
-    }
-}
-
-pub struct Next<S> { stream: S }
-
-impl<S> Future for Next<S>
-where S: Stream {
-    type Output = Option<S::Item>;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let stream = unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().stream) };
-        stream.poll_next(cx)
-    }
-}
-
-enum ForEachState<Fut> {
-    Streaming,
-    Processing(Pin<Box<Fut>>),
-}
-
-pub struct ForEach<S, F, Fut> {
-    stream: S,
-    f: F,
-    state: ForEachState<Fut>,
-    _phantom: std::marker::PhantomData<Fut>,
 }
 
 impl<S, F, Fut> Future for ForEach<S, F, Fut>
@@ -287,26 +334,26 @@ where
     Fut: Future<Output = ()>,
 {
     type Output = ();
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let mut stream = unsafe { Pin::new_unchecked(&mut this.stream) };
+        let mut this = self.project();
 
         loop {
-            match &mut this.state {
-                ForEachState::Streaming => {
-                    match stream.as_mut().poll_next(cx) {
+            match this.state.as_mut().project() {
+                ForEachStateProj::Streaming => {
+                    match this.stream.as_mut().poll_next(cx) {
                         Poll::Ready(Some(item)) => {
-                            let fut = (this.f)(item);
-                            this.state = ForEachState::Processing(Box::pin(fut));
+                            let future = (this.f)(item);
+                            this.state.set(ForEachState::Processing { future });
                         }
                         Poll::Ready(None) => return Poll::Ready(()),
                         Poll::Pending => return Poll::Pending,
                     }
                 }
-                ForEachState::Processing(fut) => {
-                    match fut.as_mut().poll(cx) {
-                        Poll::Ready(()) => {
-                            this.state = ForEachState::Streaming;
+                ForEachStateProj::Processing { future } => {
+                    match future.poll(cx) {
+                        Poll::Ready(_) => {
+                            this.state.set(ForEachState::Streaming);
                         }
                         Poll::Pending => return Poll::Pending,
                     }
@@ -316,135 +363,147 @@ where
     }
 }
 
-enum FoldState<B, Fut> {
-    Streaming(B),
-    Processing(Pin<Box<Fut>>),
+pin_project! {
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct Fold<S, B, F, Fut> {
+        #[pin]
+        stream: S,
+        acc: B,
+        f: F,
+        #[pin]
+        state: FoldState<B, Fut>,
+        _phantom: PhantomData<Fut>,
+    }
 }
-
-pub struct Fold<S, B, F, Fut> {
-    stream: S,
-    f: F,
-    state: FoldState<B, Fut>,
-    _phantom: std::marker::PhantomData<Fut>,
+pin_project! {
+    #[project = FoldStateProj]
+    enum FoldState<B, Fut> {
+        Streaming,
+        Processing { #[pin] future: Fut },
+        Done { val: B },
+    }
 }
 
 impl<S, B, F, Fut> Future for Fold<S, B, F, Fut>
 where
     S: Stream,
-    B: Default,
+    B: Clone,
     F: FnMut(B, S::Item) -> Fut,
     Fut: Future<Output = B>,
 {
     type Output = B;
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let mut stream = unsafe { Pin::new_unchecked(&mut this.stream) };
+        let mut this = self.project();
 
         loop {
-            match &mut this.state {
-                FoldState::Streaming(acc) => {
-                    match stream.as_mut().poll_next(cx) {
+            match this.state.as_mut().project() {
+                FoldStateProj::Streaming => {
+                    match this.stream.as_mut().poll_next(cx) {
                         Poll::Ready(Some(item)) => {
-                            let acc_value = std::mem::take(acc);
-                            let fut = (this.f)(acc_value, item);
-                            this.state = FoldState::Processing(Box::pin(fut));
+                            let future = (this.f)(this.acc.clone(), item);
+                            this.state.set(FoldState::Processing { future });
                         }
                         Poll::Ready(None) => {
-                            return Poll::Ready(std::mem::take(acc));
+                            let result = this.acc.clone();
+                            this.state.set(FoldState::Done { val: result.clone() });
+                            return Poll::Ready(result);
                         }
                         Poll::Pending => return Poll::Pending,
                     }
                 }
-                FoldState::Processing(fut) => {
-                    match fut.as_mut().poll(cx) {
+                FoldStateProj::Processing { future } => {
+                    match future.poll(cx) {
                         Poll::Ready(new_acc) => {
-                            this.state = FoldState::Streaming(new_acc);
+                            *this.acc = new_acc;
+                            this.state.set(FoldState::Streaming);
                         }
                         Poll::Pending => return Poll::Pending,
                     }
+                }
+                FoldStateProj::Done { val } => {
+                    return Poll::Ready(val.clone());
                 }
             }
         }
     }
 }
 
-// ================================
-// StreamExt Implementation - Generic for all Stream types
-// ================================
+pin_project! {
+    pub struct Flatten<S>
+    where S: Stream,
+          S::Item: Stream,
+    {
+        #[pin]
+        stream: S,
+        #[pin]
+        inner: Option<S::Item>,
+    }
+}
 
-impl<T> StreamExt for T
-where T: Stream
+impl<S> Stream for Flatten<S>
+where S: Stream,
+      S::Item: Stream,
 {
-    fn map<U, F>(self, f: F) -> Map<Self, F>
-    where F: FnMut(Self::Item) -> U
-    {
-        Map { stream: self, f }
-    }
+    type Item = <S::Item as Stream>::Item;
 
-    fn filter<F>(self, f: F) -> Filter<Self, F>
-    where F: FnMut(&Self::Item) -> bool
-    {
-        Filter { stream: self, f }
-    }
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-    fn take(self, n: usize) -> Take<Self> {
-        Take { stream: self, remaining: n }
-    }
+        loop {
+            if let Some(inner_stream) = this.inner.as_mut().as_pin_mut() {
+                match inner_stream.poll_next(cx) {
+                    Poll::Ready(Some(item)) => {
+                        return Poll::Ready(Some(item));
+                    }
+                    Poll::Ready(None) => {
+                        this.inner.set(None);
+                    }
+                    Poll::Pending => {
+                        return Poll::Pending;
+                    }
+                }
+            }
 
-    fn skip(self, n: usize) -> Skip<Self> {
-        Skip { stream: self, remaining: n }
-    }
-
-    fn then<U, Fut, F>(self, f: F) -> Then<Self, U, Fut, F>
-    where F: FnMut(Self::Item) -> Fut, Fut: Future<Output = U>
-    {
-        Then {
-            stream: self,
-            f,
-            state: ThenState::Streaming,
-            _phantom: std::marker::PhantomData
+            match this.stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(inner_stream)) => {
+                    this.inner.set(Some(inner_stream));
+                }
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
+}
 
-    fn collect<B>(self) -> Collect<Self, B>
-    where B: Default + Extend<Self::Item>
-    {
-        Collect { stream: self, collection: B::default() }
+pin_project! {
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct Collect<S, B> {
+        #[pin]
+        stream: S,
+        collection: B,
     }
+}
 
-    fn enumerate(self) -> Enumerate<Self> {
-        Enumerate { stream: self, index: 0 }
-    }
+impl<S, B> Future for Collect<S, B>
+where
+    S: Stream,
+    B: Default + Extend<S::Item>,
+{
+    type Output = B;
 
-    fn chain<U>(self, other: U) -> Chain<Self, U>
-    where U: Stream<Item = Self::Item>
-    {
-        Chain { first: Some(self), second: other }
-    }
-
-    fn next(self) -> Next<Self> {
-        Next { stream: self }
-    }
-
-    fn for_each<F, Fut>(self, f: F) -> ForEach<Self, F, Fut>
-    where F: FnMut(Self::Item) -> Fut, Fut: Future<Output = ()>
-    {
-        ForEach {
-            stream: self,
-            f,
-            state: ForEachState::Streaming,
-            _phantom: std::marker::PhantomData
-        }
-    }
-
-    fn fold<B, F, Fut>(self, init: B, f: F) -> Fold<Self, B, F, Fut>
-    where B: Default, F: FnMut(B, Self::Item) -> Fut, Fut: Future<Output = B>
-    {
-        Fold {
-            stream: self,
-            f,
-            state: FoldState::Streaming(init),
-            _phantom: std::marker::PhantomData
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+        loop {
+            match this.stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    this.collection.extend(std::iter::once(item));
+                }
+                Poll::Ready(None) => {
+                    return Poll::Ready(std::mem::take(this.collection));
+                }
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 }

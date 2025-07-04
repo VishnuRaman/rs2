@@ -11,6 +11,7 @@ pub mod select;
 pub mod rate;
 pub mod async_combinators;
 pub mod specialized;
+pub mod parallel;
 
 // Re-export core types
 pub use core::{Stream, StreamExt};
@@ -30,7 +31,7 @@ pub use advanced::{
 // Re-export utility combinators
 pub use utility::{
     Nth, Last, All, Any, Find, Position, Count, StepBy, Inspect,
-    Enumerate, UtilityStreamExt,
+    Enumerate, Chain, UtilityStreamExt,
 };
 
 // Re-export select/merge combinators
@@ -53,4 +54,21 @@ pub use specialized::{
     TryStream, TryMap, TryFilter, TryFold, TryForEach,
     Chunks, ChunksTimeout, TakeUntil, SkipUntil, Backpressure,
     SpecializedStreamExt, BackpressureExt
-}; 
+};
+
+// Re-export parallel combinators
+pub use parallel::{
+    ParEvalMap, ParEvalMapUnordered, ParallelStreamExt
+};
+
+// Implement Stream for Box<dyn Stream> to support trait objects
+impl<T> Stream for Box<dyn Stream<Item = T> + Send + 'static> {
+    type Item = T;
+
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        use std::pin::Pin;
+        // Safety: We're just delegating to the inner stream's poll_next
+        let inner = unsafe { Pin::new_unchecked(&mut **self) };
+        inner.poll_next(cx)
+    }
+} 

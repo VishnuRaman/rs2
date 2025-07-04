@@ -1,11 +1,12 @@
 //! Specialized stream combinators: TryStream, chunks, take_until, skip_until, backpressure
+use pin_project_lite::pin_project;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::future::Future;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::collections::VecDeque;
+use tokio::time::Sleep;
 use super::core::Stream;
-use tokio::time::{Sleep, Instant};
 
 // ================================
 // TryStream Trait & Combinators
@@ -60,11 +61,14 @@ where S: Stream<Item = Result<T, E>>
     }
 }
 
-pub struct TryMap<S, F>
-where S: Stream
-{
-    pub(crate) stream: S,
-    pub(crate) f: F,
+pin_project! {
+    pub struct TryMap<S, F>
+    where S: Stream
+    {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F,
+    }
 }
 
 impl<S, F, U, T, E> Stream for TryMap<S, F>
@@ -74,14 +78,10 @@ where
 {
     type Item = Result<U, E>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, f) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.f)
-        };
-
-        match stream.poll_next(cx) {
-            Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(Ok(f(item)))),
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        match this.stream.poll_next(cx) {
+            Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(Ok((this.f)(item)))),
             Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
@@ -89,11 +89,14 @@ where
     }
 }
 
-pub struct TryFilter<S, F>
-where S: Stream
-{
-    pub(crate) stream: S,
-    pub(crate) f: F,
+pin_project! {
+    pub struct TryFilter<S, F>
+    where S: Stream
+    {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F,
+    }
 }
 
 impl<S, F, T, E> Stream for TryFilter<S, F>
@@ -103,16 +106,12 @@ where
 {
     type Item = Result<T, E>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, f) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.f)
-        };
-
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(item))) => {
-                    if f(&item) {
+                    if (this.f)(&item) {
                         return Poll::Ready(Some(Ok(item)));
                     }
                     // Continue filtering
@@ -125,12 +124,15 @@ where
     }
 }
 
-pub struct TryFold<S, B, F>
-where S: Stream
-{
-    pub(crate) stream: S,
-    pub(crate) acc: B,
-    pub(crate) f: F,
+pin_project! {
+    pub struct TryFold<S, B, F>
+    where S: Stream
+    {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) acc: B,
+        pub(crate) f: F,
+    }
 }
 
 impl<S, B, F, T, E> Future for TryFold<S, B, F>
@@ -141,30 +143,29 @@ where
 {
     type Output = Result<B, E>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (mut stream, acc, f) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.acc, &mut this.f)
-        };
-
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(item))) => {
-                    *acc = f(std::mem::take(acc), item);
+                    *this.acc = (this.f)(std::mem::take(this.acc), item);
                 }
                 Poll::Ready(Some(Err(e))) => return Poll::Ready(Err(e)),
-                Poll::Ready(None) => return Poll::Ready(Ok(std::mem::take(acc))),
+                Poll::Ready(None) => return Poll::Ready(Ok(std::mem::take(this.acc))),
                 Poll::Pending => return Poll::Pending,
             }
         }
     }
 }
 
-pub struct TryForEach<S, F>
-where S: Stream
-{
-    pub(crate) stream: S,
-    pub(crate) f: F,
+pin_project! {
+    pub struct TryForEach<S, F>
+    where S: Stream
+    {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F,
+    }
 }
 
 impl<S, F, T, E> Future for TryForEach<S, F>
@@ -173,16 +174,13 @@ where
     F: FnMut(T) -> Result<(), E>,
 {
     type Output = Result<(), E>;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (mut stream, f) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.f)
-        };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(item))) => {
                     // Early termination on first error
-                    if let Err(e) = f(item) {
+                    if let Err(e) = (this.f)(item) {
                         return Poll::Ready(Err(e));
                     }
                 }
@@ -198,12 +196,15 @@ where
 // Chunks Combinators
 // ================================
 
-pub struct Chunks<S>
-where S: Stream
-{
-    pub(crate) stream: S,
-    pub(crate) size: usize,
-    pub(crate) buffer: Vec<S::Item>,
+pin_project! {
+    pub struct Chunks<S>
+    where S: Stream
+    {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) size: usize,
+        pub(crate) buffer: Vec<S::Item>,
+    }
 }
 
 impl<S> Stream for Chunks<S>
@@ -211,30 +212,27 @@ where S: Stream
 {
     type Item = Vec<S::Item>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, size, buffer) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), this.size, &mut this.buffer)
-        };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
         // Fill buffer until we have enough items
-        while buffer.len() < size {
-            match stream.as_mut().poll_next(cx) {
+        while this.buffer.len() < *this.size {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    buffer.push(item);
+                    this.buffer.push(item);
                 }
                 Poll::Ready(None) => {
                     // Stream ended, return remaining items if any
-                    if buffer.is_empty() {
+                    if this.buffer.is_empty() {
                         return Poll::Ready(None);
                     } else {
-                        return Poll::Ready(Some(std::mem::take(buffer)));
+                        return Poll::Ready(Some(std::mem::take(this.buffer)));
                     }
                 }
                 Poll::Pending => {
                     // If we have some items but not enough, return what we have
-                    if !buffer.is_empty() {
-                        return Poll::Ready(Some(std::mem::take(buffer)));
+                    if !this.buffer.is_empty() {
+                        return Poll::Ready(Some(std::mem::take(this.buffer)));
                     }
                     return Poll::Pending;
                 }
@@ -242,20 +240,23 @@ where S: Stream
         }
 
         // We have enough items, return a chunk
-        let chunk = std::mem::replace(buffer, Vec::new());
+        let chunk = std::mem::replace(this.buffer, Vec::new());
         Poll::Ready(Some(chunk))
     }
 }
 
-pub struct ChunksTimeout<S>
-where S: Stream
-{
-    pub(crate) stream: S,
-    pub(crate) size: usize,
-    pub(crate) duration: Duration,
-    pub(crate) buffer: Vec<S::Item>,
-    pub(crate) timeout: Option<Pin<Box<Sleep>>>,
-    pub(crate) last_emit: Option<Instant>,
+pin_project! {
+    pub struct ChunksTimeout<S>
+    where S: Stream
+    {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) size: usize,
+        pub(crate) duration: Duration,
+        pub(crate) buffer: Vec<S::Item>,
+        pub(crate) timeout: Option<Pin<Box<Sleep>>>,
+        pub(crate) last_emit: Option<Instant>,
+    }
 }
 
 impl<S> Stream for ChunksTimeout<S>
@@ -263,63 +264,45 @@ where S: Stream
 {
     type Item = Vec<S::Item>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, size, duration, buffer, timeout, last_emit) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (
-                Pin::new_unchecked(&mut this.stream),
-                this.size,
-                this.duration,
-                &mut this.buffer,
-                &mut this.timeout,
-                &mut this.last_emit
-            )
-        };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-        // Check if timeout has expired
-        if let Some(sleep) = timeout {
-            match sleep.as_mut().poll(cx) {
-                Poll::Ready(_) => {
-                    *timeout = None;
-                    if !buffer.is_empty() {
-                        return Poll::Ready(Some(std::mem::take(buffer)));
-                    }
+        if let Some(to) = this.timeout.as_mut() {
+            if to.as_mut().poll(cx).is_ready() {
+                *this.timeout = None;
+                *this.last_emit = Some(Instant::now());
+                if !this.buffer.is_empty() {
+                    return Poll::Ready(Some(std::mem::take(this.buffer)));
                 }
-                Poll::Pending => {}
             }
         }
 
-        // Poll stream for new items
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    buffer.push(item);
-                    
-                    // Start timeout if this is the first item
-                    if last_emit.is_none() {
-                        *last_emit = Some(Instant::now());
-                        *timeout = Some(Box::pin(tokio::time::sleep(duration)));
-                    }
-
-                    // Return chunk if we have enough items
-                    if buffer.len() >= size {
-                        *timeout = None;
-                        *last_emit = None;
-                        return Poll::Ready(Some(std::mem::take(buffer)));
+                    this.buffer.push(item);
+                    if this.buffer.len() >= *this.size {
+                        *this.timeout = None;
+                        *this.last_emit = Some(Instant::now());
+                        return Poll::Ready(Some(std::mem::take(this.buffer)));
                     }
                 }
                 Poll::Ready(None) => {
-                    // Stream ended, return remaining items if any
-                    if buffer.is_empty() {
+                    if this.buffer.is_empty() {
                         return Poll::Ready(None);
                     } else {
-                        return Poll::Ready(Some(std::mem::take(buffer)));
+                        return Poll::Ready(Some(std::mem::take(this.buffer)));
                     }
                 }
                 Poll::Pending => {
-                    // If we have some items but not enough, wait for timeout or more items
-                    if !buffer.is_empty() {
-                        return Poll::Pending;
+                    if this.timeout.is_none() {
+                        if let Some(last_emit) = this.last_emit {
+                            let deadline = *last_emit + *this.duration;
+                            *this.timeout = Some(Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))));
+                        } else {
+                            let deadline = Instant::now() + *this.duration;
+                            *this.timeout = Some(Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))));
+                        }
                     }
                     return Poll::Pending;
                 }
@@ -332,10 +315,13 @@ where S: Stream
 // TakeUntil/SkipUntil Combinators
 // ================================
 
-pub struct TakeUntil<S, Fut> {
-    pub(crate) stream: S,
-    pub(crate) future: Option<Pin<Box<Fut>>>,
-    pub(crate) done: bool,
+pin_project! {
+    pub struct TakeUntil<S, Fut> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) future: Option<Pin<Box<Fut>>>,
+        pub(crate) done: bool,
+    }
 }
 
 impl<S, Fut> Stream for TakeUntil<S, Fut>
@@ -345,44 +331,39 @@ where
 {
     type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, future, done) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (
-                Pin::new_unchecked(&mut this.stream),
-                &mut this.future,
-                &mut this.done
-            )
-        };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-        if *done {
+        if *this.done {
             return Poll::Ready(None);
         }
 
-        // Check if the future has completed
-        if let Some(fut) = future {
-            match fut.as_mut().poll(cx) {
-                Poll::Ready(_) => {
-                    *done = true;
-                    return Poll::Ready(None);
-                }
-                Poll::Pending => {}
+        if let Some(fut) = this.future.as_mut() {
+            if fut.as_mut().poll(cx).is_ready() {
+                *this.done = true;
+                *this.future = None;
+                return Poll::Ready(None);
             }
         }
 
-        // Poll the stream
-        match stream.poll_next(cx) {
+        match this.stream.as_mut().poll_next(cx) {
             Poll::Ready(Some(item)) => Poll::Ready(Some(item)),
-            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Ready(None) => {
+                *this.done = true;
+                Poll::Ready(None)
+            }
             Poll::Pending => Poll::Pending,
         }
     }
 }
 
-pub struct SkipUntil<S, Fut> {
-    pub(crate) stream: S,
-    pub(crate) future: Option<Pin<Box<Fut>>>,
-    pub(crate) triggered: bool,
+pin_project! {
+    pub struct SkipUntil<S, Fut> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) future: Option<Pin<Box<Fut>>>,
+        pub(crate) triggered: bool,
+    }
 }
 
 impl<S, Fut> Stream for SkipUntil<S, Fut>
@@ -392,66 +373,28 @@ where
 {
     type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, future, triggered) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (
-                Pin::new_unchecked(&mut this.stream),
-                &mut this.future,
-                &mut this.triggered
-            )
-        };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-        // Check if the future has completed
-        if let Some(fut) = future {
-            match fut.as_mut().poll(cx) {
-                Poll::Ready(_) => {
-                    *triggered = true;
-                    *future = None;
-                }
-                Poll::Pending => {}
-            }
-        }
-
-        // Skip items until triggered
-        if !*triggered {
-            // Check future first in each iteration to avoid infinite loops
-            if let Some(fut) = future {
-                match fut.as_mut().poll(cx) {
-                    Poll::Ready(_) => {
-                        *triggered = true;
-                        *future = None;
-                        // Now return items after triggered
-                        return stream.as_mut().poll_next(cx);
-                    }
-                    Poll::Pending => {
-                        // Check one item from stream, then yield to avoid busy waiting
-                        match stream.as_mut().poll_next(cx) {
-                            Poll::Ready(Some(_)) => {
-                                // Skip this item and yield to allow future to make progress
-                                return Poll::Pending;
-                            }
-                            Poll::Ready(None) => return Poll::Ready(None),
-                            Poll::Pending => return Poll::Pending,
-                        }
-                    }
-                }
-            } else {
-                // No future, just skip items
-                loop {
-                    match stream.as_mut().poll_next(cx) {
-                        Poll::Ready(Some(_)) => {
-                            // Skip this item
-                        }
-                        Poll::Ready(None) => return Poll::Ready(None),
-                        Poll::Pending => return Poll::Pending,
-                    }
+        if !*this.triggered {
+            if let Some(fut) = this.future.as_mut() {
+                if fut.as_mut().poll(cx).is_ready() {
+                    *this.triggered = true;
+                    *this.future = None;
+                } else {
+                    // Still skipping, discard items from the stream
+                    while let Poll::Ready(Some(_)) = this.stream.as_mut().poll_next(cx) {}
+                    return Poll::Pending;
                 }
             }
         }
 
-        // Return items after triggered
-        stream.as_mut().poll_next(cx)
+        if *this.triggered {
+            this.stream.as_mut().poll_next(cx)
+        } else {
+            // This should be unreachable if the future is polled correctly
+            Poll::Pending
+        }
     }
 }
 
@@ -459,13 +402,16 @@ where
 // Backpressure Combinators
 // ================================
 
-pub struct Backpressure<S>
-where S: Stream
-{
-    pub(crate) stream: S,
-    pub(crate) buffer_size: usize,
-    pub(crate) buffer: VecDeque<S::Item>,
-    pub(crate) paused: bool,
+pin_project! {
+    pub struct Backpressure<S>
+    where S: Stream
+    {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) buffer_size: usize,
+        pub(crate) buffer: VecDeque<S::Item>,
+        pub(crate) paused: bool,
+    }
 }
 
 impl<S> Stream for Backpressure<S>
@@ -473,41 +419,24 @@ where S: Stream
 {
     type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, buffer_size, buffer, paused) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (
-                Pin::new_unchecked(&mut this.stream),
-                this.buffer_size,
-                &mut this.buffer,
-                &mut this.paused
-            )
-        };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-        // If we have buffered items, return one
-        if !buffer.is_empty() {
-            return Poll::Ready(Some(buffer.pop_front().unwrap()));
+        if !this.buffer.is_empty() {
+            return Poll::Ready(this.buffer.pop_front());
         }
 
-        // If we're paused, don't poll the stream
-        if *paused {
+        if *this.paused {
             return Poll::Pending;
         }
 
-        // Poll the stream
-        match stream.as_mut().poll_next(cx) {
-            Poll::Ready(Some(item)) => {
-                // Check if buffer is full before adding
-                if buffer.len() >= buffer_size {
-                    *paused = true;
-                    return Poll::Pending; // Don't process the item when paused
-                }
-                buffer.push_back(item);
-                Poll::Ready(Some(buffer.pop_front().unwrap()))
-            }
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+        let res = this.stream.as_mut().poll_next(cx);
+
+        if this.buffer.len() >= *this.buffer_size {
+            *this.paused = true;
         }
+
+        res
     }
 }
 

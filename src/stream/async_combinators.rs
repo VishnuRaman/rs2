@@ -302,9 +302,10 @@ where
                                 this.futures.clear();
                                 return Poll::Ready(Err(e));
                             }
-                            Err(_join_error) => {
-                                // Task panic - could handle this differently
-                                // For now, continue processing other tasks
+                            Err(join_error) => {
+                                // Task panic or cancellation - log and continue processing other tasks
+                                log::warn!("Task failed with join error: {:?}", join_error);
+                                // Could implement retry logic here if needed
                             }
                         }
                     }

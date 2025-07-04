@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::time::Duration;
+use serde::{Serialize, Deserialize};
 
 /// Main error type for RStream operations
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +20,8 @@ pub enum StreamError {
     Cancelled,
     /// Backpressure buffer overflow
     BackpressureOverflow,
+    /// Validation error
+    ValidationError(String),
     /// Custom error with message
     Custom(String),
 }
@@ -31,6 +34,7 @@ impl fmt::Display for StreamError {
             StreamError::ResourceExhausted => write!(f, "Resource exhausted"),
             StreamError::Cancelled => write!(f, "Operation cancelled"),
             StreamError::BackpressureOverflow => write!(f, "Backpressure buffer overflow"),
+            StreamError::ValidationError(msg) => write!(f, "Validation error: {}", msg),
             StreamError::Custom(msg) => write!(f, "Stream error: {}", msg),
         }
     }
@@ -54,7 +58,7 @@ impl From<tokio::time::error::Elapsed> for StreamError {
 pub type StreamResult<T> = Result<T, StreamError>;
 
 /// Retry policy for error handling
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RetryPolicy {
     /// No retries
     None,

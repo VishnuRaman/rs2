@@ -36,52 +36,52 @@ impl Clone for TestStream {
     }
 }
 
-#[test]
-fn test_flat_map() {
+#[tokio::test]
+async fn test_flat_map() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let flat_mapped: Vec<i32> = stream.flat_map(|x| TestStream::new(vec![x, x * 2])).collect();
+    let flat_mapped: Vec<i32> = stream.flat_map(|x| TestStream::new(vec![x, x * 2])).collect().await;
     assert_eq!(flat_mapped, vec![1, 2, 2, 4, 3, 6]);
 }
 
-#[test]
-fn test_flat_map_empty() {
+#[tokio::test]
+async fn test_flat_map_empty() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let flat_mapped: Vec<i32> = stream.flat_map(|_| TestStream::new(vec![])).collect();
+    let flat_mapped: Vec<i32> = stream.flat_map(|_| TestStream::new(vec![])).collect().await;
     assert_eq!(flat_mapped, vec![]);
 }
 
-#[test]
-fn test_flatten() {
+#[tokio::test]
+async fn test_flatten() {
     let stream = TestStream::new(vec![
         TestStream::new(vec![1, 2]),
         TestStream::new(vec![3, 4]),
     ]);
-    let flattened: Vec<i32> = stream.flatten().collect();
+    let flattened: Vec<i32> = stream.flatten().collect().await;
     assert_eq!(flattened, vec![1, 2, 3, 4]);
 }
 
-#[test]
-fn test_flatten_empty() {
+#[tokio::test]
+async fn test_flatten_empty() {
     let stream = TestStream::new(vec![
         TestStream::new(vec![]),
         TestStream::new(vec![]),
     ]);
-    let flattened: Vec<i32> = stream.flatten().collect();
+    let flattened: Vec<i32> = stream.flatten().collect().await;
     assert_eq!(flattened, vec![]);
 }
 
-#[test]
-fn test_scan() {
+#[tokio::test]
+async fn test_scan() {
     let stream = TestStream::new(vec![1, 2, 3, 4]);
     let scanned: Vec<i32> = stream.scan(0, |acc, x| {
         *acc += x;
         Some(*acc)
-    }).collect();
+    }).collect().await;
     assert_eq!(scanned, vec![1, 3, 6, 10]);
 }
 
-#[test]
-fn test_scan_early_termination() {
+#[tokio::test]
+async fn test_scan_early_termination() {
     let stream = TestStream::new(vec![1, 2, 3, 4, 5]);
     let scanned: Vec<i32> = stream.scan(0, |acc, x| {
         if *acc > 5 {
@@ -90,43 +90,43 @@ fn test_scan_early_termination() {
             *acc += x;
             Some(*acc)
         }
-    }).collect();
+    }).collect().await;
     assert_eq!(scanned, vec![1, 3, 6]);
 }
 
-#[test]
-fn test_scan_empty() {
+#[tokio::test]
+async fn test_scan_empty() {
     let stream = TestStream::new(vec![]);
-    let scanned: Vec<i32> = stream.scan(42, |acc, _x| Some(*acc)).collect();
+    let scanned: Vec<i32> = stream.scan(42, |acc, _x| Some(*acc)).collect().await;
     assert_eq!(scanned, vec![]);
 }
 
-#[test]
-fn test_cycle() {
+#[tokio::test]
+async fn test_cycle() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let cycled: Vec<i32> = stream.cycle().take(7).collect();
+    let cycled: Vec<i32> = stream.cycle().take(7).collect().await;
     assert_eq!(cycled, vec![1, 2, 3, 1, 2, 3, 1]);
 }
 
-#[test]
-fn test_cycle_empty() {
+#[tokio::test]
+async fn test_cycle_empty() {
     let stream = TestStream::new(vec![]);
-    let cycled: Vec<i32> = stream.cycle().take(5).collect();
+    let cycled: Vec<i32> = stream.cycle().take(5).collect().await;
     assert_eq!(cycled, vec![]);
 }
 
-#[test]
-fn test_cycle_single() {
+#[tokio::test]
+async fn test_cycle_single() {
     let stream = TestStream::new(vec![42]);
-    let cycled: Vec<i32> = stream.cycle().take(3).collect();
+    let cycled: Vec<i32> = stream.cycle().take(3).collect().await;
     assert_eq!(cycled, vec![42, 42, 42]);
 }
 
-#[test]
-fn test_zip_longest() {
+#[tokio::test]
+async fn test_zip_longest() {
     let stream1 = TestStream::new(vec![1, 2, 3]);
     let stream2 = TestStream::new(vec![4, 5]);
-    let zipped: Vec<(Option<i32>, Option<i32>)> = stream1.zip_longest(stream2).collect();
+    let zipped: Vec<(Option<i32>, Option<i32>)> = stream1.zip_longest(stream2).collect().await;
     assert_eq!(zipped, vec![
         (Some(1), Some(4)),
         (Some(2), Some(5)),
@@ -134,70 +134,70 @@ fn test_zip_longest() {
     ]);
 }
 
-#[test]
-fn test_zip_longest_empty() {
+#[tokio::test]
+async fn test_zip_longest_empty() {
     let stream1 = TestStream::new(vec![]);
     let stream2 = TestStream::new(vec![1, 2]);
-    let zipped: Vec<(Option<i32>, Option<i32>)> = stream1.zip_longest(stream2).collect();
+    let zipped: Vec<(Option<i32>, Option<i32>)> = stream1.zip_longest(stream2).collect().await;
     assert_eq!(zipped, vec![
         (None, Some(1)),
         (None, Some(2)),
     ]);
 }
 
-#[test]
-fn test_zip_longest_both_empty() {
+#[tokio::test]
+async fn test_zip_longest_both_empty() {
     let stream1 = TestStream::new(vec![]);
     let stream2 = TestStream::new(vec![]);
-    let zipped: Vec<(Option<i32>, Option<i32>)> = stream1.zip_longest(stream2).collect();
+    let zipped: Vec<(Option<i32>, Option<i32>)> = stream1.zip_longest(stream2).collect().await;
     assert_eq!(zipped, vec![]);
 }
 
-#[test]
-fn test_interleave() {
+#[tokio::test]
+async fn test_interleave() {
     let stream1 = TestStream::new(vec![1, 3, 5]);
     let stream2 = TestStream::new(vec![2, 4, 6]);
-    let interleaved: Vec<i32> = stream1.interleave(stream2).collect();
+    let interleaved: Vec<i32> = stream1.interleave(stream2).collect().await;
     assert_eq!(interleaved, vec![1, 2, 3, 4, 5, 6]);
 }
 
-#[test]
-fn test_interleave_different_lengths() {
+#[tokio::test]
+async fn test_interleave_different_lengths() {
     let stream1 = TestStream::new(vec![1, 3, 5, 7]);
     let stream2 = TestStream::new(vec![2, 4]);
-    let interleaved: Vec<i32> = stream1.interleave(stream2).collect();
+    let interleaved: Vec<i32> = stream1.interleave(stream2).collect().await;
     assert_eq!(interleaved, vec![1, 2, 3, 4, 5, 7]);
 }
 
-#[test]
-fn test_interleave_empty() {
+#[tokio::test]
+async fn test_interleave_empty() {
     let stream1 = TestStream::new(vec![1, 2, 3]);
     let stream2 = TestStream::new(vec![]);
-    let interleaved: Vec<i32> = stream1.interleave(stream2).collect();
+    let interleaved: Vec<i32> = stream1.interleave(stream2).collect().await;
     assert_eq!(interleaved, vec![1, 2, 3]);
 }
 
-#[test]
-fn test_interleave_shortest() {
+#[tokio::test]
+async fn test_interleave_shortest() {
     let stream1 = TestStream::new(vec![1, 3, 5, 7]);
     let stream2 = TestStream::new(vec![2, 4]);
-    let interleaved: Vec<i32> = stream1.interleave_shortest(stream2).collect();
+    let interleaved: Vec<i32> = stream1.interleave_shortest(stream2).collect().await;
     assert_eq!(interleaved, vec![1, 2, 3, 4]);
 }
 
-#[test]
-fn test_interleave_shortest_empty() {
+#[tokio::test]
+async fn test_interleave_shortest_empty() {
     let stream1 = TestStream::new(vec![1, 2, 3]);
     let stream2 = TestStream::new(vec![]);
-    let interleaved: Vec<i32> = stream1.interleave_shortest(stream2).collect();
+    let interleaved: Vec<i32> = stream1.interleave_shortest(stream2).collect().await;
     assert_eq!(interleaved, vec![]);
 }
 
-#[test]
-fn test_merge() {
+#[tokio::test]
+async fn test_merge() {
     let stream1 = TestStream::new(vec![1, 3, 5]);
     let stream2 = TestStream::new(vec![2, 4, 6]);
-    let merged: Vec<i32> = stream1.merge(stream2).collect();
+    let merged: Vec<i32> = stream1.merge(stream2).collect().await;
     assert_eq!(merged.len(), 6);
     assert!(merged.contains(&1));
     assert!(merged.contains(&2));
@@ -207,66 +207,66 @@ fn test_merge() {
     assert!(merged.contains(&6));
 }
 
-#[test]
-fn test_merge_empty() {
+#[tokio::test]
+async fn test_merge_empty() {
     let stream1 = TestStream::new(vec![1, 2, 3]);
     let stream2 = TestStream::new(vec![]);
-    let merged: Vec<i32> = stream1.merge(stream2).collect();
+    let merged: Vec<i32> = stream1.merge(stream2).collect().await;
     assert_eq!(merged, vec![1, 2, 3]);
 }
 
-#[test]
-fn test_merge_by() {
+#[tokio::test]
+async fn test_merge_by() {
     let stream1 = TestStream::new(vec![1, 3, 5]);
     let stream2 = TestStream::new(vec![2, 4, 6]);
-    let merged: Vec<i32> = stream1.merge_by(stream2, |a, b| a < b).collect();
+    let merged: Vec<i32> = stream1.merge_by(stream2, |a, b| a < b).collect().await;
     assert_eq!(merged, vec![1, 2, 3, 4, 5, 6]);
 }
 
-#[test]
-fn test_merge_by_reverse() {
+#[tokio::test]
+async fn test_merge_by_reverse() {
     let stream1 = TestStream::new(vec![5, 3, 1]);
     let stream2 = TestStream::new(vec![6, 4, 2]);
-    let merged: Vec<i32> = stream1.merge_by(stream2, |a, b| a > b).collect();
+    let merged: Vec<i32> = stream1.merge_by(stream2, |a, b| a > b).collect().await;
     assert_eq!(merged, vec![6, 5, 4, 3, 2, 1]);
 }
 
-#[test]
-fn test_merge_by_empty() {
+#[tokio::test]
+async fn test_merge_by_empty() {
     let stream1 = TestStream::new(vec![1, 2, 3]);
     let stream2 = TestStream::new(vec![]);
-    let merged: Vec<i32> = stream1.merge_by(stream2, |a, b| a < b).collect();
+    let merged: Vec<i32> = stream1.merge_by(stream2, |a, b| a < b).collect().await;
     assert_eq!(merged, vec![1, 2, 3]);
 }
 
-#[test]
-fn test_merge_by_key() {
+#[tokio::test]
+async fn test_merge_by_key() {
     let stream1 = TestStream::new(vec![1, 3, 5]);
     let stream2 = TestStream::new(vec![2, 4, 6]);
-    let merged: Vec<i32> = stream1.merge_by_key(stream2, |x| *x).collect();
+    let merged: Vec<i32> = stream1.merge_by_key(stream2, |x| *x).collect().await;
     assert_eq!(merged, vec![1, 2, 3, 4, 5, 6]);
 }
 
-#[test]
-fn test_merge_by_key_reverse() {
+#[tokio::test]
+async fn test_merge_by_key_reverse() {
     let stream1 = TestStream::new(vec![5, 3, 1]);
     let stream2 = TestStream::new(vec![6, 4, 2]);
-    let merged: Vec<i32> = stream1.merge_by_key(stream2, |x| -*x).collect();
+    let merged: Vec<i32> = stream1.merge_by_key(stream2, |x| -*x).collect().await;
     assert_eq!(merged, vec![6, 5, 4, 3, 2, 1]);
 }
 
-#[test]
-fn test_merge_by_key_empty() {
+#[tokio::test]
+async fn test_merge_by_key_empty() {
     let stream1 = TestStream::new(vec![1, 2, 3]);
     let stream2 = TestStream::new(vec![]);
-    let merged: Vec<i32> = stream1.merge_by_key(stream2, |x| *x).collect();
+    let merged: Vec<i32> = stream1.merge_by_key(stream2, |x| *x).collect().await;
     assert_eq!(merged, vec![1, 2, 3]);
 }
 
-#[test]
-fn test_group_by() {
+#[tokio::test]
+async fn test_group_by() {
     let stream = TestStream::new(vec![1, 1, 2, 2, 2, 3, 3]);
-    let grouped: Vec<Vec<i32>> = stream.group_by(|a, b| a == b).collect();
+    let grouped: Vec<Vec<i32>> = stream.group_by(|a, b| a == b).collect().await;
     assert_eq!(grouped, vec![
         vec![1, 1],
         vec![2, 2, 2],
@@ -274,24 +274,24 @@ fn test_group_by() {
     ]);
 }
 
-#[test]
-fn test_group_by_empty() {
+#[tokio::test]
+async fn test_group_by_empty() {
     let stream = TestStream::new(vec![]);
-    let grouped: Vec<Vec<i32>> = stream.group_by(|a, b| a == b).collect();
+    let grouped: Vec<Vec<i32>> = stream.group_by(|a, b| a == b).collect().await;
     assert_eq!(grouped, vec![]);
 }
 
-#[test]
-fn test_group_by_single() {
+#[tokio::test]
+async fn test_group_by_single() {
     let stream = TestStream::new(vec![42]);
-    let grouped: Vec<Vec<i32>> = stream.group_by(|a, b| a == b).collect();
+    let grouped: Vec<Vec<i32>> = stream.group_by(|a, b| a == b).collect().await;
     assert_eq!(grouped, vec![vec![42]]);
 }
 
-#[test]
-fn test_group_by_key() {
+#[tokio::test]
+async fn test_group_by_key() {
     let stream = TestStream::new(vec![1, 1, 2, 2, 2, 3, 3]);
-    let grouped: Vec<Vec<i32>> = stream.group_by_key(|x| x % 2).collect();
+    let grouped: Vec<Vec<i32>> = stream.group_by_key(|x| x % 2).collect().await;
     assert_eq!(grouped, vec![
         vec![1, 1],
         vec![2, 2, 2],
@@ -299,17 +299,17 @@ fn test_group_by_key() {
     ]);
 }
 
-#[test]
-fn test_group_by_key_empty() {
+#[tokio::test]
+async fn test_group_by_key_empty() {
     let stream = TestStream::new(vec![]);
-    let grouped: Vec<Vec<i32>> = stream.group_by_key(|x| x % 2).collect();
+    let grouped: Vec<Vec<i32>> = stream.group_by_key(|x| x % 2).collect().await;
     assert_eq!(grouped, vec![]);
 }
 
-#[test]
-fn test_chunks() {
+#[tokio::test]
+async fn test_chunks() {
     let stream = TestStream::new(vec![1, 2, 3, 4, 5, 6]);
-    let chunks: Vec<Vec<i32>> = stream.chunks(2).collect();
+    let chunks: Vec<Vec<i32>> = stream.chunks(2).collect().await;
     assert_eq!(chunks, vec![
         vec![1, 2],
         vec![3, 4],
@@ -317,10 +317,10 @@ fn test_chunks() {
     ]);
 }
 
-#[test]
-fn test_chunks_remainder() {
+#[tokio::test]
+async fn test_chunks_remainder() {
     let stream = TestStream::new(vec![1, 2, 3, 4, 5]);
-    let chunks: Vec<Vec<i32>> = stream.chunks(2).collect();
+    let chunks: Vec<Vec<i32>> = stream.chunks(2).collect().await;
     assert_eq!(chunks, vec![
         vec![1, 2],
         vec![3, 4],
@@ -328,17 +328,17 @@ fn test_chunks_remainder() {
     ]);
 }
 
-#[test]
-fn test_chunks_empty() {
+#[tokio::test]
+async fn test_chunks_empty() {
     let stream = TestStream::new(vec![]);
-    let chunks: Vec<Vec<i32>> = stream.chunks(2).collect();
+    let chunks: Vec<Vec<i32>> = stream.chunks(2).collect().await;
     assert_eq!(chunks, vec![]);
 }
 
-#[test]
-fn test_chunks_size_one() {
+#[tokio::test]
+async fn test_chunks_size_one() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let chunks: Vec<Vec<i32>> = stream.chunks(1).collect();
+    let chunks: Vec<Vec<i32>> = stream.chunks(1).collect().await;
     assert_eq!(chunks, vec![
         vec![1],
         vec![2],
@@ -346,10 +346,10 @@ fn test_chunks_size_one() {
     ]);
 }
 
-#[test]
-fn test_windows() {
+#[tokio::test]
+async fn test_windows() {
     let stream = TestStream::new(vec![1, 2, 3, 4, 5]);
-    let windows: Vec<Vec<i32>> = stream.windows(3).collect();
+    let windows: Vec<Vec<i32>> = stream.windows(3).collect().await;
     assert_eq!(windows, vec![
         vec![1, 2, 3],
         vec![2, 3, 4],
@@ -357,24 +357,24 @@ fn test_windows() {
     ]);
 }
 
-#[test]
-fn test_windows_small() {
+#[tokio::test]
+async fn test_windows_small() {
     let stream = TestStream::new(vec![1, 2]);
-    let windows: Vec<Vec<i32>> = stream.windows(3).collect();
+    let windows: Vec<Vec<i32>> = stream.windows(3).collect().await;
     assert_eq!(windows, vec![]);
 }
 
-#[test]
-fn test_windows_empty() {
+#[tokio::test]
+async fn test_windows_empty() {
     let stream = TestStream::new(vec![]);
-    let windows: Vec<Vec<i32>> = stream.windows(2).collect();
+    let windows: Vec<Vec<i32>> = stream.windows(2).collect().await;
     assert_eq!(windows, vec![]);
 }
 
-#[test]
-fn test_windows_size_one() {
+#[tokio::test]
+async fn test_windows_size_one() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let windows: Vec<Vec<i32>> = stream.windows(1).collect();
+    let windows: Vec<Vec<i32>> = stream.windows(1).collect().await;
     assert_eq!(windows, vec![
         vec![1],
         vec![2],
@@ -382,40 +382,40 @@ fn test_windows_size_one() {
     ]);
 }
 
-#[test]
-fn test_tee() {
+#[tokio::test]
+async fn test_tee() {
     let stream = TestStream::new(vec![1, 2, 3]);
     let (mut stream1, stream2) = stream.tee();
-    let result1: Vec<i32> = stream1.collect();
-    let result2: Vec<i32> = stream2.collect();
+    let result1: Vec<i32> = stream1.collect().await;
+    let result2: Vec<i32> = stream2.collect().await;
     assert_eq!(result1, vec![1, 2, 3]);
     assert_eq!(result2, vec![1, 2, 3]);
 }
 
-#[test]
-fn test_tee_empty() {
+#[tokio::test]
+async fn test_tee_empty() {
     let stream = TestStream::new(vec![]);
     let (stream1, stream2) = stream.tee();
-    let result1: Vec<i32> = stream1.collect();
-    let result2: Vec<i32> = stream2.collect();
+    let result1: Vec<i32> = stream1.collect().await;
+    let result2: Vec<i32> = stream2.collect().await;
     assert_eq!(result1, vec![]);
     assert_eq!(result2, vec![]);
 }
 
-#[test]
-fn test_tee_single() {
+#[tokio::test]
+async fn test_tee_single() {
     let stream = TestStream::new(vec![42]);
     let (stream1, stream2) = stream.tee();
-    let result1: Vec<i32> = stream1.collect();
-    let result2: Vec<i32> = stream2.collect();
+    let result1: Vec<i32> = stream1.collect().await;
+    let result2: Vec<i32> = stream2.collect().await;
     assert_eq!(result1, vec![42]);
     assert_eq!(result2, vec![42]);
 }
 
-#[test]
-fn test_combinations() {
+#[tokio::test]
+async fn test_combinations() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let combinations: Vec<Vec<i32>> = stream.combinations(2).collect();
+    let combinations: Vec<Vec<i32>> = stream.combinations(2).collect().await;
     assert_eq!(combinations, vec![
         vec![1, 2],
         vec![1, 3],
@@ -423,17 +423,17 @@ fn test_combinations() {
     ]);
 }
 
-#[test]
-fn test_combinations_empty() {
+#[tokio::test]
+async fn test_combinations_empty() {
     let stream = TestStream::new(vec![]);
-    let combinations: Vec<Vec<i32>> = stream.combinations(2).collect();
+    let combinations: Vec<Vec<i32>> = stream.combinations(2).collect().await;
     assert_eq!(combinations, vec![]);
 }
 
-#[test]
-fn test_combinations_size_one() {
+#[tokio::test]
+async fn test_combinations_size_one() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let combinations: Vec<Vec<i32>> = stream.combinations(1).collect();
+    let combinations: Vec<Vec<i32>> = stream.combinations(1).collect().await;
     assert_eq!(combinations, vec![
         vec![1],
         vec![2],
@@ -441,17 +441,17 @@ fn test_combinations_size_one() {
     ]);
 }
 
-#[test]
-fn test_combinations_large_size() {
+#[tokio::test]
+async fn test_combinations_large_size() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let combinations: Vec<Vec<i32>> = stream.combinations(4).collect();
+    let combinations: Vec<Vec<i32>> = stream.combinations(4).collect().await;
     assert_eq!(combinations, vec![]);
 }
 
-#[test]
-fn test_permutations() {
+#[tokio::test]
+async fn test_permutations() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let permutations: Vec<Vec<i32>> = stream.permutations(2).collect();
+    let permutations: Vec<Vec<i32>> = stream.permutations(2).collect().await;
     assert_eq!(permutations, vec![
         vec![1, 2],
         vec![1, 3],
@@ -462,17 +462,17 @@ fn test_permutations() {
     ]);
 }
 
-#[test]
-fn test_permutations_empty() {
+#[tokio::test]
+async fn test_permutations_empty() {
     let stream = TestStream::new(vec![]);
-    let permutations: Vec<Vec<i32>> = stream.permutations(2).collect();
+    let permutations: Vec<Vec<i32>> = stream.permutations(2).collect().await;
     assert_eq!(permutations, vec![]);
 }
 
-#[test]
-fn test_permutations_size_one() {
+#[tokio::test]
+async fn test_permutations_size_one() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let permutations: Vec<Vec<i32>> = stream.permutations(1).collect();
+    let permutations: Vec<Vec<i32>> = stream.permutations(1).collect().await;
     assert_eq!(permutations, vec![
         vec![1],
         vec![2],
@@ -480,18 +480,18 @@ fn test_permutations_size_one() {
     ]);
 }
 
-#[test]
-fn test_permutations_large_size() {
+#[tokio::test]
+async fn test_permutations_large_size() {
     let stream = TestStream::new(vec![1, 2, 3]);
-    let permutations: Vec<Vec<i32>> = stream.permutations(4).collect();
+    let permutations: Vec<Vec<i32>> = stream.permutations(4).collect().await;
     assert_eq!(permutations, vec![]);
 }
 
-#[test]
-fn test_cartesian_product() {
+#[tokio::test]
+async fn test_cartesian_product() {
     let stream1 = TestStream::new(vec![1, 2]);
     let stream2 = TestStream::new(vec![3, 4]);
-    let product: Vec<(i32, i32)> = stream1.cartesian_product(stream2).collect();
+    let product: Vec<(i32, i32)> = stream1.cartesian_product(stream2).collect().await;
     assert_eq!(product, vec![
         (1, 3),
         (1, 4),
@@ -500,26 +500,26 @@ fn test_cartesian_product() {
     ]);
 }
 
-#[test]
-fn test_cartesian_product_empty() {
+#[tokio::test]
+async fn test_cartesian_product_empty() {
     let stream1 = TestStream::new(vec![1, 2]);
     let stream2 = TestStream::new(vec![]);
-    let product: Vec<(i32, i32)> = stream1.cartesian_product(stream2).collect();
+    let product: Vec<(i32, i32)> = stream1.cartesian_product(stream2).collect().await;
     assert_eq!(product, vec![]);
 }
 
-#[test]
-fn test_cartesian_product_both_empty() {
+#[tokio::test]
+async fn test_cartesian_product_both_empty() {
     let stream1 = TestStream::new(vec![]);
     let stream2 = TestStream::new(vec![]);
-    let product: Vec<(i32, i32)> = stream1.cartesian_product(stream2).collect();
+    let product: Vec<(i32, i32)> = stream1.cartesian_product(stream2).collect().await;
     assert_eq!(product, vec![]);
 }
 
-#[test]
-fn test_cartesian_product_single() {
+#[tokio::test]
+async fn test_cartesian_product_single() {
     let stream1 = TestStream::new(vec![1]);
     let stream2 = TestStream::new(vec![2]);
-    let product: Vec<(i32, i32)> = stream1.cartesian_product(stream2).collect();
+    let product: Vec<(i32, i32)> = stream1.cartesian_product(stream2).collect().await;
     assert_eq!(product, vec![(1, 2)]);
 } 

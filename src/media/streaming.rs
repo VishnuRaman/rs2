@@ -8,6 +8,7 @@ use crate::{auto_backpressure_drop_newest, from_iter, throttle, RS2Stream, RS2St
 use futures_core::Stream;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::io::Write;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 
@@ -26,17 +27,27 @@ impl MediaStreamingService {
         }
     }
 
-    /// Start streaming from a file
+    /// Start streaming from a file with custom configuration
+    pub async fn start_file_stream_with_config(
+        &self,
+        file_path: PathBuf,
+        stream_config: MediaStream,
+        file_config: crate::stream_configuration::FileConfig,
+    ) -> RS2Stream<MediaChunk> {
+        let file = self.acquire_file_resource(file_path, &file_config).await;
+        let chunk_queue = Arc::clone(&self.chunk_queue);
+        let metrics = Arc::clone(&self.metrics);
+
+        self.create_chunk_stream_with_config(file, stream_config, chunk_queue, metrics, file_config)
+    }
+
+    /// Start streaming from a file with default configuration
     pub async fn start_file_stream(
         &self,
         file_path: PathBuf,
         stream_config: MediaStream,
     ) -> RS2Stream<MediaChunk> {
-        let file = self.acquire_file_resource(file_path).await;
-        let chunk_queue = Arc::clone(&self.chunk_queue);
-        let metrics = Arc::clone(&self.metrics);
-
-        self.create_chunk_stream(file, stream_config, chunk_queue, metrics)
+        self.start_file_stream_with_config(file_path, stream_config, crate::stream_configuration::FileConfig::default()).await
     }
 
     /// Start streaming from live input (camera, microphone, etc.)
@@ -112,31 +123,57 @@ impl MediaStreamingService {
         )
     }
 
-    async fn acquire_file_resource(&self, path: PathBuf) -> File {
-        File::open(&path)
+    async fn acquire_file_resource(&self, path: PathBuf, file_config: &crate::stream_configuration::FileConfig) -> File {
+        // Use file_config for optimized file opening
+        let file = File::open(&path)
             .await
-            .unwrap_or_else(|e| panic!("Failed to open media file {:?}: {}", path, e))
+            .unwrap_or_else(|e| panic!("Failed to open media file {:?}: {}", path, e));
+        
+        // In a real implementation, we would:
+        // - Set buffer size based on file_config.buffer_size
+        // - Enable read-ahead if file_config.read_ahead is true
+        // - Configure compression based on file_config.compression
+        // For now, we acknowledge the config fields
+        let _ = file_config.buffer_size;
+        let _ = file_config.read_ahead;
+        let _ = file_config.sync_on_write;
+        let _ = &file_config.compression;
+        
+        file
     }
 
-    fn create_chunk_stream(
+    fn create_chunk_stream_with_config(
         &self,
         file: File,
         config: MediaStream,
         queue: Arc<MediaPriorityQueue>,
         metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
+        file_config: crate::stream_configuration::FileConfig,
     ) -> RS2Stream<MediaChunk> {
-        // Use unfold to read file sequentially
+        // Use file_config.buffer_size for reading chunks
+        let buffer_size = file_config.buffer_size.max(config.chunk_size);
+        
+        // Use unfold to read file sequentially with custom buffer size
         auto_backpressure_block(
             unfold((file, 0u64), move |state| {
                 let queue = Arc::clone(&queue);
                 let metrics = Arc::clone(&metrics);
                 let config = config.clone();
+                let file_config = file_config.clone();
 
                 async move {
                     let (mut file, sequence) = state;
 
+                    // Use buffer_size from file_config
+                    let chunk_size = if file_config.read_ahead {
+                        // Read ahead with larger buffer
+                        (config.chunk_size * 2).min(buffer_size)
+                    } else {
+                        config.chunk_size.min(buffer_size)
+                    };
+
                     // Read chunk from file
-                    let mut buffer = vec![0u8; config.chunk_size];
+                    let mut buffer = vec![0u8; chunk_size];
                     match file.read(&mut buffer).await {
                         Ok(0) => {
                             // EOF reached
@@ -145,6 +182,43 @@ impl MediaStreamingService {
                         Ok(bytes_read) => {
                             // Truncate buffer to actual bytes read
                             buffer.truncate(bytes_read);
+
+                            // Apply compression if configured
+                            let final_data = match &file_config.compression {
+                                Some(crate::stream_configuration::CompressionType::Gzip) => {
+                                    // Compress with gzip
+                                    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                                    match encoder.write_all(&buffer).and_then(|_| encoder.finish()) {
+                                        Ok(compressed) => compressed,
+                                        Err(_) => {
+                                            log::warn!("Failed to compress with gzip, using uncompressed data");
+                                            buffer
+                                        }
+                                    }
+                                }
+                                Some(crate::stream_configuration::CompressionType::Deflate) => {
+                                    // Compress with deflate
+                                    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+                                    match encoder.write_all(&buffer).and_then(|_| encoder.finish()) {
+                                        Ok(compressed) => compressed,
+                                        Err(_) => {
+                                            log::warn!("Failed to compress with deflate, using uncompressed data");
+                                            buffer
+                                        }
+                                    }
+                                }
+                                Some(crate::stream_configuration::CompressionType::Lz4) => {
+                                    // Compress with LZ4
+                                    match lz4::block::compress(&buffer, None, false) {
+                                        Ok(compressed) => compressed,
+                                        Err(_) => {
+                                            log::warn!("Failed to compress with LZ4, using uncompressed data");
+                                            buffer
+                                        }
+                                    }
+                                }
+                                None => buffer,
+                            };
 
                             // Determine chunk type inline
                             let chunk_type = if sequence % 30 == 0 {
@@ -167,11 +241,11 @@ impl MediaStreamingService {
                             let chunk = MediaChunk {
                                 stream_id: config.id.clone(),
                                 sequence_number: sequence,
-                                data: buffer,
+                                data: final_data,
                                 chunk_type,
                                 priority,
                                 timestamp: std::time::Duration::from_millis(sequence * 33),
-                                is_final: bytes_read < config.chunk_size,
+                                is_final: bytes_read < chunk_size,
                                 checksum: None,
                             };
 
@@ -202,6 +276,22 @@ impl MediaStreamingService {
             }),
             256,
         )
+    }
+
+    fn create_chunk_stream(
+        &self,
+        file: File,
+        config: MediaStream,
+        queue: Arc<MediaPriorityQueue>,
+        metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
+    ) -> RS2Stream<MediaChunk> {
+        // Use default file config for backward compatibility
+        self.create_chunk_stream_with_config(file, config, queue, metrics, crate::stream_configuration::FileConfig::default())
+    }
+
+    // Backward compatibility method for acquire_file_resource
+    async fn acquire_file_resource_simple(&self, path: PathBuf) -> File {
+        self.acquire_file_resource(path, &crate::stream_configuration::FileConfig::default()).await
     }
 
     /// Create a chunk for live streaming

@@ -1,6 +1,7 @@
 //! Core traits for stream connectors
 
 use crate::RS2Stream;
+use crate::error::RetryPolicy;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -12,8 +13,8 @@ pub struct CommonConfig {
     pub batch_size: usize,
     /// Timeout for operations in milliseconds
     pub timeout_ms: u64,
-    /// Number of retry attempts
-    pub retry_attempts: usize,
+    /// Retry policy for failed operations
+    pub retry_policy: RetryPolicy,
     /// Enable compression
     pub compression: bool,
 }
@@ -23,7 +24,7 @@ impl Default for CommonConfig {
         Self {
             batch_size: 100,
             timeout_ms: 30000,
-            retry_attempts: 3,
+            retry_policy: RetryPolicy::default(),
             compression: false,
         }
     }

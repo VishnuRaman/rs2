@@ -1,14 +1,18 @@
 //! Utility stream combinators: nth, last, all, any, find, position, count, step_by, inspect, enumerate
+use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use super::core::Stream;
 
 // Nth
-pub struct Nth<S> {
-    pub(crate) stream: S,
-    pub(crate) n: usize,
-    pub(crate) current: usize,
+pin_project! {
+    pub struct Nth<S> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) n: usize,
+        pub(crate) current: usize,
+    }
 }
 
 impl<S> Future for Nth<S>
@@ -17,19 +21,16 @@ where
 {
     type Output = Option<S::Item>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (mut stream, n, current) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &this.n, &mut this.current)
-        };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
 
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    if *current == *n {
+                    if *this.current == *this.n {
                         return Poll::Ready(Some(item));
                     } else {
-                        *current = current.saturating_add(1);
+                        *this.current = this.current.saturating_add(1);
                     }
                 }
                 Poll::Ready(None) => return Poll::Ready(None),
@@ -40,12 +41,15 @@ where
 }
 
 // Last
-pub struct Last<S>
-where
-    S: Stream
-{
-    pub(crate) stream: S,
-    pub(crate) last: Option<S::Item>
+pin_project! {
+    pub struct Last<S>
+    where
+        S: Stream
+    {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) last: Option<S::Item>
+    }
 }
 
 impl<S> Future for Last<S>
@@ -54,18 +58,15 @@ where
 {
     type Output = Option<S::Item>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (mut stream, last) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.last)
-        };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
 
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    *last = Some(item);
+                    *this.last = Some(item);
                 }
-                Poll::Ready(None) => return Poll::Ready(last.take()),
+                Poll::Ready(None) => return Poll::Ready(this.last.take()),
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -73,9 +74,12 @@ where
 }
 
 // All
-pub struct All<S, F> {
-    pub(crate) stream: S,
-    pub(crate) f: F
+pin_project! {
+    pub struct All<S, F> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F
+    }
 }
 
 impl<S, F> Future for All<S, F>
@@ -85,16 +89,13 @@ where
 {
     type Output = bool;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (mut stream, f) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.f)
-        };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
 
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    if !f(&item) {
+                    if !(this.f)(&item) {
                         return Poll::Ready(false);
                     }
                 }
@@ -106,9 +107,12 @@ where
 }
 
 // Any
-pub struct Any<S, F> {
-    pub(crate) stream: S,
-    pub(crate) f: F
+pin_project! {
+    pub struct Any<S, F> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F
+    }
 }
 
 impl<S, F> Future for Any<S, F>
@@ -118,16 +122,13 @@ where
 {
     type Output = bool;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (mut stream, f) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.f)
-        };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
 
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    if f(&item) {
+                    if (this.f)(&item) {
                         return Poll::Ready(true);
                     }
                 }
@@ -139,9 +140,12 @@ where
 }
 
 // Find
-pub struct Find<S, F> {
-    pub(crate) stream: S,
-    pub(crate) f: F
+pin_project! {
+    pub struct Find<S, F> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F
+    }
 }
 
 impl<S, F> Future for Find<S, F>
@@ -151,16 +155,13 @@ where
 {
     type Output = Option<S::Item>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (mut stream, f) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.f)
-        };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
 
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    if f(&item) {
+                    if (this.f)(&item) {
                         return Poll::Ready(Some(item));
                     }
                 }
@@ -172,10 +173,13 @@ where
 }
 
 // Position
-pub struct Position<S, F> {
-    pub(crate) stream: S,
-    pub(crate) f: F,
-    pub(crate) pos: usize
+pin_project! {
+    pub struct Position<S, F> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F,
+        pub(crate) pos: usize
+    }
 }
 
 impl<S, F> Future for Position<S, F>
@@ -185,19 +189,16 @@ where
 {
     type Output = Option<usize>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (mut stream, f, pos) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.f, &mut this.pos)
-        };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
 
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    if f(&item) {
-                        return Poll::Ready(Some(*pos));
+                    if (this.f)(&item) {
+                        return Poll::Ready(Some(*this.pos));
                     }
-                    *pos = pos.saturating_add(1);
+                    *this.pos = this.pos.saturating_add(1);
                 }
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
@@ -207,9 +208,12 @@ where
 }
 
 // Count
-pub struct Count<S> {
-    pub(crate) stream: S,
-    pub(crate) count: usize
+pin_project! {
+    pub struct Count<S> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) count: usize
+    }
 }
 
 impl<S> Future for Count<S>
@@ -218,18 +222,15 @@ where
 {
     type Output = usize;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let (mut stream, count) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.count)
-        };
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
 
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(_)) => {
-                    *count = count.saturating_add(1);
+                    *this.count = this.count.saturating_add(1);
                 }
-                Poll::Ready(None) => return Poll::Ready(*count),
+                Poll::Ready(None) => return Poll::Ready(*this.count),
                 Poll::Pending => return Poll::Pending,
             }
         }
@@ -237,10 +238,13 @@ where
 }
 
 // StepBy
-pub struct StepBy<S> {
-    pub(crate) stream: S,
-    pub(crate) step: usize,
-    pub(crate) current: usize,
+pin_project! {
+    pub struct StepBy<S> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) step: usize,
+        pub(crate) current: usize,
+    }
 }
 
 impl<S> StepBy<S> {
@@ -256,20 +260,17 @@ where
 {
     type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, step, current) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &this.step, &mut this.current)
-        };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
         loop {
-            match stream.as_mut().poll_next(cx) {
+            match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    if *current % *step == 0 {
-                        *current = current.saturating_add(1);
+                    if *this.current % *this.step == 0 {
+                        *this.current = this.current.saturating_add(1);
                         return Poll::Ready(Some(item));
                     } else {
-                        *current = current.saturating_add(1);
+                        *this.current = this.current.saturating_add(1);
                     }
                 }
                 Poll::Ready(None) => return Poll::Ready(None),
@@ -280,9 +281,12 @@ where
 }
 
 // Inspect
-pub struct Inspect<S, F> {
-    pub(crate) stream: S,
-    pub(crate) f: F,
+pin_project! {
+    pub struct Inspect<S, F> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F,
+    }
 }
 
 impl<S, F> Stream for Inspect<S, F>
@@ -292,15 +296,12 @@ where
 {
     type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, f) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.f)
-        };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-        match stream.as_mut().poll_next(cx) {
+        match this.stream.as_mut().poll_next(cx) {
             Poll::Ready(Some(item)) => {
-                f(&item);
+                (this.f)(&item);
                 Poll::Ready(Some(item))
             }
             Poll::Ready(None) => Poll::Ready(None),
@@ -309,10 +310,51 @@ where
     }
 }
 
+// Chain
+pin_project! {
+    pub struct Chain<S1, S2> {
+        #[pin]
+        pub(crate) first: S1,
+        #[pin]
+        pub(crate) second: S2,
+        pub(crate) first_done: bool,
+    }
+}
+
+impl<S1, S2> Stream for Chain<S1, S2>
+where
+    S1: Stream,
+    S2: Stream<Item = S1::Item>,
+{
+    type Item = S1::Item;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        // Try to get items from the first stream
+        if !*this.first_done {
+            match this.first.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => return Poll::Ready(Some(item)),
+                Poll::Ready(None) => {
+                    *this.first_done = true;
+                    // Fall through to try second stream
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        // First stream is done, try second stream
+        this.second.as_mut().poll_next(cx)
+    }
+}
+
 // Enumerate
-pub struct Enumerate<S> {
-    pub(crate) stream: S,
-    pub(crate) index: usize,
+pin_project! {
+    pub struct Enumerate<S> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) index: usize,
+    }
 }
 
 impl<S> Stream for Enumerate<S>
@@ -321,16 +363,13 @@ where
 {
     type Item = (usize, S::Item);
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let (mut stream, index) = unsafe {
-            let this = self.as_mut().get_unchecked_mut();
-            (Pin::new_unchecked(&mut this.stream), &mut this.index)
-        };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-        match stream.as_mut().poll_next(cx) {
+        match this.stream.as_mut().poll_next(cx) {
             Poll::Ready(Some(item)) => {
-                let idx = *index;
-                *index = index.saturating_add(1);
+                let idx = *this.index;
+                *this.index = this.index.saturating_add(1);
                 Poll::Ready(Some((idx, item)))
             }
             Poll::Ready(None) => Poll::Ready(None),
@@ -398,6 +437,13 @@ pub trait UtilityStreamExt: Stream + Sized {
 
     fn enumerate_from(self, start: usize) -> Enumerate<Self> {
         Enumerate { stream: self, index: start }
+    }
+
+    fn chain<S2>(self, other: S2) -> Chain<Self, S2>
+    where
+        S2: Stream<Item = Self::Item>,
+    {
+        Chain { first: self, second: other, first_done: false }
     }
 }
 

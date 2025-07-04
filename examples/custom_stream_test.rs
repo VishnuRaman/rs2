@@ -4,7 +4,6 @@
 //! without the overhead of `.boxed()` calls or external dependencies.
 
 use rs2_stream::stream::*;
-use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -84,7 +83,7 @@ async fn main() {
     println!("Any greater than 3: {}", any_greater_than_3);
     
     // Test constructors
-    let empty_stream: Vec<u32> = empty().collect().await;
+    let empty_stream: Vec<u32> = empty::<u32>().collect().await;
     println!("Empty: {:?}", empty_stream);
     
     let once_stream: Vec<u32> = once(42).collect().await;

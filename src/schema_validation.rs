@@ -5,6 +5,8 @@ use jsonschema::{validator_for, Validator};
 use serde_json::Value;
 use std::sync::Arc;
 
+pub type ValidationResult = Result<(), SchemaError>;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SchemaError {
     #[error("Validation failed: {0}")]
@@ -16,7 +18,7 @@ pub enum SchemaError {
 }
 
 #[async_trait]
-pub trait SchemaValidator: Send + Sync {
+pub trait SchemaValidator: Send + Sync + Clone {
     async fn validate(&self, data: &[u8]) -> Result<(), SchemaError>;
     fn get_schema_id(&self) -> String;
 }

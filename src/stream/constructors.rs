@@ -1,4 +1,5 @@
 //! Stream constructors: empty, once, repeat, iter, unfold, pending
+use pin_project_lite::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -20,40 +21,49 @@ impl<T> Stream for Empty<T> {
     }
 }
 
-pub struct Once<T> {
-    pub(crate) value: Option<T>
+pin_project! {
+    pub struct Once<T> {
+        pub(crate) value: Option<T>
+    }
 }
 
 impl<T> Stream for Once<T> {
     type Item = T;
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
         Poll::Ready(this.value.take())
     }
 }
 
-pub struct Repeat<T> {
-    pub(crate) value: T
+pin_project! {
+    pub struct Repeat<T> {
+        pub(crate) value: T
+    }
 }
 
 impl<T: Clone> Stream for Repeat<T> {
     type Item = T;
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
         Poll::Ready(Some(this.value.clone()))
     }
 }
 
-pub struct Iter<I> {
-    pub(crate) iter: I
+pin_project! {
+    pub struct Iter<I> {
+        pub(crate) iter: I
+    }
 }
 
 impl<I> Stream for Iter<I>
 where I: Iterator {
     type Item = I::Item;
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
-        Poll::Ready(this.iter.next())
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Direct access without pin_project overhead for better performance
+        unsafe {
+            let this = self.get_unchecked_mut();
+            Poll::Ready(this.iter.next())
+        }
     }
 }
 
@@ -72,28 +82,32 @@ impl<T> Stream for Pending<T> {
 // Function-based Constructors
 // ================================
 
-pub struct RepeatWith<F> {
-    pub(crate) f: F
+pin_project! {
+    pub struct RepeatWith<F> {
+        pub(crate) f: F
+    }
 }
 
 impl<T, F> Stream for RepeatWith<F>
 where F: FnMut() -> T {
     type Item = T;
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
         Poll::Ready(Some((this.f)()))
     }
 }
 
-pub struct OnceWith<F> {
-    pub(crate) f: Option<F>
+pin_project! {
+    pub struct OnceWith<F> {
+        pub(crate) f: Option<F>
+    }
 }
 
 impl<T, F> Stream for OnceWith<F>
 where F: FnOnce() -> T {
     type Item = T;
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
         Poll::Ready(this.f.take().map(|f| f()))
     }
 }
@@ -102,26 +116,28 @@ where F: FnOnce() -> T {
 // Conditional Stream Adapters
 // ================================
 
-pub struct SkipWhile<S, F> {
-    pub(crate) stream: S,
-    pub(crate) f: F,
-    pub(crate) skipping: bool
+pin_project! {
+    pub struct SkipWhile<S, F> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F,
+        pub(crate) skipping: bool
+    }
 }
 
 impl<S, F> Stream for SkipWhile<S, F>
 where S: Stream, F: FnMut(&S::Item) -> bool {
     type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
-        let mut stream = unsafe { Pin::new_unchecked(&mut this.stream) };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-        if this.skipping {
+        if *this.skipping {
             loop {
-                match stream.as_mut().poll_next(cx) {
+                match this.stream.as_mut().poll_next(cx) {
                     Poll::Ready(Some(item)) => {
                         if !(this.f)(&item) {
-                            this.skipping = false;
+                            *this.skipping = false;
                             return Poll::Ready(Some(item));
                         }
                         // Continue skipping
@@ -131,36 +147,37 @@ where S: Stream, F: FnMut(&S::Item) -> bool {
                 }
             }
         } else {
-            stream.poll_next(cx)
+            this.stream.poll_next(cx)
         }
     }
 }
 
-pub struct TakeWhile<S, F> {
-    pub(crate) stream: S,
-    pub(crate) f: F,
-    pub(crate) done: bool
+pin_project! {
+    pub struct TakeWhile<S, F> {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) f: F,
+        pub(crate) done: bool
+    }
 }
 
 impl<S, F> Stream for TakeWhile<S, F>
 where S: Stream, F: FnMut(&S::Item) -> bool {
     type Item = S::Item;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
-        if this.done {
+        if *this.done {
             return Poll::Ready(None);
         }
 
-        let stream = unsafe { Pin::new_unchecked(&mut this.stream) };
-
-        match stream.poll_next(cx) {
+        match this.stream.as_mut().poll_next(cx) {
             Poll::Ready(Some(item)) => {
                 if (this.f)(&item) {
                     Poll::Ready(Some(item))
                 } else {
-                    this.done = true;
+                    *this.done = true;
                     Poll::Ready(None)
                 }
             }
@@ -174,10 +191,13 @@ where S: Stream, F: FnMut(&S::Item) -> bool {
 // Unfold - Complex Stateful Stream
 // ================================
 
-pub struct Unfold<S, F, Fut> {
-    pub(crate) state: Option<S>,
-    pub(crate) f: F,
-    pub(crate) future: Option<Pin<Box<Fut>>>,
+pin_project! {
+    pub struct Unfold<S, F, Fut> {
+        pub(crate) state: Option<S>,
+        pub(crate) f: F,
+        #[pin]
+        pub(crate) future: Option<Pin<Box<Fut>>>,
+    }
 }
 
 impl<S, O, F, Fut> Stream for Unfold<S, F, Fut>
@@ -187,21 +207,21 @@ where
 {
     type Item = O;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
 
         loop {
             // If we have a future in progress, poll it
-            if let Some(fut) = &mut this.future {
-                match fut.as_mut().poll(cx) {
+            if let Some(fut) = this.future.as_mut().as_pin_mut() {
+                match fut.poll(cx) {
                     Poll::Ready(Some((item, new_state))) => {
-                        this.future = None;
-                        this.state = Some(new_state);
+                        this.future.set(None);
+                        *this.state = Some(new_state);
                         return Poll::Ready(Some(item));
                     }
                     Poll::Ready(None) => {
-                        this.future = None;
-                        this.state = None;
+                        this.future.set(None);
+                        *this.state = None;
                         return Poll::Ready(None);
                     }
                     Poll::Pending => return Poll::Pending,
@@ -211,7 +231,7 @@ where
             // If we have state but no future, create a new future
             if let Some(state) = this.state.take() {
                 let fut = (this.f)(state);
-                this.future = Some(Box::pin(fut));
+                this.future.set(Some(Box::pin(fut)));
                 // Continue the loop to poll the new future
             } else {
                 // No state and no future, we're done
