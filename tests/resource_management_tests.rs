@@ -2,6 +2,7 @@ use futures_util::stream::StreamExt;
 use rs2_stream::rs2::*;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
+use rs2_stream::stream::from_iter;
 
 #[test]
 fn test_bracket() {

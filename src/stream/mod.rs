@@ -12,6 +12,11 @@ pub mod rate;
 pub mod async_combinators;
 pub mod specialized;
 pub mod parallel;
+pub mod round_robin;
+pub mod metrics;
+pub mod timeout;
+pub mod from_async_fn;
+pub mod either;
 
 // Re-export core types
 pub use core::{Stream, StreamExt};
@@ -61,14 +66,14 @@ pub use parallel::{
     ParEvalMap, ParEvalMapUnordered, ParallelStreamExt
 };
 
-// Implement Stream for Box<dyn Stream> to support trait objects
-impl<T> Stream for Box<dyn Stream<Item = T> + Send + 'static> {
-    type Item = T;
+// Re-export metrics stream
+pub use metrics::WithMetricsStream;
 
-    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
-        use std::pin::Pin;
-        // Safety: We're just delegating to the inner stream's poll_next
-        let inner = unsafe { Pin::new_unchecked(&mut **self) };
-        inner.poll_next(cx)
-    }
-} 
+// Re-export timeout stream
+pub use timeout::TimeoutStream;
+
+// Re-export either enum
+pub use either::Either;
+
+// Remove the Box<dyn Stream> implementation entirely
+// Delete lines 63-74 that implement Stream for Box<dyn Stream<Item = T> + Send + 'static> 

@@ -7,11 +7,17 @@
 //! 4. Implement a simple event handler
 
 use chrono::Utc;
-use futures_util::StreamExt;
-use rs2_stream::media::events::MediaStreamEvent;
+use rs2_stream::stream::{StreamExt, from_iter};
 use rs2_stream::media::types::{QualityLevel, UserActivity};
-use rs2_stream::rs2::*;
-use tokio::time::{sleep, Duration};
+use rs2_stream::media::MediaStreamEvent;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
+use tokio::time::interval;
+use std::pin::Pin;
+use futures::Stream;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Process the events
     println!("Processing events...\n");
 
-    let mut event_stream = std::pin::pin!(event_stream);
+    let mut event_stream: Pin<&mut _> = std::pin::pin!(event_stream);
     while let Some(event) = event_stream.next().await {
         // Handle the event
         event_handler.handle_event(&event).await;
@@ -51,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
 
         // Small delay for readability
-        sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
     // Print summary
@@ -68,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // Create a sample stream of events for demonstration
-fn create_sample_event_stream() -> RS2Stream<MediaStreamEvent> {
+fn create_sample_event_stream() -> impl Stream<Item = MediaStreamEvent> + Send + 'static {
     let stream_id = "example-stream-123".to_string();
     let user_id = 42;
     let now = Utc::now();

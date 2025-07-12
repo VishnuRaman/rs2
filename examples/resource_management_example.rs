@@ -1,9 +1,10 @@
-use rs2_stream::{
-    rs2_stream_ext::*,
-    resource_manager::{get_global_resource_manager},
-    from_iter,
-};
-use tokio_stream::StreamExt;
+use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+use tokio::runtime::Runtime;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

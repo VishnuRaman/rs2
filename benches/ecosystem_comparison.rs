@@ -1,9 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use futures::StreamExt as FuturesStreamExt;
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use tokio_stream::StreamExt as TokioStreamExt;
 
 // === OPTIMIZED TEST DATA AND OPERATIONS ===
 

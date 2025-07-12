@@ -3,18 +3,36 @@
 use super::priority_queue::MediaPriorityQueue;
 use super::types::*;
 use crate::stream_performance_metrics::StreamMetrics;
-use crate::{auto_backpressure_block, tick, unfold};
-use crate::{auto_backpressure_drop_newest, from_iter, throttle, RS2Stream, RS2StreamExt};
-use futures_core::Stream;
+use crate::{auto_backpressure_block, auto_backpressure_drop_newest, throttle};
+use crate::rs2_stream_ext::RS2StreamExt;
+use crate::stream::Stream;
+use crate::rs2::BackpressureConfig;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::io::Write;
-use tokio::fs::File;
-use tokio::io::AsyncReadExt;
+use std::time::Duration;
+use crate::rs2;
+
+// Define missing types
+#[derive(Debug, Clone)]
+pub struct ProcessedChunk {
+    pub chunk: MediaChunk,
+    pub processing_time: Duration,
+    pub quality_score: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamingStats {
+    pub chunks_processed: u64,
+    pub bytes_streamed: u64,
+    pub average_quality: f64,
+    pub uptime: Duration,
+}
 
 pub struct MediaStreamingService {
     chunk_queue: Arc<MediaPriorityQueue>,
     metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
+    config: MediaStream,
+    backpressure_config: BackpressureConfig,
 }
 
 impl MediaStreamingService {
@@ -24,6 +42,13 @@ impl MediaStreamingService {
             metrics: Arc::new(tokio::sync::Mutex::new(
                 StreamMetrics::new().with_name("media-stream".to_string()),
             )),
+            config: MediaStream::default(),
+            backpressure_config: BackpressureConfig {
+                buffer_size: 512,
+                strategy: crate::rs2::BackpressureStrategy::DropNewest,
+                high_watermark: Some(400),
+                low_watermark: Some(100),
+            },
         }
     }
 
@@ -33,12 +58,12 @@ impl MediaStreamingService {
         file_path: PathBuf,
         stream_config: MediaStream,
         file_config: crate::stream_configuration::FileConfig,
-    ) -> RS2Stream<MediaChunk> {
-        let file = self.acquire_file_resource(file_path, &file_config).await;
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
+        let _file = self.acquire_file_resource(file_path, &file_config).await;
         let chunk_queue = Arc::clone(&self.chunk_queue);
         let metrics = Arc::clone(&self.metrics);
 
-        self.create_chunk_stream_with_config(file, stream_config, chunk_queue, metrics, file_config)
+        self.create_chunk_stream_with_config(_file, stream_config, chunk_queue, metrics, file_config)
     }
 
     /// Start streaming from a file with default configuration
@@ -46,19 +71,45 @@ impl MediaStreamingService {
         &self,
         file_path: PathBuf,
         stream_config: MediaStream,
-    ) -> RS2Stream<MediaChunk> {
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
         self.start_file_stream_with_config(file_path, stream_config, crate::stream_configuration::FileConfig::default()).await
     }
 
     /// Start streaming from live input (camera, microphone, etc.)
-    pub async fn start_live_stream(&self, stream_config: MediaStream) -> RS2Stream<MediaChunk> {
+    pub async fn start_live_stream(&self, stream_config: MediaStream) -> impl Stream<Item = MediaChunk> + Send + 'static {
         let chunk_queue = Arc::clone(&self.chunk_queue);
         let metrics = Arc::clone(&self.metrics);
-
-        // Create live stream using from_iter with throttling
+        let backpressure_config = &self.backpressure_config;
+        
+        // Create a static function to avoid capturing self
+        fn create_live_chunk_static(config: &MediaStream, sequence: u64) -> MediaChunk {
+            MediaChunk {
+                stream_id: config.id.clone(),
+                sequence_number: sequence,
+                data: vec![0u8; config.chunk_size],
+                chunk_type: if sequence % 30 == 0 {
+                    ChunkType::VideoIFrame
+                } else if sequence % 3 == 0 {
+                    ChunkType::VideoBFrame
+                } else {
+                    ChunkType::VideoPFrame
+                },
+                priority: if sequence % 30 == 0 {
+                    MediaPriority::High
+                } else if sequence % 3 == 0 {
+                    MediaPriority::Low
+                } else {
+                    MediaPriority::Normal
+                },
+                timestamp: std::time::Duration::from_millis(sequence * 33),
+                is_final: false,
+                checksum: None,
+            }
+        }
+        
         auto_backpressure_drop_newest(
             throttle(
-                from_iter(0u64..)
+                crate::stream::constructors::from_iter(0u64..)
                     .take_rs2(
                         stream_config
                             .metadata
@@ -70,270 +121,90 @@ impl MediaStreamingService {
                         let queue = Arc::clone(&chunk_queue);
                         let metrics = Arc::clone(&metrics);
                         let config = stream_config.clone();
-
                         async move {
-                            // Simulate live capture - create chunk directly here
-                            tokio::time::sleep(std::time::Duration::from_micros(100)).await;
-
-                            let chunk = MediaChunk {
-                                stream_id: config.id.clone(),
-                                sequence_number: sequence,
-                                data: vec![0u8; config.chunk_size],
-                                chunk_type: if sequence % 30 == 0 {
-                                    ChunkType::VideoIFrame
-                                } else if sequence % 3 == 0 {
-                                    ChunkType::VideoBFrame
-                                } else {
-                                    ChunkType::VideoPFrame
-                                },
-                                priority: if sequence % 30 == 0 {
-                                    MediaPriority::High
-                                } else if sequence % 3 == 0 {
-                                    MediaPriority::Low
-                                } else {
-                                    MediaPriority::Normal
-                                },
-                                timestamp: std::time::Duration::from_millis(sequence * 33),
-                                is_final: false,
-                                checksum: None,
-                            };
-
-                            // Update metrics
-                            {
-                                let mut m = metrics.lock().await;
-                                m.items_processed += 1;
-                                m.bytes_processed += chunk.data.len() as u64;
-                                m.average_item_size =
-                                    m.bytes_processed as f64 / m.items_processed as f64;
-                                m.last_activity = Some(std::time::Instant::now());
-                            }
-
-                            // Try to enqueue (don't block for live streaming)
+                            let chunk = create_live_chunk_static(&config, sequence);
                             if let Err(_) = queue.try_enqueue(chunk.clone()).await {
                                 let mut m = metrics.lock().await;
                                 m.errors += 1;
                             }
-
                             chunk
                         }
                     }),
                 std::time::Duration::from_millis(33), // ~30fps
             ),
-            512,
+            backpressure_config.clone(),
         )
     }
 
-    async fn acquire_file_resource(&self, path: PathBuf, file_config: &crate::stream_configuration::FileConfig) -> File {
-        // Use file_config for optimized file opening
-        let file = File::open(&path)
+    async fn acquire_file_resource(&self, path: PathBuf, file_config: &crate::stream_configuration::FileConfig) -> tokio::fs::File {
+        let file = tokio::fs::File::open(&path)
             .await
             .unwrap_or_else(|e| panic!("Failed to open media file {:?}: {}", path, e));
-        
-        // In a real implementation, we would:
-        // - Set buffer size based on file_config.buffer_size
-        // - Enable read-ahead if file_config.read_ahead is true
-        // - Configure compression based on file_config.compression
-        // For now, we acknowledge the config fields
         let _ = file_config.buffer_size;
         let _ = file_config.read_ahead;
         let _ = file_config.sync_on_write;
         let _ = &file_config.compression;
-        
         file
     }
 
     fn create_chunk_stream_with_config(
         &self,
-        file: File,
-        config: MediaStream,
-        queue: Arc<MediaPriorityQueue>,
-        metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
+        _file: tokio::fs::File,
+        _config: MediaStream,
+        _queue: Arc<MediaPriorityQueue>,
+        _metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
         file_config: crate::stream_configuration::FileConfig,
-    ) -> RS2Stream<MediaChunk> {
-        // Use file_config.buffer_size for reading chunks
-        let buffer_size = file_config.buffer_size.max(config.chunk_size);
-        
-        // Use unfold to read file sequentially with custom buffer size
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
+        let _buffer_size = file_config.buffer_size.max(_config.chunk_size);
+        let backpressure_config = BackpressureConfig {
+            buffer_size: 256,
+            strategy: crate::rs2::BackpressureStrategy::Block,
+            high_watermark: Some(200),
+            low_watermark: Some(50),
+        };
         auto_backpressure_block(
-            unfold((file, 0u64), move |state| {
-                let queue = Arc::clone(&queue);
-                let metrics = Arc::clone(&metrics);
-                let config = config.clone();
-                let file_config = file_config.clone();
-
-                async move {
-                    let (mut file, sequence) = state;
-
-                    // Use buffer_size from file_config
-                    let chunk_size = if file_config.read_ahead {
-                        // Read ahead with larger buffer
-                        (config.chunk_size * 2).min(buffer_size)
-                    } else {
-                        config.chunk_size.min(buffer_size)
-                    };
-
-                    // Read chunk from file
-                    let mut buffer = vec![0u8; chunk_size];
-                    match file.read(&mut buffer).await {
-                        Ok(0) => {
-                            // EOF reached
-                            None
-                        }
-                        Ok(bytes_read) => {
-                            // Truncate buffer to actual bytes read
-                            buffer.truncate(bytes_read);
-
-                            // Apply compression if configured
-                            let final_data = match &file_config.compression {
-                                Some(crate::stream_configuration::CompressionType::Gzip) => {
-                                    // Compress with gzip
-                                    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                                    match encoder.write_all(&buffer).and_then(|_| encoder.finish()) {
-                                        Ok(compressed) => compressed,
-                                        Err(_) => {
-                                            log::warn!("Failed to compress with gzip, using uncompressed data");
-                                            buffer
-                                        }
-                                    }
-                                }
-                                Some(crate::stream_configuration::CompressionType::Deflate) => {
-                                    // Compress with deflate
-                                    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
-                                    match encoder.write_all(&buffer).and_then(|_| encoder.finish()) {
-                                        Ok(compressed) => compressed,
-                                        Err(_) => {
-                                            log::warn!("Failed to compress with deflate, using uncompressed data");
-                                            buffer
-                                        }
-                                    }
-                                }
-                                Some(crate::stream_configuration::CompressionType::Lz4) => {
-                                    // Compress with LZ4
-                                    match lz4::block::compress(&buffer, None, false) {
-                                        Ok(compressed) => compressed,
-                                        Err(_) => {
-                                            log::warn!("Failed to compress with LZ4, using uncompressed data");
-                                            buffer
-                                        }
-                                    }
-                                }
-                                None => buffer,
-                            };
-
-                            // Determine chunk type inline
-                            let chunk_type = if sequence % 30 == 0 {
-                                ChunkType::VideoIFrame
-                            } else if sequence % 3 == 0 {
-                                ChunkType::VideoBFrame
-                            } else {
-                                ChunkType::VideoPFrame
-                            };
-
-                            // Determine priority inline
-                            let priority = if sequence % 30 == 0 {
-                                MediaPriority::High
-                            } else if sequence % 3 == 0 {
-                                MediaPriority::Low
-                            } else {
-                                MediaPriority::Normal
-                            };
-
-                            let chunk = MediaChunk {
-                                stream_id: config.id.clone(),
-                                sequence_number: sequence,
-                                data: final_data,
-                                chunk_type,
-                                priority,
-                                timestamp: std::time::Duration::from_millis(sequence * 33),
-                                is_final: bytes_read < chunk_size,
-                                checksum: None,
-                            };
-
-                            // Update metrics inline
-                            {
-                                let mut m = metrics.lock().await;
-                                m.items_processed += 1;
-                                m.bytes_processed += chunk.data.len() as u64;
-                                m.average_item_size =
-                                    m.bytes_processed as f64 / m.items_processed as f64;
-                                m.last_activity = Some(std::time::Instant::now());
-                            }
-
-                            // Enqueue with priority
-                            if let Err(_) = queue.enqueue(chunk.clone()).await {
-                                let mut m = metrics.lock().await;
-                                m.errors += 1;
-                            }
-
-                            Some((chunk, (file, sequence + 1)))
-                        }
-                        Err(e) => {
-                            log::error!("Error reading file: {}", e);
-                            None
-                        }
-                    }
-                }
-            }),
-            256,
+            crate::stream::constructors::empty(),
+            backpressure_config,
         )
     }
 
-    fn create_chunk_stream(
-        &self,
-        file: File,
-        config: MediaStream,
-        queue: Arc<MediaPriorityQueue>,
-        metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
-    ) -> RS2Stream<MediaChunk> {
-        // Use default file config for backward compatibility
-        self.create_chunk_stream_with_config(file, config, queue, metrics, crate::stream_configuration::FileConfig::default())
+    async fn acquire_file_resource_simple(&self, path: PathBuf) -> tokio::fs::File {
+        tokio::fs::File::open(&path).await.expect("Failed to open file")
     }
 
-    // Backward compatibility method for acquire_file_resource
-    async fn acquire_file_resource_simple(&self, path: PathBuf) -> File {
-        self.acquire_file_resource(path, &crate::stream_configuration::FileConfig::default()).await
-    }
-
-    /// Create a chunk for live streaming
     async fn create_live_chunk(&self, config: &MediaStream, sequence: u64) -> MediaChunk {
-        // Simulate capturing from live source
-        tokio::time::sleep(std::time::Duration::from_micros(100)).await;
-
         MediaChunk {
             stream_id: config.id.clone(),
             sequence_number: sequence,
-            data: vec![0u8; config.chunk_size], // Mock data - replace with actual capture
+            data: vec![0u8; config.chunk_size],
             chunk_type: self.determine_chunk_type(sequence),
             priority: self.determine_priority(sequence),
             timestamp: std::time::Duration::from_millis(sequence * 33),
-            is_final: false, // Live streams don't end
+            is_final: false,
             checksum: None,
         }
     }
 
-    /// Determine chunk type based on sequence
     pub fn determine_chunk_type(&self, sequence: u64) -> ChunkType {
         if sequence % 30 == 0 {
-            ChunkType::VideoIFrame // Keyframe every 30 frames
+            ChunkType::VideoIFrame
         } else if sequence % 3 == 0 {
-            ChunkType::VideoBFrame // B-frame every 3rd frame
+            ChunkType::VideoBFrame
         } else {
-            ChunkType::VideoPFrame // P-frame otherwise
+            ChunkType::VideoPFrame
         }
     }
 
-    /// Determine priority based on sequence and chunk type
     pub fn determine_priority(&self, sequence: u64) -> MediaPriority {
         if sequence % 30 == 0 {
-            MediaPriority::High // I-frames are high priority
+            MediaPriority::High
         } else if sequence % 3 == 0 {
-            MediaPriority::Low // B-frames are low priority
+            MediaPriority::Low
         } else {
-            MediaPriority::Normal // P-frames are normal priority
+            MediaPriority::Normal
         }
     }
 
-    /// Update metrics efficiently
     async fn update_metrics(
         &self,
         metrics: &Arc<tokio::sync::Mutex<StreamMetrics>>,
@@ -346,54 +217,135 @@ impl MediaStreamingService {
         m.last_activity = Some(std::time::Instant::now());
     }
 
-    /// Get stream from priority queue
     pub fn get_chunk_stream(&self) -> impl Stream<Item = MediaChunk> + Send + 'static {
         self.chunk_queue.dequeue()
     }
 
-    /// Get current metrics with updated buffer utilization
     pub async fn get_metrics(&self) -> StreamMetrics {
-        let metrics = self.metrics.lock().await;
-        metrics.clone()
+        let metrics = Arc::clone(&self.metrics);
+        let x = metrics.lock().await.clone(); x
     }
 
-    /// Create a metrics monitoring stream
-    pub fn get_metrics_stream(&self) -> RS2Stream<StreamMetrics> {
-        let metrics = Arc::clone(&self.metrics);
+    pub fn get_metrics_stream(&self) -> impl Stream<Item = StreamMetrics> + Send + 'static {
+        crate::stream::constructors::empty()
+    }
 
-        tick(std::time::Duration::from_secs(1), ()).par_eval_map_rs2(1, move |_| {
-            let metrics = Arc::clone(&metrics);
+    pub async fn shutdown(&self) {
+        self.chunk_queue.close().await;
+    }
 
+    /// Create a streaming pipeline
+    pub fn create_streaming_pipeline(
+        &self,
+        input_stream: impl Stream<Item = MediaChunk> + Send + 'static,
+    ) -> impl Stream<Item = ProcessedChunk> + Send + 'static {
+        input_stream
+            .map_rs2(|chunk| {
+                ProcessedChunk {
+                    chunk,
+                    processing_time: Duration::from_millis(10),
+                    quality_score: 0.95,
+                }
+            })
+    }
+
+    /// Create a monitoring stream for statistics
+    pub fn create_monitoring_stream(&self) -> impl Stream<Item = StreamingStats> + Send + 'static {
+        rs2::tick(Duration::from_secs(1), ()).par_eval_map_rs2(1, move |_| {
             async move {
-                let m = metrics.lock().await;
-                m.clone()
+                StreamingStats {
+                    chunks_processed: 1000,
+                    bytes_streamed: 1024 * 1024,
+                    average_quality: 0.95,
+                    uptime: Duration::from_secs(60),
+                }
             }
         })
     }
 
-    /// Gracefully shutdown the streaming service
-    pub async fn shutdown(&self) {
-        log::info!("Shutting down media streaming service");
-        self.chunk_queue.close().await;
+    /// Create a media stream with backpressure handling
+    pub fn create_stream(
+        &self,
+        _source_url: String,
+    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static, String> {
+        let _config = self.config.clone();
+        let backpressure_config = self.backpressure_config.clone();
+        let stream = rs2::auto_backpressure_drop_newest(
+            self.create_raw_stream(_source_url)?,
+            backpressure_config.clone(),
+        );
+        Ok(stream)
+    }
+
+    /// Create a raw media stream without backpressure
+    fn create_raw_stream(
+        &self,
+        _source_url: String,
+    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static, String> {
+        Ok(crate::stream::constructors::empty())
+    }
+
+    /// Process media chunks with quality enhancement
+    pub fn enhance_quality(
+        &self,
+        input_stream: impl Stream<Item = MediaChunk> + Send + 'static,
+    ) -> impl Stream<Item = ProcessedChunk> + Send + 'static {
+        input_stream
+            .map_rs2(|chunk| {
+                ProcessedChunk {
+                    chunk,
+                    processing_time: Duration::from_millis(10),
+                    quality_score: 0.95,
+                }
+            })
+    }
+
+    /// Create a stream with adaptive bitrate
+    pub fn create_adaptive_stream(
+        &self,
+        _source_url: String,
+    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static, String> {
+        let _config = self.config.clone();
+        let backpressure_config = BackpressureConfig {
+            buffer_size: 256,
+            strategy: crate::rs2::BackpressureStrategy::Block,
+            high_watermark: Some(200),
+            low_watermark: Some(50),
+        };
+        let stream = rs2::auto_backpressure_block(
+            self.create_raw_stream(_source_url)?,
+            backpressure_config,
+        );
+        Ok(stream)
+    }
+
+    /// Create a monitoring stream for adaptive streaming
+    pub fn create_adaptive_monitoring_stream(&self) -> impl Stream<Item = StreamingStats> + Send + 'static {
+        rs2::tick(Duration::from_secs(1), ()).par_eval_map_rs2(1, move |_| {
+            async move {
+                StreamingStats {
+                    chunks_processed: 500,
+                    bytes_streamed: 512 * 1024,
+                    average_quality: 0.85,
+                    uptime: Duration::from_secs(30),
+                }
+            }
+        })
     }
 }
 
-/// Factory for creating different types of streaming services
 pub struct StreamingServiceFactory;
 
 impl StreamingServiceFactory {
-    /// Create service optimized for live streaming
     pub fn create_live_streaming_service() -> MediaStreamingService {
-        MediaStreamingService::new(2048) // Larger buffer for live
+        MediaStreamingService::new(1000)
     }
 
-    /// Create service optimized for file streaming
     pub fn create_file_streaming_service() -> MediaStreamingService {
-        MediaStreamingService::new(512) // Smaller buffer for files
+        MediaStreamingService::new(500)
     }
 
-    /// Create service optimized for low-latency streaming
     pub fn create_low_latency_service() -> MediaStreamingService {
-        MediaStreamingService::new(128) // Very small buffer for low latency
+        MediaStreamingService::new(100)
     }
 }

@@ -282,4 +282,162 @@ async fn test_performance_comparison() {
     // Parallel should be significantly faster for this workload
     println!("Sequential: {:?}, Parallel: {:?}", sequential_time, parallel_time);
     // Note: This is more of a benchmark than assertion, but parallel should be faster
+}
+
+#[tokio::test]
+async fn test_par_join_basic() {
+    // Create multiple streams with different data
+    let stream1 = from_iter(vec![1, 2, 3]).map(|x| async move {
+        sleep(Duration::from_millis(50)).await;
+        format!("stream1-{}", x)
+    }).then(|f| f);
+    
+    let stream2 = from_iter(vec![4, 5, 6]).map(|x| async move {
+        sleep(Duration::from_millis(30)).await;
+        format!("stream2-{}", x)
+    }).then(|f| f);
+    
+    let stream3 = from_iter(vec![7, 8]).map(|x| async move {
+        sleep(Duration::from_millis(20)).await;
+        format!("stream3-{}", x)
+    }).then(|f| f);
+    
+    // Create a stream of streams using boxed streams for type compatibility
+    let streams = from_iter(vec![
+        Box::new(stream1) as Box<dyn rs2_stream::stream::Stream<Item = String> + Send>,
+        Box::new(stream2) as Box<dyn rs2_stream::stream::Stream<Item = String> + Send>,
+        Box::new(stream3) as Box<dyn rs2_stream::stream::Stream<Item = String> + Send>,
+    ]);
+    
+    // Process all streams with max 2 concurrent streams
+    let results: Vec<String> = streams
+        .par_join(2)
+        .collect()
+        .await;
+    
+    // Should get all items from all streams (8 total items)
+    assert_eq!(results.len(), 8);
+    
+    // Verify we have items from all streams
+    let stream1_count = results.iter().filter(|s| s.starts_with("stream1")).count();
+    let stream2_count = results.iter().filter(|s| s.starts_with("stream2")).count();
+    let stream3_count = results.iter().filter(|s| s.starts_with("stream3")).count();
+    
+    assert_eq!(stream1_count, 3);
+    assert_eq!(stream2_count, 3);
+    assert_eq!(stream3_count, 2);
+}
+
+#[tokio::test]
+async fn test_par_join_concurrency_limit() {
+    let start = std::time::Instant::now();
+    
+    // Create a stream that yields 5 streams, each with a delay
+    let stream = from_iter(1..=5).map(|i| {
+        let stream = from_iter(vec![i]).map(move |x| async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            x
+        }).then(|f| f);
+        Box::new(stream) as Box<dyn rs2_stream::stream::Stream<Item = i32> + Send>
+    });
+
+    // Use par_join with concurrency limit of 2
+    let result: Vec<_> = stream
+        .par_join(2)
+        .collect()
+        .await;
+
+    let duration = start.elapsed();
+    println!("Completed concurrency limit test in {:?} with {} results", duration, result.len());
+    
+    // Should have 5 results
+    assert_eq!(result.len(), 5);
+    
+    // Results should be 1, 2, 3, 4, 5 (order may vary due to concurrency)
+    let mut sorted_result = result.clone();
+    sorted_result.sort();
+    assert_eq!(sorted_result, vec![1, 2, 3, 4, 5]);
+    
+    // Should complete faster than sequential (5 * 100ms = 500ms)
+    // but slower than fully parallel (100ms)
+    assert!(duration < Duration::from_millis(500));
+    assert!(duration > Duration::from_millis(100));
+}
+
+#[tokio::test]
+async fn test_par_join_empty_streams() {
+    // Mix of empty and non-empty streams
+    let stream1 = from_iter(vec![1, 2]);
+    let stream2 = from_iter(vec![]); // Empty stream
+    let stream3 = from_iter(vec![3]);
+    
+    let streams = from_iter(vec![
+        Box::new(stream1) as Box<dyn rs2_stream::stream::Stream<Item = i32> + Send>,
+        Box::new(stream2) as Box<dyn rs2_stream::stream::Stream<Item = i32> + Send>,
+        Box::new(stream3) as Box<dyn rs2_stream::stream::Stream<Item = i32> + Send>,
+    ]);
+    
+    let results: Vec<i32> = streams
+        .par_join(3)
+        .collect()
+        .await;
+    
+    // Should only get items from non-empty streams
+    assert_eq!(results.len(), 3);
+    let mut sorted_results = results.clone();
+    sorted_results.sort();
+    assert_eq!(sorted_results, vec![1, 2, 3]);
+}
+
+#[tokio::test]
+async fn test_par_join_single_stream() {
+    // Test with just one stream
+    let stream = from_iter(vec![1, 2, 3, 4, 5]);
+    let streams = from_iter(vec![
+        Box::new(stream) as Box<dyn rs2_stream::stream::Stream<Item = i32> + Send>
+    ]);
+    
+    let results: Vec<i32> = streams
+        .par_join(10) // High concurrency limit
+        .collect()
+        .await;
+    
+    assert_eq!(results, vec![1, 2, 3, 4, 5]);
+}
+
+#[tokio::test]
+async fn test_par_join_no_streams() {
+    // Test with empty stream of streams
+    let streams: Vec<Box<dyn rs2_stream::stream::Stream<Item = i32> + Send>> = vec![];
+    let stream_of_streams = from_iter(streams);
+    
+    let results: Vec<i32> = stream_of_streams
+        .par_join(5)
+        .collect()
+        .await;
+    
+    assert_eq!(results, Vec::<i32>::new());
+} 
+
+#[tokio::test]
+async fn test_par_join_debug() {
+    // Simple test with just one stream to debug the issue
+    let stream = from_iter(vec![1]).map(|x| async move {
+        sleep(Duration::from_millis(10)).await;
+        format!("item-{}", x)
+    }).then(|f| f);
+    
+    let streams = from_iter(vec![
+        Box::new(stream) as Box<dyn rs2_stream::stream::Stream<Item = String> + Send>
+    ]);
+    
+    println!("Starting par_join test...");
+    let results: Vec<String> = streams
+        .par_join(1)
+        .collect()
+        .await;
+    println!("Completed par_join test with {} results", results.len());
+    
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0], "item-1");
 } 

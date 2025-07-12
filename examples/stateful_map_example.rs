@@ -1,4 +1,5 @@
-use futures::StreamExt;
+use rs2_stream::stream::{StreamExt, from_iter};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::state::config::StateConfig;
 use rs2_stream::state::{CustomKeyExtractor, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
@@ -82,7 +83,7 @@ async fn main() {
 
     // Example 1: Basic stateful mapping - enrich activities with user profile
     println!("1. Basic Stateful Mapping - Enriching Activities with User Profile:");
-    let stream = futures::stream::iter(activities.clone());
+    let stream = from_iter(activities.clone());
     let enriched_stream = stream.stateful_map_rs2(
         StateConfig::new(),
         CustomKeyExtractor::new(|activity: &UserActivity| activity.user_id.clone()),
@@ -133,7 +134,7 @@ async fn main() {
 
     // Example 2: Stateful mapping with session tracking
     println!("\n2. Stateful Mapping with Session Tracking:");
-    let stream = futures::stream::iter(activities.clone());
+    let stream = from_iter(activities.clone());
     let session_stream = stream.stateful_map_rs2(
         StateConfig::new(),
         CustomKeyExtractor::new(|activity: &UserActivity| activity.user_id.clone()),
@@ -183,7 +184,7 @@ async fn main() {
 
     // Example 3: Stateful mapping with rate limiting
     println!("\n3. Stateful Mapping with Rate Limiting:");
-    let stream = futures::stream::iter(activities.clone());
+    let stream = from_iter(activities.clone());
     let rate_limited_stream = stream.stateful_map_rs2(
         StateConfig::new(),
         CustomKeyExtractor::new(|activity: &UserActivity| activity.user_id.clone()),
@@ -247,7 +248,7 @@ async fn main() {
 
     // Example 4: Stateful mapping with anomaly detection
     println!("\n4. Stateful Mapping with Anomaly Detection:");
-    let stream = futures::stream::iter(activities.clone());
+    let stream = from_iter(activities.clone());
     let anomaly_stream = stream.stateful_map_rs2(
         StateConfig::new(),
         CustomKeyExtractor::new(|activity: &UserActivity| activity.user_id.clone()),

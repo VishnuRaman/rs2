@@ -1,9 +1,10 @@
-use crate::RS2Stream;
-use async_stream::stream;
-use futures_util::StreamExt;
-use std::future::Future;
+use crate::stream::Stream;
+use crate::stream::StreamExt;
 use std::pin::Pin;
+use std::future::Future;
 use tokio::sync::broadcast;
+use std::sync::Arc;
+use std::any::Any;
 
 #[derive(Debug)]
 pub enum PipelineError {
@@ -28,28 +29,83 @@ impl std::error::Error for PipelineError {}
 
 pub type PipelineResult<T> = Result<T, PipelineError>;
 
-pub enum PipelineNode<T> {
-    Source {
-        name: String,
-        func: Box<dyn Fn() -> RS2Stream<T> + Send + Sync>,
-    },
-    Transform {
-        name: String,
-        func: Box<dyn Fn(RS2Stream<T>) -> RS2Stream<T> + Send + Sync>,
-    },
-    Sink {
-        name: String,
-        func: Box<dyn Fn(RS2Stream<T>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
-    },
-    Branch {
-        name: String,
-        sinks: Vec<
-            Box<dyn Fn(RS2Stream<T>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
-        >,
-    },
+/// A pipeline node that can be executed
+pub trait PipelineNode<T>: Send + Sync {
+    fn execute(&self, input: Option<Arc<dyn Stream<Item = T> + Send + Sync>>) -> PipelineResult<Option<Arc<dyn Stream<Item = T> + Send + Sync>>>;
+    fn as_any(&self) -> &dyn Any;
 }
 
-#[derive(Debug)]
+/// Source node that creates a stream
+pub struct SourceNode<T> {
+    name: String,
+    func: Arc<dyn Fn() -> Arc<dyn Stream<Item = T> + Send + Sync> + Send + Sync>,
+}
+
+impl<T> PipelineNode<T> for SourceNode<T>
+where
+    T: Send + 'static,
+{
+    fn execute(&self, _input: Option<Arc<dyn Stream<Item = T> + Send + Sync>>) -> PipelineResult<Option<Arc<dyn Stream<Item = T> + Send + Sync>>> {
+        Ok(Some((self.func)()))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Transform node that modifies a stream
+pub struct TransformNode<T> {
+    name: String,
+    func: Arc<dyn Fn(Arc<dyn Stream<Item = T> + Send + Sync>) -> Arc<dyn Stream<Item = T> + Send + Sync> + Send + Sync>,
+}
+
+impl<T> PipelineNode<T> for TransformNode<T>
+where
+    T: Send + 'static,
+{
+    fn execute(&self, input: Option<Arc<dyn Stream<Item = T> + Send + Sync>>) -> PipelineResult<Option<Arc<dyn Stream<Item = T> + Send + Sync>>> {
+        if let Some(stream) = input {
+            Ok(Some((self.func)(stream)))
+        } else {
+            Err(PipelineError::InvalidPipeline("Transform node requires input".to_string()))
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Sink node that consumes a stream
+pub struct SinkNode<T> {
+    name: String,
+    func: Arc<dyn Fn(Arc<dyn Stream<Item = T> + Send + Sync>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
+}
+
+impl<T> PipelineNode<T> for SinkNode<T>
+where
+    T: Send + 'static,
+{
+    fn execute(&self, input: Option<Arc<dyn Stream<Item = T> + Send + Sync>>) -> PipelineResult<Option<Arc<dyn Stream<Item = T> + Send + Sync>>> {
+        if let Some(stream) = input {
+            // Spawn the sink execution
+            let future = (self.func)(stream);
+            tokio::spawn(async move {
+                future.await;
+            });
+            Ok(None) // Sink consumes the stream
+        } else {
+            Err(PipelineError::InvalidPipeline("Sink node requires input".to_string()))
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+#[derive(Clone)]
 pub struct PipelineConfig {
     pub name: String,
     pub buffer_size: usize,
@@ -68,7 +124,7 @@ impl Default for PipelineConfig {
 
 pub struct Pipeline<T> {
     config: PipelineConfig,
-    nodes: Vec<PipelineNode<T>>,
+    nodes: Vec<Box<dyn PipelineNode<T>>>,
 }
 
 impl<T: Send + Clone + 'static> Pipeline<T> {
@@ -86,68 +142,56 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
 
     pub fn named_source<F>(mut self, name: &str, f: F) -> Self
     where
-        F: Fn() -> RS2Stream<T> + Send + Sync + 'static,
+        F: Fn() -> Arc<dyn Stream<Item = T> + Send + Sync> + Send + Sync + 'static,
     {
-        self.nodes.push(PipelineNode::Source {
+        self.nodes.push(Box::new(SourceNode {
             name: name.to_string(),
-            func: Box::new(f),
-        });
+            func: Arc::new(f),
+        }));
         self
     }
 
     pub fn source<F>(self, f: F) -> Self
     where
-        F: Fn() -> RS2Stream<T> + Send + Sync + 'static,
+        F: Fn() -> Arc<dyn Stream<Item = T> + Send + Sync> + Send + Sync + 'static,
     {
         self.named_source("source", f)
     }
 
     pub fn named_transform<F>(mut self, name: &str, f: F) -> Self
     where
-        F: Fn(RS2Stream<T>) -> RS2Stream<T> + Send + Sync + 'static,
+        F: Fn(Arc<dyn Stream<Item = T> + Send + Sync>) -> Arc<dyn Stream<Item = T> + Send + Sync> + Send + Sync + 'static,
     {
-        self.nodes.push(PipelineNode::Transform {
+        self.nodes.push(Box::new(TransformNode {
             name: name.to_string(),
-            func: Box::new(f),
-        });
+            func: Arc::new(f),
+        }));
         self
     }
 
     pub fn transform<F>(self, f: F) -> Self
     where
-        F: Fn(RS2Stream<T>) -> RS2Stream<T> + Send + Sync + 'static,
+        F: Fn(Arc<dyn Stream<Item = T> + Send + Sync>) -> Arc<dyn Stream<Item = T> + Send + Sync> + Send + Sync + 'static,
     {
         self.named_transform("transform", f)
     }
 
     pub fn named_sink<F>(mut self, name: &str, f: F) -> Self
     where
-        F: Fn(RS2Stream<T>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
+        F: Fn(Arc<dyn Stream<Item = T> + Send + Sync>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
     {
-        self.nodes.push(PipelineNode::Sink {
+        self.nodes.push(Box::new(SinkNode {
             name: name.to_string(),
-            func: Box::new(f),
-        });
+            func: Arc::new(f),
+        }));
         self
     }
 
     pub fn sink<F>(self, f: F) -> Self
     where
-        F: Fn(RS2Stream<T>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
+        F: Fn(Arc<dyn Stream<Item = T> + Send + Sync>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
     {
         self.named_sink("sink", f)
-    }
-
-    pub fn branch<F1, F2>(mut self, name: &str, f1: F1, f2: F2) -> Self
-    where
-        F1: Fn(RS2Stream<T>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
-        F2: Fn(RS2Stream<T>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
-    {
-        self.nodes.push(PipelineNode::Branch {
-            name: name.to_string(),
-            sinks: vec![Box::new(f1), Box::new(f2)],
-        });
-        self
     }
 
     pub fn validate(&self) -> PipelineResult<()> {
@@ -156,15 +200,14 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
         }
 
         let mut has_source = false;
-        let mut has_sink_or_branch = false;
+        let mut has_sink = false;
 
         for node in &self.nodes {
-            match node {
-                PipelineNode::Source { .. } => has_source = true,
-                PipelineNode::Sink { .. } | PipelineNode::Branch { .. } => {
-                    has_sink_or_branch = true
-                }
-                _ => {}
+            if node.as_any().downcast_ref::<SourceNode<T>>().is_some() {
+                has_source = true;
+            }
+            if node.as_any().downcast_ref::<SinkNode<T>>().is_some() {
+                has_sink = true;
             }
         }
 
@@ -172,7 +215,7 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
             return Err(PipelineError::NoSource);
         }
 
-        if !has_sink_or_branch {
+        if !has_sink {
             return Err(PipelineError::NoSink);
         }
 
@@ -182,66 +225,10 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
     pub async fn run(self) -> PipelineResult<()> {
         self.validate()?;
 
-        let mut stream = None;
+        let mut current_stream: Option<Arc<dyn Stream<Item = T> + Send + Sync>> = None;
 
         for node in self.nodes {
-            match node {
-                PipelineNode::Source { name: _name, func } => {
-                    stream = Some(func());
-                }
-                PipelineNode::Transform { name: _name, func } => {
-                    if let Some(s) = stream.take() {
-                        stream = Some(func(s));
-                    }
-                }
-                PipelineNode::Sink { name: _name, func } => {
-                    if let Some(s) = stream.take() {
-                        func(s).await;
-                    }
-                }
-                PipelineNode::Branch { name: _name, sinks } => {
-                    if let Some(s) = stream.take() {
-                        // Use broadcast to fan out to multiple sinks
-                        let (tx, _) = broadcast::channel(self.config.buffer_size);
-
-                        // Spawn task to feed the broadcast channel
-                        let tx_clone = tx.clone();
-                        tokio::spawn(async move {
-                            let mut stream = s;
-                            while let Some(item) = stream.next().await {
-                                if tx_clone.send(item).is_err() {
-                                    break; // All receivers dropped
-                                }
-                            }
-                        });
-
-                        // Run all sinks concurrently
-                        let mut handles = Vec::new();
-                        for sink_func in sinks {
-                            let mut rx = tx.subscribe();
-
-                            // Create a stream from the broadcast receiver
-                            let sink_stream = stream! {
-                                while let Ok(item) = rx.recv().await {
-                                    yield item;
-                                }
-                            }
-                            .boxed();
-
-                            handles.push(tokio::spawn(async move {
-                                sink_func(sink_stream).await;
-                            }));
-                        }
-
-                        // Wait for all sinks to complete
-                        for handle in handles {
-                            if let Err(e) = handle.await {
-                                return Err(PipelineError::RuntimeError(Box::new(e)));
-                            }
-                        }
-                    }
-                }
-            }
+            current_stream = node.execute(current_stream)?;
         }
 
         Ok(())

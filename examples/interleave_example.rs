@@ -1,15 +1,16 @@
-use async_stream::stream;
-use futures_util::stream::StreamExt;
+use rs2_stream::stream::{from_iter, StreamExt};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::rs2::*;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use futures::Stream;
 
 // Simulate a stream that emits items with delays
 fn delayed_stream<T: Clone + Send + 'static>(
     items: Vec<T>,
     delay_ms: u64,
     name: &str,
-) -> RS2Stream<(String, T)> {
+) -> impl Stream<Item = (String, T)> + Send + 'static {
     let name = name.to_string();
     stream! {
         for item in items {
@@ -126,9 +127,9 @@ fn main() {
 
         // Create a mix of empty and non-empty streams
         let stream1 = from_iter(vec![1, 2, 3]);
-        let empty_stream1: RS2Stream<i32> = from_iter(vec![]);
+        let empty_stream1: impl Stream<Item = i32> + Send + 'static = from_iter(vec![]);
         let stream2 = from_iter(vec![4, 5]);
-        let empty_stream2: RS2Stream<i32> = from_iter(vec![]);
+        let empty_stream2: impl Stream<Item = i32> + Send + 'static = from_iter(vec![]);
 
         // Interleave the streams
         let interleaved = stream1

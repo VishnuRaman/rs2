@@ -32,19 +32,10 @@ exclude = [
 ]
 
 [dependencies]
-# The core futures traits, StreamExt, FuturesUnordered, mpsc channels, etc.
-futures = "0.3"
-
-# Provides the rs2_stream! { … } macro
-async-stream = "0.3"
-
 # Tokio runtime, spawning tasks and timers
 tokio = { version = "1.0", features = ["full"] }
-tokio-stream = "0.1.17"
 
-# Core futures traits
-futures-core = "0.3.31"
-futures-util = "0.3.31"
+# Core traits and utilities
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 rdkafka = { version = "0.37.0"}
@@ -63,6 +54,7 @@ lazy_static = "1.4"
 pin-project-lite = "0.2.16"
 flate2 = "1.0"
 lz4 = "1.24"
+either = "1.15.0"
 
 
 

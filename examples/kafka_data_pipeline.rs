@@ -63,13 +63,14 @@
 
 use async_stream::stream;
 use chrono::{DateTime, Utc};
-use futures_util::stream::StreamExt;
+use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use rand::{thread_rng, Rng};
 use rdkafka::consumer::Consumer;
 use rs2_stream::connectors::kafka_connector::KafkaConfig;
 use rs2_stream::connectors::{KafkaConnector, StreamConnector};
 use rs2_stream::pipeline::builder::Pipeline;
-use rs2_stream::rs2::*;
 use rs2_stream::schema_validation::JsonSchemaValidator;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -280,7 +281,7 @@ fn check_for_alerts(activity: &ValidatedActivity) -> Option<ActivityAlert> {
 // --- Analytics Transform: Time-based Windowed Aggregation ---
 fn analytics_transform<S>(mut stream: S) -> RS2Stream<ActivityAnalytics>
 where
-    S: futures_util::Stream<Item = ValidatedActivity> + Unpin + Send + 'static,
+    S: StreamExt + Unpin + Send + 'static,
 {
     use chrono::Utc;
     use std::collections::HashMap;

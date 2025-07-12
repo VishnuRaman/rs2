@@ -8,10 +8,10 @@
 //! 5. Monitor stream metrics in real-time
 
 use chrono::Utc;
-use futures_util::StreamExt;
-use rs2_stream::media::streaming::StreamingServiceFactory;
-use rs2_stream::media::types::{MediaChunk, MediaStream, MediaType, QualityLevel};
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
+use rs2_stream::media::types::{MediaChunk, MediaStream, MediaType, QualityLevel};
 use rs2_stream::stream_performance_metrics::StreamMetrics;
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};

@@ -82,3 +82,32 @@ impl Default for RetryPolicy {
         }
     }
 }
+
+impl RetryPolicy {
+    /// Get the maximum number of retries for this policy
+    pub fn max_retries(&self) -> usize {
+        match self {
+            RetryPolicy::None => 0,
+            RetryPolicy::Immediate { max_retries } => *max_retries,
+            RetryPolicy::Fixed { max_retries, .. } => *max_retries,
+            RetryPolicy::Exponential { max_retries, .. } => *max_retries,
+        }
+    }
+
+    /// Get the delay for a specific retry attempt
+    pub fn delay_for_attempt(&self, attempt: usize) -> Duration {
+        match self {
+            RetryPolicy::None => Duration::ZERO,
+            RetryPolicy::Immediate { .. } => Duration::ZERO,
+            RetryPolicy::Fixed { delay, .. } => *delay,
+            RetryPolicy::Exponential {
+                initial_delay,
+                multiplier,
+                ..
+            } => {
+                let delay_ms = initial_delay.as_millis() as f64 * multiplier.powi(attempt as i32);
+                Duration::from_millis(delay_ms as u64)
+            }
+        }
+    }
+}

@@ -1,4 +1,4 @@
-use rs2_stream::rs2_new::*;
+use rs2_stream::rs2::*;
 use rs2_stream::stream_performance_metrics::HealthThresholds;
 use rs2_stream::stream_configuration::*;
 use rs2_stream::stream::{

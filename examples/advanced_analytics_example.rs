@@ -7,9 +7,10 @@
 //! This example shows real-world scenarios like user behavior analysis
 //! and system monitoring.
 
-use futures_util::stream::StreamExt;
 use rs2_stream::advanced_analytics::*;
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 use tokio::runtime::Runtime;

@@ -1,7 +1,8 @@
 use async_trait::async_trait;
-use futures_util::stream::StreamExt;
-use rs2_stream::connectors::{CommonConfig, ConnectorError, StreamConnector};
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
+use tokio::runtime::Runtime;
 
 // Custom connector for a hypothetical message queue
 struct MyQueueConnector {

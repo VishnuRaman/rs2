@@ -1,22 +1,10 @@
-//! Advanced analytics for RS2 streams
-//!
-//! Provides time-based windowed aggregations and advanced stream joins for building sophisticated real-time analytics.
 
-use crate::*;
-use async_stream::stream;
-use futures_core::Stream;
-use futures_util::pin_mut;
-use futures_util::stream::StreamExt;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
-use crate::resource_manager::get_global_resource_manager;
+use crate::stream::Stream;
+use crate::rs2_stream_ext::RS2StreamExt;
+use crate::rs2;
 
-// ================================
-// Time-based Windowed Aggregations
-// ================================
-
-/// Configuration for time-based windowing
 #[derive(Debug, Clone)]
 pub struct TimeWindowConfig {
     pub window_size: Duration,
@@ -37,7 +25,7 @@ impl Default for TimeWindowConfig {
 }
 
 /// A time-based window of events
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TimeWindow<T> {
     pub start_time: SystemTime,
     pub end_time: SystemTime,
@@ -60,71 +48,119 @@ impl<T> TimeWindow<T> {
     pub fn is_complete(&self, watermark: SystemTime) -> bool {
         watermark >= self.end_time
     }
+
+    pub fn count(&self) -> usize {
+        self.events.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// State for windowing operations
+#[derive(Debug)]
+struct WindowState<T> {
+    windows: HashMap<u64, TimeWindow<T>>,
+    watermark: SystemTime,
+    config: TimeWindowConfig,
+}
+
+impl<T> WindowState<T> {
+    fn new(config: TimeWindowConfig) -> Self {
+        Self {
+            windows: HashMap::new(),
+            watermark: SystemTime::UNIX_EPOCH,
+            config,
+        }
+    }
+
+    fn process_event(&mut self, event: T, timestamp: SystemTime) -> Vec<TimeWindow<T>>
+    where
+        T: Clone,
+    {
+        // Update watermark
+        if timestamp > self.watermark {
+            self.watermark = timestamp;
+        }
+
+        // Calculate window boundaries
+        let since_epoch = timestamp.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+        let window_size_secs = self.config.window_size.as_secs();
+        let window_start_secs = (since_epoch.as_secs() / window_size_secs) * window_size_secs;
+        let window_start = SystemTime::UNIX_EPOCH + Duration::from_secs(window_start_secs);
+        let window_end = window_start + self.config.window_size;
+        let window_id = window_start_secs;
+
+        // Add event to appropriate window
+        let window = self.windows.entry(window_id).or_insert_with(|| {
+            TimeWindow::new(window_start, window_end)
+        });
+        window.add_event(event);
+
+        // Check for completed windows
+        self.emit_completed_windows()
+    }
+
+    fn emit_completed_windows(&mut self) -> Vec<TimeWindow<T>> {
+        let watermark_threshold = self.watermark - self.config.watermark_delay;
+        let mut completed = Vec::new();
+        let mut to_remove = Vec::new();
+
+        for (id, window) in &self.windows {
+            if window.is_complete(watermark_threshold) {
+                to_remove.push(*id);
+            }
+        }
+
+        for id in to_remove {
+            if let Some(window) = self.windows.remove(&id) {
+                completed.push(window);
+            }
+        }
+
+        completed
+    }
+
+    fn finalize(self) -> Vec<TimeWindow<T>> {
+        self.windows.into_values().collect()
+    }
 }
 
 /// Create time-based windows from a stream of timestamped events
 pub fn window_by_time<T, F>(
-    stream: RS2Stream<T>,
+    stream: impl Stream<Item = T> + Send + 'static + RS2StreamExt,
     config: TimeWindowConfig,
     timestamp_fn: F,
-) -> RS2Stream<TimeWindow<T>>
+) -> impl Stream<Item = TimeWindow<T>> + Send + 'static
 where
     T: Clone + Send + 'static,
     F: Fn(&T) -> SystemTime + Send + 'static,
 {
-    stream! {
-        let mut windows: HashMap<u64, TimeWindow<T>> = HashMap::new();
-        let mut watermark = SystemTime::UNIX_EPOCH;
-        let resource_manager = get_global_resource_manager();
-        pin_mut!(stream);
-
-        while let Some(event) = stream.next().await {
-            let event_time = timestamp_fn(&event);
-            if event_time > watermark {
-                watermark = event_time;
-            }
-
-            // Calculate window boundaries
-            let since_epoch = event_time.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    // Simplified implementation: group events into time-based windows
+    stream
+        .map_rs2(move |event| {
+            let timestamp = timestamp_fn(&event);
+            let since_epoch = timestamp.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
             let window_size_secs = config.window_size.as_secs();
             let window_start_secs = (since_epoch.as_secs() / window_size_secs) * window_size_secs;
             let window_start = SystemTime::UNIX_EPOCH + Duration::from_secs(window_start_secs);
             let window_end = window_start + config.window_size;
-            let window_id = window_start_secs;
-
-            // Add event to appropriate window
-            let is_new_window = !windows.contains_key(&window_id);
-            let window = windows.entry(window_id).or_insert_with(|| {
-                TimeWindow::new(window_start, window_end)
-            });
-            if is_new_window {
-                resource_manager.track_memory_allocation(1).await.ok();
-            }
-            window.add_event(event);
-            resource_manager.track_memory_allocation(1).await.ok();
-
-            // Emit completed windows
-            let mut to_remove = Vec::new();
-            for (id, window) in &windows {
-                if window.is_complete(watermark - config.watermark_delay) {
-                    to_remove.push(*id);
+            (window_start, window_end, event)
+        })
+        .group_by_rs2(|(window_start, _, _)| *window_start)
+        .map_rs2(|(window_start, events)| {
+            if events.is_empty() {
+                TimeWindow::new(window_start, window_start)
+            } else {
+                let (_, window_end, _) = &events[0];
+                let mut window = TimeWindow::new(window_start, *window_end);
+                for (_, _, event) in events {
+                    window.add_event(event);
                 }
+                window
             }
-            for id in to_remove {
-                if let Some(window) = windows.remove(&id) {
-                    resource_manager.track_memory_deallocation(window.events.len() as u64).await;
-                    yield window;
-                }
-            }
-        }
-
-        // Emit remaining windows
-        for (_, window) in windows {
-            resource_manager.track_memory_deallocation(window.events.len() as u64).await;
-            yield window;
-        }
-    }
-    .boxed()
+        })
 }
 
 // ================================
@@ -147,87 +183,190 @@ impl Default for TimeJoinConfig {
     }
 }
 
-/// Join two streams with time-based windowing
-/// If key_selector is provided, only join on matching keys; otherwise, cross join within the window.
-pub fn join_with_time_window<T1, T2, F, G1, G2, K, FK1, FK2>(
-    stream1: RS2Stream<T1>,
-    stream2: RS2Stream<T2>,
+/// Either type for merging two streams
+#[derive(Debug, Clone)]
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+/// Join two streams with time-based windowing (simplified implementation)
+pub fn join_with_time_window<T1, T2, F, G1, G2>(
+    stream1: impl Stream<Item = T1> + Send + 'static + RS2StreamExt,
+    stream2: impl Stream<Item = T2> + Send + 'static + RS2StreamExt,
     config: TimeJoinConfig,
     timestamp_fn1: G1,
     timestamp_fn2: G2,
     join_fn: F,
-    key_selector: Option<(FK1, FK2)>,
-) -> RS2Stream<(T1, T2)>
+) -> impl Stream<Item = (T1, T2)> + Send + 'static
 where
-    T1: Clone + Send + Sync + 'static,
-    T2: Clone + Send + Sync + 'static,
+    T1: Clone + Send + 'static,
+    T2: Clone + Send + 'static,
     F: Fn(T1, T2) -> (T1, T2) + Send + 'static,
     G1: Fn(&T1) -> SystemTime + Send + 'static,
     G2: Fn(&T2) -> SystemTime + Send + 'static,
-    K: Eq + std::hash::Hash,
-    FK1: Fn(&T1) -> K + Send + Sync + 'static,
-    FK2: Fn(&T2) -> K + Send + Sync + 'static,
 {
-    enum Either<L, R> {
-        Left(L),
-        Right(R),
-    }
-    stream! {
-        let mut buffer1: Vec<(T1, SystemTime)> = Vec::new();
-        let mut buffer2: Vec<(T2, SystemTime)> = Vec::new();
-        let mut watermark = SystemTime::UNIX_EPOCH;
-        let mut yielded: HashSet<(u128, u128)> = HashSet::new();
-        let s1 = stream1.map(|e| Either::Left(e));
-        let s2 = stream2.map(|e| Either::Right(e));
-        let merged = merge(s1, s2);
-        pin_mut!(merged);
-        while let Some(either) = merged.next().await {
-            match either {
-                Either::Left(e1) => {
-                    let t1 = timestamp_fn1(&e1);
-                    if t1 > watermark { watermark = t1; }
-                    buffer1.push((e1, t1));
-                }
-                Either::Right(e2) => {
-                    let t2 = timestamp_fn2(&e2);
-                    if t2 > watermark { watermark = t2; }
-                    buffer2.push((e2, t2));
+    // Simplified join: collect items from both streams in windows and join them
+    let s1 = stream1.map_rs2(move |e| {
+        let t = timestamp_fn1(&e);
+        Either::Left((e, t))
+    });
+
+    let s2 = stream2.map_rs2(move |e| {
+        let t = timestamp_fn2(&e);
+        Either::Right((e, t))
+    });
+
+    let merged = rs2::merge(s1, s2);
+
+    // Use chunking to process in batches for efficiency
+    merged
+        .chunks_rs2(20)
+        .map_rs2(move |batch| {
+            let mut left_items: Vec<(T1, SystemTime)> = Vec::new();
+            let mut right_items: Vec<(T2, SystemTime)> = Vec::new();
+
+            // Separate left and right items
+            for item in batch {
+                match item {
+                    Either::Left((e, t)) => left_items.push((e, t)),
+                    Either::Right((e, t)) => right_items.push((e, t)),
                 }
             }
-            // Clean old events
-            let min_time = watermark - config.window_size;
-            buffer1.retain(|(_, t)| *t >= min_time);
-            buffer2.retain(|(_, t)| *t >= min_time);
-            // Perform joins
-            for (e1, t1) in &buffer1 {
-                for (e2, t2) in &buffer2 {
+
+            // Perform joins within the time window
+            let mut joins = Vec::new();
+            for (e1, t1) in &left_items {
+                for (e2, t2) in &right_items {
                     let diff = if t1 > t2 {
                         t1.duration_since(*t2).unwrap_or_default()
                     } else {
                         t2.duration_since(*t1).unwrap_or_default()
                     };
+
                     if diff <= config.window_size {
-                        let key_match = if let Some((ref fk1, ref fk2)) = key_selector {
-                            fk1(e1) == fk2(e2)
-                        } else {
-                            true
-                        };
-                        if key_match {
-                            // Deduplicate by timestamps
-                            let t1n = t1.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
-                            let t2n = t2.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
-                            let key = (t1n, t2n);
-                            if !yielded.contains(&key) {
-                                yielded.insert(key);
-                                yield join_fn(e1.clone(), e2.clone());
-                            }
-                        }
+                        joins.push(join_fn(e1.clone(), e2.clone()));
                     }
                 }
             }
+
+            joins
+        })
+        .flat_map_rs2(|joins| rs2::from_iter_rs2(joins))
+}
+
+// ================================
+// Aggregation Functions
+// ================================
+
+/// Sliding window aggregation
+pub fn sliding_window_aggregate<T, R, F>(
+    stream: impl Stream<Item = T> + Send + 'static + RS2StreamExt,
+    window_size: usize,
+    aggregate_fn: F,
+) -> impl Stream<Item = R> + Send + 'static
+where
+    T: Send + 'static + Clone,
+    R: Send + 'static,
+    F: Fn(&Vec<T>) -> R + Send + 'static,
+{
+    stream
+        .sliding_window_with_step_rs2(window_size, 1)
+        .map_rs2(move |window| aggregate_fn(&window))
+}
+
+/// Moving average calculation
+pub fn moving_average(
+    stream: impl Stream<Item = f64> + Send + 'static + RS2StreamExt,
+    window_size: usize,
+) -> impl Stream<Item = f64> + Send + 'static {
+    sliding_window_aggregate(stream, window_size, |values| {
+        if values.is_empty() {
+            0.0
+        } else {
+            values.iter().sum::<f64>() / values.len() as f64
         }
-    }
-    .boxed()
+    })
+}
+
+/// Count events in sliding window
+pub fn sliding_count<T>(
+    stream: impl Stream<Item = T> + Send + 'static + RS2StreamExt,
+    window_size: usize,
+) -> impl Stream<Item = usize> + Send + 'static
+where
+    T: Send + 'static + Clone,
+{
+    sliding_window_aggregate(stream, window_size, |values| values.len())
+}
+
+/// Sum values in sliding window
+pub fn sliding_sum<T>(
+    stream: impl Stream<Item = T> + Send + 'static + RS2StreamExt,
+    window_size: usize,
+) -> impl Stream<Item = T> + Send + 'static
+where
+    T: Send + 'static + std::iter::Sum + Clone + Default,
+{
+    sliding_window_aggregate(stream, window_size, |values| {
+        values.iter().cloned().sum()
+    })
+}
+
+/// Find minimum in sliding window
+pub fn sliding_min<T>(
+    stream: impl Stream<Item = T> + Send + 'static + RS2StreamExt,
+    window_size: usize,
+) -> impl Stream<Item = Option<T>> + Send + 'static
+where
+    T: Send + 'static + Ord + Clone,
+{
+    sliding_window_aggregate(stream, window_size, |values| {
+        values.iter().min().cloned()
+    })
+}
+
+/// Find maximum in sliding window
+pub fn sliding_max<T>(
+    stream: impl Stream<Item = T> + Send + 'static + RS2StreamExt,
+    window_size: usize,
+) -> impl Stream<Item = Option<T>> + Send + 'static
+where
+    T: Send + 'static + Ord + Clone,
+{
+    sliding_window_aggregate(stream, window_size, |values| {
+        values.iter().max().cloned()
+    })
+}
+
+// ================================
+// Time-based Aggregations
+// ================================
+
+/// Group events by time buckets
+pub fn group_by_time<T, F>(
+    stream: impl Stream<Item = T> + Send + 'static + RS2StreamExt,
+    bucket_size: Duration,
+    timestamp_fn: F,
+) -> impl Stream<Item = (SystemTime, Vec<T>)> + Send + 'static
+where
+    T: Clone + Send + 'static,
+    F: Fn(&T) -> SystemTime + Send + 'static,
+{
+    stream
+        .map_rs2(move |event| {
+            let timestamp = timestamp_fn(&event);
+            let since_epoch = timestamp.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+            let bucket_secs = bucket_size.as_secs();
+            let bucket_start_secs = (since_epoch.as_secs() / bucket_secs) * bucket_secs;
+            let bucket_start = SystemTime::UNIX_EPOCH + Duration::from_secs(bucket_start_secs);
+            (bucket_start, event)
+        })
+        .group_by_rs2(|(bucket_start, _)| *bucket_start)
+        .map_rs2(|(bucket_start, events)| {
+            let values = events.into_iter().map(|(_, event)| event).collect();
+            (bucket_start, values)
+        })
 }
 
 // ================================
@@ -235,49 +374,128 @@ where
 // ================================
 
 /// Extension trait for advanced analytics
-pub trait AdvancedAnalyticsExt: Stream + Send + Sized + 'static {
+pub trait AdvancedAnalyticsExt: Stream + Send + Sized + 'static + RS2StreamExt {
     /// Apply time-based windowing to the stream
     fn window_by_time_rs2<F>(
         self,
         config: TimeWindowConfig,
         timestamp_fn: F,
-    ) -> RS2Stream<TimeWindow<<Self as Stream>::Item>>
+    ) -> impl Stream<Item = TimeWindow<Self::Item>> + Send + 'static
     where
-        <Self as Stream>::Item: Clone + Send + 'static,
-        F: Fn(&<Self as Stream>::Item) -> SystemTime + Send + 'static,
+        Self::Item: Clone + Send + 'static,
+        F: Fn(&Self::Item) -> SystemTime + Send + 'static,
     {
-        window_by_time(self.boxed(), config, timestamp_fn)
+        window_by_time(self, config, timestamp_fn)
     }
-    /// Join with another stream using time windows
-    fn join_with_time_window_rs2<T2, F, G1, G2, K, FK1, FK2>(
+
+    /// Join with another stream using time windows (simplified)
+    fn join_with_time_window_rs2<T2, F, G1, G2>(
         self,
-        other: RS2Stream<T2>,
+        other: impl Stream<Item = T2> + Send + 'static + RS2StreamExt,
         config: TimeJoinConfig,
         timestamp_fn1: G1,
         timestamp_fn2: G2,
         join_fn: F,
-        key_selector: Option<(FK1, FK2)>,
-    ) -> RS2Stream<(Self::Item, T2)>
+    ) -> impl Stream<Item = (Self::Item, T2)> + Send + 'static
     where
-        Self::Item: Clone + Send + Sync + 'static,
-        T2: Clone + Send + Sync + 'static,
+        Self::Item: Clone + Send + 'static,
+        T2: Clone + Send + 'static,
         F: Fn(Self::Item, T2) -> (Self::Item, T2) + Send + 'static,
         G1: Fn(&Self::Item) -> SystemTime + Send + 'static,
         G2: Fn(&T2) -> SystemTime + Send + 'static,
-        K: Eq + std::hash::Hash,
-        FK1: Fn(&Self::Item) -> K + Send + Sync + 'static,
-        FK2: Fn(&T2) -> K + Send + Sync + 'static,
     {
         join_with_time_window(
-            self.boxed(),
+            self,
             other,
             config,
             timestamp_fn1,
             timestamp_fn2,
             join_fn,
-            key_selector,
         )
+    }
+
+    /// Apply sliding window aggregation
+    fn sliding_window_aggregate_rs2<R, F>(
+        self,
+        window_size: usize,
+        aggregate_fn: F,
+    ) -> impl Stream<Item = R> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+        R: Send + 'static,
+        F: Fn(&Vec<Self::Item>) -> R + Send + 'static,
+    {
+        sliding_window_aggregate(self, window_size, aggregate_fn)
+    }
+
+    /// Calculate moving average (for numeric streams)
+    fn moving_average_rs2(
+        self,
+        window_size: usize,
+    ) -> impl Stream<Item = f64> + Send + 'static
+    where
+        Self::Item: Into<f64> + Send + 'static,
+    {
+        let numeric_stream = self.map_rs2(|x| x.into());
+        moving_average(numeric_stream, window_size)
+    }
+
+    /// Count items in sliding window
+    fn sliding_count_rs2(
+        self,
+        window_size: usize,
+    ) -> impl Stream<Item = usize> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        sliding_count(self, window_size)
+    }
+
+    /// Sum items in sliding window
+    fn sliding_sum_rs2(
+        self,
+        window_size: usize,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + std::iter::Sum + Clone + Default,
+    {
+        sliding_sum(self, window_size)
+    }
+
+    /// Find minimum in sliding window
+    fn sliding_min_rs2(
+        self,
+        window_size: usize,
+    ) -> impl Stream<Item = Option<Self::Item>> + Send + 'static
+    where
+        Self::Item: Send + 'static + Ord + Clone,
+    {
+        sliding_min(self, window_size)
+    }
+
+    /// Find maximum in sliding window
+    fn sliding_max_rs2(
+        self,
+        window_size: usize,
+    ) -> impl Stream<Item = Option<Self::Item>> + Send + 'static
+    where
+        Self::Item: Send + 'static + Ord + Clone,
+    {
+        sliding_max(self, window_size)
+    }
+
+    /// Group events by time buckets
+    fn group_by_time_rs2<F>(
+        self,
+        bucket_size: Duration,
+        timestamp_fn: F,
+    ) -> impl Stream<Item = (SystemTime, Vec<Self::Item>)> + Send + 'static
+    where
+        Self::Item: Clone + Send + 'static,
+        F: Fn(&Self::Item) -> SystemTime + Send + 'static,
+    {
+        group_by_time(self, bucket_size, timestamp_fn)
     }
 }
 
-impl<S> AdvancedAnalyticsExt for S where S: Stream + Send + Sized + 'static {}
+impl<S> AdvancedAnalyticsExt for S where S: Stream + Send + Sized + 'static + RS2StreamExt {} 

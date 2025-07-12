@@ -1,11 +1,10 @@
-use futures_util::StreamExt;
 use rs2_stream::media::chunk_processor::{
     ChunkProcessingError, ChunkProcessor, ChunkProcessorConfig,
 };
 use rs2_stream::media::codec::{EncodingConfig, MediaCodec};
 use rs2_stream::media::types::{ChunkType, MediaChunk, MediaPriority};
 use rs2_stream::queue::Queue;
-use rs2_stream::rs2::*;
+use rs2_stream::stream::{StreamExt, from_iter};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -34,7 +33,7 @@ fn test_chunk_processor_basic() {
         let chunk_stream = from_iter(vec![chunk.clone()]);
 
         // Process the chunk stream
-        let mut result_stream = processor.process_chunk_stream(chunk_stream);
+        let mut result_stream = processor.process_chunks(chunk_stream);
 
         // Get the result
         let result = result_stream.next().await.unwrap();
@@ -43,7 +42,7 @@ fn test_chunk_processor_basic() {
         assert!(result.is_ok());
 
         // Verify chunk was added to output queue
-        let mut dequeue_stream = output_queue.dequeue();
+        let mut dequeue_stream = output_queue.stream();
         let output_chunk = dequeue_stream.next().await.unwrap();
         assert_eq!(output_chunk.stream_id, "test_stream");
         assert_eq!(output_chunk.sequence_number, 1);
@@ -70,7 +69,7 @@ fn test_chunk_processor_validation() {
         let invalid_chunk_stream = from_iter(vec![invalid_chunk]);
 
         // Process the invalid chunk stream
-        let mut result_stream = processor.process_chunk_stream(invalid_chunk_stream);
+        let mut result_stream = processor.process_chunks(invalid_chunk_stream);
 
         // Get the result
         let result = result_stream.next().await.unwrap();
@@ -91,7 +90,7 @@ fn test_chunk_processor_validation() {
         let valid_chunk_stream = from_iter(vec![valid_chunk]);
 
         // Process the valid chunk stream
-        let mut result_stream = processor.process_chunk_stream(valid_chunk_stream);
+        let mut result_stream = processor.process_chunks(valid_chunk_stream);
 
         // Get the result
         let result = result_stream.next().await.unwrap();
@@ -125,14 +124,14 @@ fn test_chunk_processor_stats() {
             let chunk_stream = from_iter(vec![chunk.clone()]);
 
             // Process the chunk
-            let mut result_stream = processor.process_chunk_stream(chunk_stream);
+            let mut result_stream = processor.process_chunks(chunk_stream);
 
             // Get and verify the result
             let result = result_stream.next().await.unwrap();
             assert!(result.is_ok());
 
             // Verify chunk was added to output queue
-            let mut dequeue_stream = output_queue.dequeue();
+            let mut dequeue_stream = output_queue.stream();
             let output_chunk = dequeue_stream.next().await.unwrap();
             assert_eq!(output_chunk.sequence_number, i);
         }

@@ -1,10 +1,12 @@
-use futures_util::stream::StreamExt;
-use rand::{thread_rng, Rng};
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
+use rand::{thread_rng, Rng};
 use rs2_stream::stream_performance_metrics::HealthThresholds;
 use std::error::Error;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 // Simulate a slow operation that may fail sometimes
 async fn process_item(item: i32) -> Result<i32, Box<dyn Error + Send + Sync>> {
@@ -88,7 +90,7 @@ fn main() {
 
         // Process the stream with enhanced metrics tracking
         let mut results = Vec::new();
-        let mut metrics_stream = std::pin::pin!(metrics_stream);
+        let mut metrics_stream: Pin<&mut _> = std::pin::pin!(metrics_stream);
 
         while let Some(item) = metrics_stream.next().await {
             let start = std::time::Instant::now();
@@ -129,7 +131,7 @@ fn main() {
         let mut error_count = 0;
         let mut retry_count = 0;
 
-        let mut metrics_stream = std::pin::pin!(metrics_stream);
+        let mut metrics_stream: Pin<&mut _> = std::pin::pin!(metrics_stream);
 
         while let Some(item) = metrics_stream.next().await {
             let start = std::time::Instant::now();

@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use rs2_stream::rs2;
-use rs2_stream::rs2_new_stream_ext::RS2StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::rs2_stream_ext::RS2StreamExt as RS2OriginalStreamExt;
 use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::advanced_analytics::{AdvancedAnalyticsExt, TimeWindowConfig, TimeJoinConfig};
@@ -32,7 +32,7 @@ fn bench_map_filter_collect(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -71,7 +71,7 @@ fn bench_eval_map(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -111,7 +111,7 @@ fn bench_take(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -153,7 +153,7 @@ fn bench_merge(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &_size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &_size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data1: Vec<i32> = (0..half_size as i32).collect();
@@ -193,7 +193,7 @@ fn bench_chunk(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -234,7 +234,7 @@ fn bench_throttle(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -272,7 +272,7 @@ fn bench_parallel_map(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -310,7 +310,7 @@ fn bench_par_eval_map(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -350,7 +350,7 @@ fn bench_zip(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data1: Vec<i32> = (0..size as i32).collect();
@@ -390,7 +390,7 @@ fn bench_scan(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -428,7 +428,7 @@ fn bench_sliding_window(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -468,7 +468,7 @@ fn bench_batch_process(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -508,7 +508,7 @@ fn bench_distinct_until_changed(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).map(|x| x / 3).collect();
@@ -546,7 +546,7 @@ fn bench_group_adjacent_by(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).map(|x| x / 10).collect();
@@ -587,7 +587,7 @@ fn bench_debounce(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -624,7 +624,7 @@ fn bench_fold(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -653,13 +653,13 @@ fn bench_moving_average(c: &mut Criterion) {
 
     for &size in analytics_sizes {
         // RS2 New only (moving_average is new feature)
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<f64> = (0..size).map(|x| x as f64).collect();
                     let stream = from_iter(data);
                     let result: Vec<f64> = stream
-                        .moving_average_rs2_new(10)
+                        .moving_average_rs2(10)
                         .collect_rs2::<Vec<_>>()
                         .await;
                     black_box(result);
@@ -678,13 +678,13 @@ fn bench_sliding_window_aggregate(c: &mut Criterion) {
 
     for &size in analytics_sizes {
         // RS2 New only (sliding_window_aggregate is new feature)
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
                     let stream = from_iter(data);
                     let result: Vec<i32> = stream
-                        .sliding_window_aggregate_rs2_new(10, |window| window.iter().sum::<i32>())
+                        .sliding_window_aggregate_rs2(10, |window| window.iter().sum::<i32>())
                         .collect_rs2::<Vec<_>>()
                         .await;
                     black_box(result);
@@ -703,13 +703,13 @@ fn bench_sliding_count(c: &mut Criterion) {
 
     for &size in analytics_sizes {
         // RS2 New only (sliding_count is new feature)
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
                     let stream = from_iter(data);
                     let result: Vec<usize> = stream
-                        .sliding_count_rs2_new(5)
+                        .sliding_count_rs2(5)
                         .collect_rs2::<Vec<_>>()
                         .await;
                     black_box(result);
@@ -728,13 +728,13 @@ fn bench_sliding_sum(c: &mut Criterion) {
 
     for &size in analytics_sizes {
         // RS2 New only (sliding_sum is new feature)
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
                     let stream = from_iter(data);
                     let result: Vec<i32> = stream
-                        .sliding_sum_rs2_new(8)
+                        .sliding_sum_rs2(8)
                         .collect_rs2::<Vec<_>>()
                         .await;
                     black_box(result);
@@ -753,13 +753,13 @@ fn bench_sliding_min_max(c: &mut Criterion) {
 
     for &size in analytics_sizes {
         // RS2 New only (sliding_min/max are new features)
-        group.bench_with_input(BenchmarkId::new("rs2_new_min", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2_min", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
                     let stream = from_iter(data);
                     let result: Vec<Option<i32>> = stream
-                        .sliding_min_rs2_new(5)
+                        .sliding_min_rs2(5)
                         .collect_rs2::<Vec<_>>()
                         .await;
                     black_box(result);
@@ -767,13 +767,13 @@ fn bench_sliding_min_max(c: &mut Criterion) {
             })
         });
 
-        group.bench_with_input(BenchmarkId::new("rs2_new_max", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2_max", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
                     let stream = from_iter(data);
                     let result: Vec<Option<i32>> = stream
-                        .sliding_max_rs2_new(5)
+                        .sliding_max_rs2(5)
                         .collect_rs2::<Vec<_>>()
                         .await;
                     black_box(result);
@@ -815,7 +815,7 @@ fn bench_time_windowing(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<(i32, SystemTime)> = (0..size as i32)
@@ -829,7 +829,7 @@ fn bench_time_windowing(c: &mut Criterion) {
                         watermark_delay: Duration::from_secs(5),
                     };
                     let result: Vec<_> = stream
-                        .window_by_time_rs2_new(config, |&(_, timestamp)| timestamp)
+                        .window_by_time_rs2(config, |&(_, timestamp)| timestamp)
                         .collect_rs2::<Vec<_>>()
                         .await;
                     black_box(result);
@@ -848,7 +848,7 @@ fn bench_group_by_time(c: &mut Criterion) {
 
     for &size in analytics_sizes {
         // RS2 New only (group_by_time is new feature)
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<(i32, SystemTime)> = (0..size as i32)
@@ -856,7 +856,7 @@ fn bench_group_by_time(c: &mut Criterion) {
                         .collect();
                     let stream = from_iter(data);
                     let result: Vec<(SystemTime, Vec<(i32, SystemTime)>)> = stream
-                        .group_by_time_rs2_new(Duration::from_secs(30), |&(_, timestamp)| timestamp)
+                        .group_by_time_rs2(Duration::from_secs(30), |&(_, timestamp)| timestamp)
                         .collect_rs2::<Vec<_>>()
                         .await;
                     black_box(result);
@@ -911,7 +911,7 @@ fn bench_time_join(c: &mut Criterion) {
         });
 
         // RS2 New
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &_size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &_size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data1: Vec<(i32, SystemTime)> = (0..half_size as i32)
@@ -928,7 +928,7 @@ fn bench_time_join(c: &mut Criterion) {
                     };
                     
                     let result: Vec<_> = stream1
-                        .join_with_time_window_rs2_new(
+                        .join_with_time_window_rs2(
                             stream2,
                             config,
                             |&(_, timestamp)| timestamp,
@@ -969,7 +969,7 @@ fn bench_throttle_with_duration(c: &mut Criterion) {
         });
 
         // RS2 New with actual throttling
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();
@@ -1010,7 +1010,7 @@ fn bench_debounce_with_duration(c: &mut Criterion) {
         });
 
         // RS2 New with actual debouncing
-        group.bench_with_input(BenchmarkId::new("rs2_new", size), &size, |b, &size| {
+        group.bench_with_input(BenchmarkId::new("rs2", size), &size, |b, &size| {
             b.iter(|| {
                 rt.block_on(async {
                     let data: Vec<i32> = (0..size as i32).collect();

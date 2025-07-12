@@ -1,4 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use rs2_stream::state::{
     CustomKeyExtractor, StatefulStreamExt, StateStorage,
 };
@@ -8,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use futures_util::stream::{self, StreamExt};
 use async_trait::async_trait;
 
 // Test data structures
@@ -114,7 +116,7 @@ fn bench_stateful_map(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_map_rs2(config, key_extractor, |event, state_access| {
                         Box::pin(async move {
@@ -161,7 +163,7 @@ fn bench_stateful_filter(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_filter_rs2(config, key_extractor, |event, state_access| {
                         let event = event.clone();
@@ -216,7 +218,7 @@ fn bench_stateful_fold(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_fold_rs2(
                         config,
@@ -272,7 +274,7 @@ fn bench_stateful_window(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_window_rs2(config, key_extractor, 100, |window, state_access| {
                         Box::pin(async move {
@@ -324,8 +326,8 @@ fn bench_stateful_join(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let left_stream = stream::iter(left_events);
-                let right_stream = stream::iter(right_events);
+                let left_stream = from_iter(left_events);
+                let right_stream = from_iter(right_events);
 
                 let result = left_stream
                     .stateful_join_rs2(
@@ -362,7 +364,7 @@ fn bench_stateful_group_by(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_group_by_rs2(config, key_extractor, |key, group, state_access| {
                         Box::pin(async move {
@@ -417,7 +419,7 @@ fn bench_storage_backends(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_map_rs2(config, key_extractor, |event, state_access| {
                         Box::pin(async move {
@@ -457,7 +459,7 @@ fn bench_storage_backends(c: &mut Criterion) {
                     .with_custom_storage(storage);
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_map_rs2(config, key_extractor, |event, state_access| {
                         Box::pin(async move {
@@ -508,7 +510,7 @@ fn bench_state_configurations(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_map_rs2(config, key_extractor, |event, state_access| {
                         Box::pin(async move {
@@ -546,7 +548,7 @@ fn bench_state_configurations(c: &mut Criterion) {
                 let config = StateConfigs::long_lived();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_map_rs2(config, key_extractor, |event, state_access| {
                         Box::pin(async move {
@@ -585,7 +587,7 @@ fn bench_state_configurations(c: &mut Criterion) {
                     .ttl(Duration::from_secs(300));
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_map_rs2(config, key_extractor, |event, state_access| {
                         Box::pin(async move {
@@ -636,7 +638,7 @@ fn bench_cardinality_impact(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_map_rs2(config, key_extractor, |event, state_access| {
                         Box::pin(async move {
@@ -674,7 +676,7 @@ fn bench_cardinality_impact(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_map_rs2(config, key_extractor, |event, state_access| {
                         Box::pin(async move {
@@ -725,7 +727,7 @@ fn bench_specialized_operations(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_deduplicate_rs2(config, key_extractor, Duration::from_secs(60), |event| event)
                     .collect::<Vec<_>>()
@@ -740,7 +742,7 @@ fn bench_specialized_operations(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_throttle_rs2(
                         config,
@@ -761,7 +763,7 @@ fn bench_specialized_operations(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_session_rs2(
                         config,
@@ -794,7 +796,7 @@ fn bench_memory_usage(c: &mut Criterion) {
                 let config = StateConfigs::session();
                 let key_extractor = CustomKeyExtractor::new(|event: &TestEvent| event.user_id.clone());
 
-                let stream = stream::iter(events);
+                let stream = from_iter(events);
                 let result = stream
                     .stateful_map_rs2(config, key_extractor, |event, state_access| {
                         Box::pin(async move {

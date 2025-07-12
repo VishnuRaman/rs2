@@ -1,4 +1,6 @@
-use futures_util::StreamExt;
+use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use rs2_stream::queue::Queue;
 use tokio::runtime::Runtime;
 
@@ -115,7 +117,7 @@ fn test_queue_try_enqueue_unbounded() {
 fn test_queue_close_unbounded() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let queue = Queue::<i32>::unbounded();
+        let mut queue = Queue::<i32>::unbounded();
 
         // Enqueue some items
         assert!(queue.enqueue(1).await.is_ok());

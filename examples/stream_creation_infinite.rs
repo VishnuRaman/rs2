@@ -1,6 +1,7 @@
 use futures_util::stream::StreamExt;
 use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
+use rs2_stream::stream::{repeat, unfold};
 
 fn main() {
     let rt = Runtime::new().unwrap();

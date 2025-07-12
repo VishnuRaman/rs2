@@ -1,6 +1,6 @@
-use async_stream::stream;
-use futures_util::stream::StreamExt;
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 

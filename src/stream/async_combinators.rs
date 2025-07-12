@@ -1,11 +1,23 @@
 //! Async/parallel combinators: buffered, buffer_unordered, for_each_concurrent, try_for_each_concurrent
+use crate::stream::{Stream, StreamExt};
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use tokio::time::{Duration, Instant};
 use std::future::Future;
-use super::core::Stream;
 use tokio::task::{JoinHandle, spawn};
-use std::collections::VecDeque;
-use futures_util::FutureExt;
+
+// Helper function to poll a pinned future
+fn poll_pinned_future<F: Future + Unpin>(
+    future: &mut F,
+    cx: &mut Context<'_>,
+) -> Poll<F::Output> {
+    // Safety: we know the future is Unpin, so this is safe
+    unsafe {
+        let mut pinned = Pin::new_unchecked(future);
+        pinned.as_mut().poll(cx)
+    }
+}
 
 // ================================
 // Buffered - Ordered Execution (keeps VecDeque for order)
@@ -56,7 +68,7 @@ where
 
         // Poll the front future (maintaining order)
         if let Some(front_fut) = this.futures.front_mut() {
-            match front_fut.poll_unpin(cx) {
+            match poll_pinned_future(front_fut, cx) {
                 Poll::Ready(result) => {
                     this.futures.pop_front();
                     return Poll::Ready(Some(result));
@@ -125,7 +137,7 @@ where
         while i > 0 {
             i -= 1;
             if let Some(future) = this.futures.get_mut(i) {
-                match future.poll_unpin(cx) {
+                match poll_pinned_future(future, cx) {
                     Poll::Ready(result) => {
                         // O(1) removal using swap_remove
                         this.futures.swap_remove(i);
@@ -200,7 +212,7 @@ where
         while i > 0 {
             i -= 1;
             if let Some(future) = this.futures.get_mut(i) {
-                match future.poll_unpin(cx) {
+                match poll_pinned_future(future, cx) {
                     Poll::Ready(result) => {
                         // O(1) removal using swap_remove
                         this.futures.swap_remove(i);
@@ -289,7 +301,7 @@ where
         while i > 0 {
             i -= 1;
             if let Some(future) = this.futures.get_mut(i) {
-                match future.poll_unpin(cx) {
+                match poll_pinned_future(future, cx) {
                     Poll::Ready(result) => {
                         // O(1) removal using swap_remove
                         this.futures.swap_remove(i);
@@ -319,6 +331,63 @@ where
             Poll::Pending
         } else {
             Poll::Ready(Ok(()))
+        }
+    }
+}
+
+// ================================
+// AsyncFilterMap - Async filter_map combinator
+// ================================
+
+pub struct AsyncFilterMap<S, F, Fut, U>
+where
+    S: Stream,
+    F: FnMut(S::Item) -> Fut,
+    Fut: Future<Output = Option<U>>,
+{
+    pub(crate) stream: S,
+    pub(crate) f: F,
+    pub(crate) future: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Option<U>> + Send + 'static>>>,
+}
+
+impl<S, F, Fut, U> Stream for AsyncFilterMap<S, F, Fut, U>
+where
+    S: Stream + Unpin,
+    F: FnMut(S::Item) -> Fut,
+    Fut: Future<Output = Option<U>> + Send + 'static,
+    U: Send + 'static,
+{
+    type Item = U;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = unsafe { self.as_mut().get_unchecked_mut() };
+
+        // If we have a future, poll it
+        if let Some(future) = &mut this.future {
+            match poll_pinned_future(future, cx) {
+                Poll::Ready(Some(item)) => {
+                    this.future = None;
+                    return Poll::Ready(Some(item));
+                }
+                Poll::Ready(None) => {
+                    this.future = None;
+                    // Continue to get next item from stream
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        // Get next item from stream and start processing it
+        let stream = unsafe { Pin::new_unchecked(&mut this.stream) };
+        match stream.poll_next(cx) {
+            Poll::Ready(Some(item)) => {
+                let future = (this.f)(item);
+                this.future = Some(Box::pin(future));
+                // Poll the new future immediately
+                self.poll_next(cx)
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -403,6 +472,21 @@ pub trait AsyncStreamExt: Stream + Sized {
             futures: Vec::new(),
             done: false,
             error: None
+        }
+    }
+
+    /// Filter and map over stream items with an async function
+    fn filter_map_async<F, Fut, U>(self, f: F) -> AsyncFilterMap<Self, F, Fut, U>
+    where
+        Self: Unpin,
+        F: FnMut(Self::Item) -> Fut,
+        Fut: Future<Output = Option<U>> + Send + 'static,
+        U: Send + 'static,
+    {
+        AsyncFilterMap {
+            stream: self,
+            f,
+            future: None,
         }
     }
 }

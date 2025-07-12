@@ -4,8 +4,10 @@ use std::task::{Context, Poll};
 use std::collections::{VecDeque, HashMap, BTreeMap};
 use std::time::{Duration, Instant};
 
-use super::core::Stream;
-use crate::stream::core::StreamExt;
+use crate::stream::Stream;
+use crate::stream::StreamExt;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 /// Configuration for parallel execution
 #[derive(Debug, Clone)]
@@ -281,16 +283,24 @@ where
             }
         }
 
-        if this.batch.len() >= batch_size || (this.source_done && !this.batch.is_empty()) {
+        // Start batch processing if we have items and no worker is running
+        if (this.batch.len() >= batch_size || (this.source_done && !this.batch.is_empty())) && this.worker_handle.is_none() {
             this.start_batch_processing();
-            return Poll::Pending;
+            // Continue the loop to check if the worker completed immediately
+            // and return any buffered items
         }
 
+        // Check if we're done
         if this.source_done && this.batch.is_empty() && this.worker_handle.is_none() {
             return Poll::Ready(None);
         }
 
-        Poll::Pending
+        // If we have a worker running or items in batch, we're pending
+        if this.worker_handle.is_some() || !this.batch.is_empty() {
+            Poll::Pending
+        } else {
+            Poll::Pending
+        }
     }
 }
 
@@ -353,6 +363,15 @@ pub trait ParallelStreamExt: Stream + Sized + Send + 'static {
             ..Default::default()
         };
         ParEvalMapUnordered::new(self, f, config)
+    }
+
+    /// Parallel join - processes multiple streams concurrently
+    fn par_join<O>(self, concurrency: usize) -> ParJoin<Self, O>
+    where
+        Self::Item: Stream<Item = O> + Send + 'static,
+        O: Send + 'static + Unpin,
+    {
+        ParJoin::new(self, concurrency)
     }
 }
 
@@ -455,7 +474,7 @@ where
 
         // Poll in-flight futures
         let mut completed_futures = Vec::new();
-        
+
         for (i, (fut, _start_time)) in this.in_flight.iter_mut().enumerate() {
             match fut.as_mut().poll(cx) {
                 Poll::Ready(result) => {
@@ -486,4 +505,117 @@ where
     }
 }
 
-impl<S> ParallelStreamExt for S where S: Stream + Send + 'static {}
+/// Parallel join - processes multiple streams concurrently
+/// This is a simplified version that uses pinning but not dynamic dispatch
+pub struct ParJoin<S, O> {
+    source: Pin<Box<S>>,
+    concurrency: usize,
+    active_streams: Vec<Box<dyn Stream<Item = O> + Send>>,
+    completed: VecDeque<O>,
+    source_done: bool,
+}
+
+impl<S, O> ParJoin<S, O>
+where
+    S: Stream + Send + 'static,
+    S::Item: Stream<Item = O> + Send + 'static,
+    O: Send + 'static,
+{
+    pub fn new(source: S, concurrency: usize) -> Self {
+        Self {
+            source: Box::pin(source),
+            concurrency: concurrency.max(1),
+            active_streams: Vec::new(),
+            completed: VecDeque::new(),
+            source_done: false,
+        }
+    }
+}
+
+impl<S, O> Stream for ParJoin<S, O>
+where
+    S: Stream + Send + 'static,
+    S::Item: Stream<Item = O> + Send + 'static,
+    O: Send + 'static + Unpin,
+{
+    type Item = O;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        // Return completed items first
+        if let Some(result) = this.completed.pop_front() {
+            return Poll::Ready(Some(result));
+        }
+
+        // Main processing loop
+        loop {
+            // Fill up active streams up to concurrency limit
+            while this.active_streams.len() < this.concurrency && !this.source_done {
+                match this.source.as_mut().poll_next(cx) {
+                    Poll::Ready(Some(stream)) => {
+                        // Convert the stream to Box<dyn Stream> and add it
+                        let boxed_stream = Box::new(stream) as Box<dyn Stream<Item = O> + Send>;
+                        this.active_streams.push(boxed_stream);
+                    }
+                    Poll::Ready(None) => {
+                        this.source_done = true;
+                        break;
+                    }
+                    Poll::Pending => {
+                        break;
+                    }
+                }
+            }
+
+            // Poll all active streams
+            let mut completed_streams = Vec::new();
+            let mut made_progress = false;
+
+            for (i, stream) in this.active_streams.iter_mut().enumerate() {
+                // Poll the boxed stream using Pin::new
+                match Pin::new(stream).poll_next(cx) {
+                    Poll::Ready(Some(item)) => {
+                        this.completed.push_back(item);
+                        made_progress = true;
+                    }
+                    Poll::Ready(None) => {
+                        completed_streams.push(i);
+                        made_progress = true;
+                    }
+                    Poll::Pending => {
+                        // Stream is not ready
+                    }
+                }
+            }
+
+            // Remove completed streams (in reverse order to maintain indices)
+            for &index in completed_streams.iter().rev() {
+                this.active_streams.remove(index);
+            }
+
+            // Return completed items if any
+            if let Some(result) = this.completed.pop_front() {
+                return Poll::Ready(Some(result));
+            }
+
+            // If we made progress (completed streams), try to get more streams
+            if made_progress && !this.source_done && this.active_streams.len() < this.concurrency {
+                continue; // Continue the loop to get more streams
+            }
+
+            // Check if we're done
+            if this.source_done && this.active_streams.is_empty() && this.completed.is_empty() {
+                return Poll::Ready(None);
+            }
+
+            // If no progress was made and we can't get more streams, return Pending
+            if !made_progress {
+                return Poll::Pending;
+            }
+        }
+    }
+}
+
+impl<S> ParallelStreamExt for S where S: Stream + Send + 'static {
+}

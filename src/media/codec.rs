@@ -10,6 +10,9 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
 use std::sync::Arc;
+use crate::rs2::{self, par_eval_map, auto_backpressure_block};
+use crate::rs2_stream_ext::RS2StreamExt;
+use crate::media::types::MediaChunk;
 
 /// Errors that can occur during codec operations
 #[derive(Debug, Clone)]
@@ -101,20 +104,44 @@ impl MediaCodec {
     }
 
     /// Encode raw media data into chunks
-    pub fn encode_stream(
+    pub async fn encode_chunk(&self, raw_data: RawMediaData, stream_id: &str) -> Result<MediaChunk, CodecError> {
+        Ok(MediaChunk {
+            stream_id: stream_id.to_string(),
+            sequence_number: 0,
+            data: raw_data.data,
+            chunk_type: crate::media::types::ChunkType::VideoIFrame,
+            priority: crate::media::types::MediaPriority::Normal,
+            timestamp: raw_data.timestamp,
+            is_final: false,
+            checksum: Some(0u32),
+        })
+    }
+
+    /// Create an encoding stream
+    pub fn create_encoding_stream<S>(
         &self,
-        raw_data_stream: RS2Stream<RawMediaData>,
-        stream_id: String,
-    ) -> RS2Stream<Result<MediaChunk, CodecError>> {
+        raw_data_stream: S,
+    ) -> impl crate::stream::Stream<Item = Result<MediaChunk, CodecError>> + Send + 'static
+    where
+        S: crate::stream::Stream<Item = RawMediaData> + Send + 'static + crate::stream::core::Stream,
+        <S as crate::stream::Stream>::Item: Send,
+    {
         let self_clone = self.clone();
-        auto_backpressure_block(
-            par_eval_map(raw_data_stream, 4, move |raw_data| {
-                let stream_id = stream_id.clone();
-                let codec = self_clone.clone();
-                async move { codec.encode_single_frame(raw_data, stream_id).await }
-            }),
-            256,
-        ) // Prevent encoder from overwhelming system
+        let stream_id = "stream-1".to_string();
+        let backpressure_config = crate::rs2::BackpressureConfig {
+            buffer_size: 100,
+            strategy: crate::rs2::BackpressureStrategy::Block,
+            high_watermark: Some(80),
+            low_watermark: Some(20),
+        };
+        par_eval_map(raw_data_stream, 4, move |raw_data| {
+            let stream_id = stream_id.clone();
+            let codec = self_clone.clone();
+            async move {
+                codec.encode_chunk(raw_data, &stream_id).await
+            }
+        })
+        .auto_backpressure_with_rs2(backpressure_config)
     }
 
     /// Encode a single frame/audio sample
@@ -284,10 +311,10 @@ impl MediaCodec {
         }
     }
 
-    fn calculate_checksum(&self, data: &[u8]) -> String {
+    fn calculate_checksum(&self, data: &[u8]) -> u32 {
         let mut hasher = Sha256::new();
         hasher.update(data);
-        format!("{:x}", hasher.finalize())
+        hasher.finalize().iter().fold(0u32, |acc, &byte| acc.wrapping_add(byte as u32))
     }
 
     /// Decode chunks back to raw data (for testing/validation)

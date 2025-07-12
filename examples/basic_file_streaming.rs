@@ -7,8 +7,9 @@
 //! 4. Process and display the media chunks
 
 use chrono::Utc;
-use futures_util::StreamExt;
-use rs2_stream::media::streaming::StreamingServiceFactory;
+use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use rs2_stream::media::types::{MediaChunk, MediaStream, MediaType, QualityLevel};
 use std::collections::HashMap;
 use std::path::PathBuf;

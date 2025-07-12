@@ -1,9 +1,10 @@
-use futures::StreamExt;
+use rs2_stream::stream::StreamExt;
 use rs2_stream::state::stream_ext::StateAccess;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tokio;
+use rs2_stream::stream::constructors::from_iter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestData {
@@ -63,7 +64,7 @@ async fn test_stateful_reduce() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_reduce_rs2(
         config,
         key_extractor,
@@ -118,7 +119,7 @@ async fn test_stateful_group_by() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_group_by_rs2(
         config,
         key_extractor,
@@ -205,7 +206,7 @@ async fn test_stateful_group_by_advanced() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_group_by_advanced_rs2(
         config,
         key_extractor,
@@ -293,7 +294,7 @@ async fn test_stateful_deduplicate() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_deduplicate_rs2(
         config,
         key_extractor,
@@ -453,7 +454,7 @@ async fn test_stateful_session() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_session_rs2(
         config,
         key_extractor,
@@ -516,7 +517,7 @@ async fn test_stateful_pattern() {
         }, // Different key, shouldn't affect pattern
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_pattern_rs2(
         config,
         key_extractor,
@@ -770,7 +771,7 @@ async fn test_stateful_operations_with_empty_state() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             let state_bytes = state_access.get().await.unwrap_or(Vec::new());
@@ -835,7 +836,7 @@ async fn test_stateful_operations_with_concurrent_keys() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_reduce_rs2(
         config,
         key_extractor,
@@ -899,7 +900,7 @@ async fn test_stateful_window_with_overlapping_windows() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_window_rs2(
         config,
         key_extractor,
@@ -987,7 +988,7 @@ async fn test_stateful_session_with_timeout() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_session_rs2(
         config,
         key_extractor,
@@ -1043,7 +1044,7 @@ async fn test_stateful_pattern_with_complex_sequence() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_pattern_rs2(
         config,
         key_extractor,
@@ -1186,8 +1187,8 @@ async fn test_stateful_join_with_multiple_matches() {
         }
     });
 
-    let stream1 = tokio_stream::wrappers::UnboundedReceiverStream::new(stream1_rx);
-    let stream2 = tokio_stream::wrappers::UnboundedReceiverStream::new(stream2_rx);
+    let stream1 = from_iter(data1);
+    let stream2 = from_iter(data2);
 
     let result_stream = stream1.stateful_join_rs2(
         Box::pin(stream2),
@@ -1318,7 +1319,7 @@ async fn test_stateful_throttle_with_multiple_keys() {
     ];
 
     // Emit all items as fast as possible
-    let stream = futures::stream::iter(data.clone().into_iter().map(|mut item| {
+    let stream = from_iter(data.clone().into_iter().map(|mut item| {
         item.value = format!("{}-{}", item.value, "test");
         item
     }));
@@ -1430,7 +1431,7 @@ async fn test_stateful_deduplicate_with_custom_comparison() {
         is_new_session: None,
     });
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_deduplicate_rs2(
         config,
         key_extractor,
@@ -1490,7 +1491,7 @@ async fn test_stateful_group_by_with_aggregation() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_group_by_rs2(
         config,
         key_extractor,
@@ -1578,7 +1579,7 @@ async fn test_stateful_window_sliding_overlap() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_window_rs2_advanced(
         config,
         key_extractor,
@@ -1621,7 +1622,7 @@ async fn test_stateful_window_partial_window() {
         count: 5,
         is_new_session: None,
     }];
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_window_rs2_advanced(
         config,
         key_extractor,
@@ -1681,7 +1682,7 @@ async fn test_stateful_window_multi_key() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter(data);
     let result_stream = stream.stateful_window_rs2_advanced(
         config,
         key_extractor,

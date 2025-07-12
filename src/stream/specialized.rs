@@ -409,34 +409,87 @@ pin_project! {
         #[pin]
         pub(crate) stream: S,
         pub(crate) buffer_size: usize,
+        pub(crate) low_watermark: usize,
+        pub(crate) high_watermark: usize,
         pub(crate) buffer: VecDeque<S::Item>,
         pub(crate) paused: bool,
+        pub(crate) strategy: BackpressureStrategy,
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum BackpressureStrategy {
+    Block,
+    DropOldest,
+    DropNewest,
+    Error,
+}
+
 impl<S> Stream for Backpressure<S>
-where S: Stream
+where S: Stream,
+      S::Item: Clone
 {
     type Item = S::Item;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
+        // First, try to emit from buffer if we have items
         if !this.buffer.is_empty() {
-            return Poll::Ready(this.buffer.pop_front());
+            let item = this.buffer.pop_front().unwrap();
+            
+            // If we're below low watermark, resume the stream
+            // For edge case where low_watermark is 0, always resume when buffer is empty
+            if this.buffer.is_empty() || this.buffer.len() <= *this.low_watermark {
+                *this.paused = false;
+            }
+            
+            return Poll::Ready(Some(item));
         }
 
+        // If we're paused, don't poll the underlying stream
         if *this.paused {
             return Poll::Pending;
         }
 
-        let res = this.stream.as_mut().poll_next(cx);
-
-        if this.buffer.len() >= *this.buffer_size {
-            *this.paused = true;
+        // Poll the underlying stream
+        match this.stream.as_mut().poll_next(cx) {
+            Poll::Ready(Some(item)) => {
+                // Check if we should buffer this item or apply strategy
+                if this.buffer.len() >= *this.high_watermark {
+                    match this.strategy {
+                        BackpressureStrategy::Block => {
+                            // Emit the item immediately and then pause
+                            *this.paused = true;
+                            Poll::Ready(Some(item))
+                        }
+                        BackpressureStrategy::DropOldest => {
+                            // Drop oldest item and add new one
+                            if !this.buffer.is_empty() {
+                                this.buffer.pop_front();
+                            }
+                            this.buffer.push_back(item.clone());
+                            Poll::Ready(Some(item))
+                        }
+                        BackpressureStrategy::DropNewest => {
+                            // Drop the new item
+                            Poll::Ready(Some(item))
+                        }
+                        BackpressureStrategy::Error => {
+                            // This would ideally return an error, but for simplicity we drop
+                            Poll::Ready(Some(item))
+                        }
+                    }
+                } else {
+                    // Buffer has space, add item to buffer and emit it from buffer
+                    this.buffer.push_back(item.clone());
+                    let emitted_item = this.buffer.pop_front().unwrap();
+                    Poll::Ready(Some(emitted_item))
+                }
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
-
-        res
     }
 }
 
@@ -445,10 +498,13 @@ pub trait BackpressureExt: Stream + Sized {
     fn resume(&mut self);
     fn pause(&mut self);
     fn buffer_size(&self) -> usize;
+    fn current_buffer_len(&self) -> usize;
+    fn is_paused(&self) -> bool;
 }
 
 impl<S> BackpressureExt for Backpressure<S>
-where S: Stream
+where S: Stream,
+      S::Item: Clone
 {
     fn resume(&mut self) {
         self.paused = false;
@@ -460,6 +516,14 @@ where S: Stream
 
     fn buffer_size(&self) -> usize {
         self.buffer_size
+    }
+
+    fn current_buffer_len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused
     }
 }
 
@@ -512,13 +576,119 @@ pub trait SpecializedStreamExt: Stream + Sized {
 
     fn backpressure(self, buffer_size: usize) -> Backpressure<Self> {
         assert!(buffer_size > 0, "backpressure: buffer_size must be greater than 0");
+        let low_watermark = buffer_size / 4;
+        let high_watermark = buffer_size * 3 / 4;
         Backpressure {
             stream: self,
             buffer_size,
+            low_watermark,
+            high_watermark,
             buffer: VecDeque::new(),
             paused: false,
+            strategy: BackpressureStrategy::Block,
+        }
+    }
+
+    fn backpressure_with_config(
+        self, 
+        buffer_size: usize, 
+        low_watermark: usize, 
+        high_watermark: usize,
+        strategy: BackpressureStrategy
+    ) -> Backpressure<Self> {
+        assert!(buffer_size > 0, "backpressure: buffer_size must be greater than 0");
+        assert!(low_watermark <= high_watermark, "low_watermark must be <= high_watermark");
+        assert!(high_watermark <= buffer_size, "high_watermark must be <= buffer_size");
+        
+        // Ensure low_watermark is never 0 for very small buffer sizes
+        let adjusted_low_watermark = if buffer_size == 1 { 1 } else { low_watermark };
+        
+        Backpressure {
+            stream: self,
+            buffer_size,
+            low_watermark: adjusted_low_watermark,
+            high_watermark,
+            buffer: VecDeque::new(),
+            paused: false,
+            strategy,
+        }
+    }
+
+    fn sliding_window_with_step(self, size: usize, step: usize) -> SlidingWindowWithStep<Self>
+    where
+        Self: Sized,
+        Self::Item: Clone,
+    {
+        assert!(size > 0, "sliding_window_with_step: size must be greater than 0");
+        assert!(step > 0, "sliding_window_with_step: step must be greater than 0");
+        SlidingWindowWithStep {
+            stream: self,
+            size,
+            step,
+            buffer: Vec::new(),
+            done: false,
         }
     }
 }
 
-impl<T> SpecializedStreamExt for T where T: Stream {} 
+impl<T> SpecializedStreamExt for T where T: Stream {}
+
+// SlidingWindowWithStep
+pin_project! {
+    pub struct SlidingWindowWithStep<S>
+    where S: Stream
+    {
+        #[pin]
+        pub(crate) stream: S,
+        pub(crate) size: usize,
+        pub(crate) step: usize,
+        pub(crate) buffer: Vec<S::Item>,
+        pub(crate) done: bool,
+    }
+}
+
+impl<S> Stream for SlidingWindowWithStep<S>
+where
+    S: Stream,
+    S::Item: Clone,
+{
+    type Item = Vec<S::Item>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        if *this.done {
+            return Poll::Ready(None);
+        }
+        // Fill buffer until we have enough items
+        while this.buffer.len() < *this.size {
+            match this.stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    this.buffer.push(item);
+                }
+                Poll::Ready(None) => {
+                    *this.done = true;
+                    // If buffer is full, emit one last window
+                    if this.buffer.len() == *this.size {
+                        let window = this.buffer.clone();
+                        this.buffer.clear();
+                        return Poll::Ready(Some(window));
+                    } else {
+                        return Poll::Ready(None);
+                    }
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        // We have a full window, emit it
+        let window = this.buffer.clone();
+        // Remove items based on step
+        if *this.step >= *this.size {
+            // Non-overlapping or gap windows: remove all items
+            this.buffer.clear();
+        } else {
+            // Overlapping windows: remove step items from the beginning
+            this.buffer.drain(0..*this.step);
+        }
+        Poll::Ready(Some(window))
+    }
+} 

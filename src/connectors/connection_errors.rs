@@ -62,6 +62,9 @@ impl fmt::Display for ConnectorError {
 
 impl std::error::Error for ConnectorError {}
 
+// Implement the ConnectorError trait from stream_connector
+impl crate::connectors::stream_connector::ConnectorError for ConnectorError {}
+
 impl From<std::io::Error> for ConnectorError {
     fn from(err: std::io::Error) -> Self {
         ConnectorError::IO(err.to_string())

@@ -1,10 +1,12 @@
 use async_stream::stream;
 use futures_util::stream::StreamExt;
+use rs2_stream::stream::from_iter;
 use rs2_stream::rs2::*;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
+use futures::Stream;
 
 // Acquire a resource - returns a path to the file
 async fn acquire_resource() -> PathBuf {
@@ -22,7 +24,7 @@ async fn release_resource(path: PathBuf, exit_case: ExitCase<String>) {
 }
 
 // Use a resource to create a stream of results
-fn use_resource(path: PathBuf) -> RS2Stream<Result<String, String>> {
+fn use_resource(path: PathBuf) -> impl Stream<Item = Result<String, String>> + Send + 'static {
     // Open the file and create a reader
     let file = match File::open(&path) {
         Ok(file) => file,

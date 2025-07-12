@@ -1,4 +1,4 @@
-use rs2_stream::rs2_new::{from_iter_stream, collect_stream, CollectExt};
+use rs2_stream::rs2::{from_iter_stream, collect_stream, CollectExt};
 use rs2_stream::stream::StreamExt;
 
 #[tokio::main]
@@ -51,7 +51,7 @@ async fn main() {
 
     // Method 5: Empty stream
     println!("\n5. Empty stream:");
-    let stream = rs2_stream::rs2_new::empty_stream::<i32>();
+    let stream = rs2_stream::rs2::empty_stream::<i32>();
     let result: Vec<i32> = collect_stream(stream).await;
     println!("   Empty stream result: {:?}", result);
 

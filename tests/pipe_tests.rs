@@ -1,8 +1,7 @@
-use futures_util::stream::StreamExt;
 use rs2_stream::pipe;
 use rs2_stream::pipe::*;
-use rs2_stream::rs2::*;
 use tokio::runtime::Runtime;
+use rs2_stream::stream::from_iter;
 
 #[test]
 fn test_pipe_map() {

@@ -285,4 +285,35 @@ async fn test_complex_pipeline() {
         .await;
     
     assert_eq!(result, vec![12, 28, 20]); // (2*2 + 4*2) = 12, (6*2 + 8*2) = 28, (10*2) = 20
+}
+
+#[tokio::test]
+async fn test_sliding_window_with_step() {
+    use rs2_stream::stream::SpecializedStreamExt;
+    // Overlapping windows (step < size)
+    let stream = TestStream::new(vec![1, 2, 3, 4, 5]);
+    let result: Vec<Vec<i32>> = stream.clone().sliding_window_with_step(3, 1).collect().await;
+    assert_eq!(result, vec![vec![1,2,3], vec![2,3,4], vec![3,4,5]]);
+
+    // Non-overlapping windows (step == size)
+    let result: Vec<Vec<i32>> = stream.clone().sliding_window_with_step(2, 2).collect().await;
+    assert_eq!(result, vec![vec![1,2], vec![3,4]]); // 5 is left out since not enough for a window
+
+    // Gapped windows (step > size)
+    let result: Vec<Vec<i32>> = stream.clone().sliding_window_with_step(2, 3).collect().await;
+    assert_eq!(result, vec![vec![1,2], vec![4,5]]);
+
+    // Step larger than input
+    let result: Vec<Vec<i32>> = stream.clone().sliding_window_with_step(2, 10).collect().await;
+    assert_eq!(result, vec![vec![1,2]]);
+
+    // Window size larger than input
+    let stream = TestStream::new(vec![1, 2]);
+    let result: Vec<Vec<i32>> = stream.sliding_window_with_step(3, 1).collect().await;
+    assert_eq!(result, Vec::<Vec<i32>>::new());
+
+    // Empty input
+    let stream = TestStream::new(vec![]);
+    let result: Vec<Vec<i32>> = stream.sliding_window_with_step(2, 1).collect().await;
+    assert_eq!(result, Vec::<Vec<i32>>::new());
 } 

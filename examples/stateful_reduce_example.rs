@@ -1,5 +1,7 @@
 use futures::StreamExt;
 use rs2_stream::state::{CustomKeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::stream::from_iter;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -61,7 +63,7 @@ async fn main() {
     println!("1. Simple Transaction Aggregation:");
     let custom_config = StateConfig::new();
 
-    let aggregation_stream = futures::stream::iter(transactions.clone()).stateful_reduce_rs2(
+    let aggregation_stream = from_iter(transactions.clone()).stateful_reduce_rs2(
         custom_config,
         CustomKeyExtractor::new(|tx: &Transaction| tx.user_id.clone()),
         UserAggregation {
@@ -122,7 +124,7 @@ async fn main() {
     println!("\n2. Real-time Analytics with Session Config:");
     let session_config = StateConfig::new();
 
-    let analytics_stream = futures::stream::iter(transactions.clone()).stateful_reduce_rs2(
+    let analytics_stream = from_iter(transactions.clone()).stateful_reduce_rs2(
         session_config,
         CustomKeyExtractor::new(|tx: &Transaction| "global_analytics".to_string()),
         HashMap::<String, f64>::new(),
@@ -175,7 +177,7 @@ async fn main() {
     println!("\n3. Fraud Detection with Long-lived Config:");
     let fraud_config = StateConfig::new();
 
-    let fraud_stream = futures::stream::iter(transactions.clone()).stateful_reduce_rs2(
+    let fraud_stream = from_iter(transactions.clone()).stateful_reduce_rs2(
         fraud_config,
         CustomKeyExtractor::new(|tx: &Transaction| tx.user_id.clone()),
         (0.0, 0u64, false), // (total_amount, count, flagged)

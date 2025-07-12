@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use rs2_stream::rs2;
-use rs2_stream::rs2_new_stream_ext::RS2StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::rs2_stream_ext::RS2StreamExt as RS2OriginalStreamExt;
 use rs2_stream::stream::constructors::from_iter;
 use std::time::Duration;
@@ -40,7 +40,7 @@ fn bench_parallel_map_comparison(c: &mut Criterion) {
 
             // RS2 New - map_parallel_rs2  
             group.bench_with_input(
-                BenchmarkId::new("rs2_new_map_parallel", &bench_name),
+                BenchmarkId::new("rs2_map_parallel", &bench_name),
                 &(size, concurrency), 
                 |b, &(size, concurrency)| {
                     b.to_async(&rt).iter(|| async {
@@ -91,7 +91,7 @@ fn bench_par_eval_map_comparison(c: &mut Criterion) {
 
             // RS2 New - par_eval_map_rs2
             group.bench_with_input(
-                BenchmarkId::new("rs2_new_par_eval_map", &bench_name),
+                BenchmarkId::new("rs2_par_eval_map", &bench_name),
                 &(size, concurrency), 
                 |b, &(size, concurrency)| {
                     b.to_async(&rt).iter(|| async {
@@ -142,7 +142,7 @@ fn bench_par_eval_map_unordered_comparison(c: &mut Criterion) {
 
             // RS2 New - par_eval_map_unordered_rs2
             group.bench_with_input(
-                BenchmarkId::new("rs2_new_par_eval_map_unordered", &bench_name),
+                BenchmarkId::new("rs2_par_eval_map_unordered", &bench_name),
                 &(size, concurrency), 
                 |b, &(size, concurrency)| {
                     b.to_async(&rt).iter(|| async {
@@ -198,7 +198,7 @@ fn bench_realistic_async_workload(c: &mut Criterion) {
 
             // RS2 New
             group.bench_with_input(
-                BenchmarkId::new("rs2_new_async", &bench_name),
+                BenchmarkId::new("rs2_async", &bench_name),
                 &(size, concurrency), 
                 |b, &(size, concurrency)| {
                     b.to_async(&rt).iter(|| async {
@@ -247,7 +247,7 @@ fn bench_concurrency_scaling(c: &mut Criterion) {
 
         // RS2 New
         group.bench_with_input(
-            BenchmarkId::new("rs2_new_scaling", concurrency),
+            BenchmarkId::new("rs2_scaling", concurrency),
             &concurrency, 
             |b, &concurrency| {
                 b.to_async(&rt).iter(|| async {
@@ -307,7 +307,7 @@ fn bench_order_preservation_overhead(c: &mut Criterion) {
         })
     });
 
-    group.bench_function("rs2_new_ordered", |b| {
+    group.bench_function("rs2_ordered", |b| {
         b.to_async(&rt).iter(|| async {
             let data: Vec<i32> = (0..size as i32).collect();
             let stream = from_iter(data);
@@ -319,7 +319,7 @@ fn bench_order_preservation_overhead(c: &mut Criterion) {
         })
     });
 
-    group.bench_function("rs2_new_unordered", |b| {
+    group.bench_function("rs2_unordered", |b| {
         b.to_async(&rt).iter(|| async {
             let data: Vec<i32> = (0..size as i32).collect();
             let stream = from_iter(data);

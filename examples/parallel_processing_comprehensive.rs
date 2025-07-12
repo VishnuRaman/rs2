@@ -1,4 +1,5 @@
 use rs2_stream::rs2::*;
+use rs2_stream::stream::from_iter;
 use serde::{Deserialize, Serialize};
 use futures_util::StreamExt;
 use std::time::{Duration, Instant};

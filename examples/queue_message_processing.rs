@@ -1,6 +1,7 @@
-use futures_util::stream::StreamExt;
-use rs2_stream::queue::*;
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
+use rs2_stream::queue::PriorityQueue;
 use std::error::Error;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -88,7 +89,7 @@ fn main() {
 
         // Distribute messages to appropriate queues
         for msg in messages {
-            let queue = match msg.priority {
+            let queue: Arc<PriorityQueue<Message>> = match msg.priority {
                 Priority::High => Arc::clone(&high_priority_queue),
                 Priority::Medium => Arc::clone(&medium_priority_queue),
                 Priority::Low => Arc::clone(&low_priority_queue),

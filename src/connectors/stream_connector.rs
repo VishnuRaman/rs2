@@ -1,108 +1,147 @@
 //! Core traits for stream connectors
 
-use crate::RS2Stream;
+use crate::stream::Stream;
 use crate::error::RetryPolicy;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::sync::Arc;
+
+/// Configuration for stream connectors
+pub trait ConnectorConfig: Send + Sync + Clone + 'static {}
+
+/// Metadata returned by connector operations
+pub trait ConnectorMetadata: Send + Sync + Clone + 'static {}
+
+/// Error types for connector operations
+pub trait ConnectorError: std::error::Error + Send + Sync + Clone + 'static {}
+
+/// Core trait for stream connectors
+#[async_trait]
+pub trait StreamConnector<T, C, M, E>
+where
+    T: Send + 'static,
+    C: ConnectorConfig,
+    M: ConnectorMetadata,
+    E: ConnectorError,
+{
+    type Config: ConnectorConfig;
+    type Metadata: ConnectorMetadata;
+    type Error: ConnectorError;
+
+    /// Create a source stream from the connector
+    async fn from_source(&self, config: Self::Config) -> Result<Box<dyn Stream<Item = T> + Send + Sync>, Self::Error>;
+
+    /// Send a stream to the connector as a sink
+    async fn to_sink(
+        &self,
+        stream: Box<dyn Stream<Item = T> + Send + Sync>,
+        config: Self::Config,
+    ) -> Result<Self::Metadata, Self::Error>;
+
+    /// Create a bidirectional stream (source + sink)
+    async fn bidirectional(
+        &self,
+        config: Self::Config,
+    ) -> Result<
+        (
+            Box<dyn Stream<Item = T> + Send + Sync>,
+            Box<dyn Fn(Box<dyn Stream<Item = T> + Send + Sync>) -> Result<(), Self::Error> + Send + Sync>,
+        ),
+        Self::Error,
+    >;
+
+    /// Get connector capabilities
+    fn capabilities(&self) -> ConnectorCapabilities;
+
+    /// Validate configuration
+    fn validate_config(&self, config: &Self::Config) -> Result<(), Self::Error>;
+
+    /// Check if the connector is healthy
+    async fn health_check(&self) -> Result<(), Self::Error>;
+
+    /// Get connector statistics
+    async fn get_stats(&self) -> Result<ConnectorStats, Self::Error>;
+}
+
+/// Capabilities of a stream connector
+#[derive(Debug, Clone)]
+pub struct ConnectorCapabilities {
+    pub supports_source: bool,
+    pub supports_sink: bool,
+    pub supports_bidirectional: bool,
+    pub max_buffer_size: Option<usize>,
+    pub supports_retry: bool,
+    pub supports_backpressure: bool,
+}
+
+impl Default for ConnectorCapabilities {
+    fn default() -> Self {
+        Self {
+            supports_source: true,
+            supports_sink: true,
+            supports_bidirectional: false,
+            max_buffer_size: None,
+            supports_retry: true,
+            supports_backpressure: true,
+        }
+    }
+}
+
+/// Retry configuration for connectors
+#[derive(Debug, Clone)]
+pub struct ConnectorRetryConfig {
+    pub policy: RetryPolicy,
+    pub max_attempts: usize,
+    pub backoff_multiplier: f64,
+}
+
+impl Default for ConnectorRetryConfig {
+    fn default() -> Self {
+        Self {
+            policy: RetryPolicy::Immediate { max_retries: 3 },
+            max_attempts: 3,
+            backoff_multiplier: 2.0,
+        }
+    }
+}
+
+/// Statistics for a connector
+#[derive(Debug, Clone)]
+pub struct ConnectorStats {
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub errors: u64,
+    pub last_error: Option<String>,
+    pub uptime: std::time::Duration,
+}
+
+impl Default for ConnectorStats {
+    fn default() -> Self {
+        Self {
+            messages_sent: 0,
+            messages_received: 0,
+            errors: 0,
+            last_error: None,
+            uptime: std::time::Duration::ZERO,
+        }
+    }
+}
 
 /// Common configuration for all connectors
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CommonConfig {
-    /// Batch size for processing
-    pub batch_size: usize,
-    /// Timeout for operations in milliseconds
-    pub timeout_ms: u64,
-    /// Retry policy for failed operations
-    pub retry_policy: RetryPolicy,
-    /// Enable compression
-    pub compression: bool,
+    pub buffer_size: usize,
+    pub timeout: std::time::Duration,
+    pub retry_config: ConnectorRetryConfig,
+    pub enable_metrics: bool,
 }
 
 impl Default for CommonConfig {
     fn default() -> Self {
         Self {
-            batch_size: 100,
-            timeout_ms: 30000,
-            retry_policy: RetryPolicy::default(),
-            compression: false,
+            buffer_size: 1000,
+            timeout: std::time::Duration::from_secs(30),
+            retry_config: ConnectorRetryConfig::default(),
+            enable_metrics: false,
         }
     }
-}
-
-/// Main trait for stream connectors
-#[async_trait]
-pub trait StreamConnector<T>: Send + Sync
-where
-    T: Send + 'static,
-{
-    /// Configuration type for this connector
-    type Config: Send + Sync;
-
-    /// Error type for this connector
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    /// Metadata type returned by operations
-    type Metadata: Send + Sync;
-
-    /// Create a source stream from the connector
-    async fn from_source(&self, config: Self::Config) -> Result<RS2Stream<T>, Self::Error>;
-
-    /// Send a stream to the connector as a sink
-    async fn to_sink(
-        &self,
-        stream: RS2Stream<T>,
-        config: Self::Config,
-    ) -> Result<Self::Metadata, Self::Error>;
-
-    /// Check if the connector is healthy
-    async fn health_check(&self) -> Result<bool, Self::Error>;
-
-    /// Get connector metadata
-    async fn metadata(&self) -> Result<Self::Metadata, Self::Error>;
-
-    /// Get connector name
-    fn name(&self) -> &'static str;
-
-    /// Get connector version
-    fn version(&self) -> &'static str;
-}
-
-/// Trait for bidirectional connectors (can both produce and consume)
-#[async_trait]
-pub trait BidirectionalConnector<T>: StreamConnector<T>
-where
-    T: Send + 'static,
-{
-    /// Create a bidirectional stream (source and sink combined)
-    async fn bidirectional(
-        &self,
-        input_config: Self::Config,
-        output_config: Self::Config,
-    ) -> Result<
-        (
-            RS2Stream<T>,
-            Box<dyn Fn(RS2Stream<T>) -> Result<(), Self::Error> + Send + Sync>,
-        ),
-        Self::Error,
-    >;
-}
-
-/// Health status for connectors
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealthStatus {
-    pub healthy: bool,
-    pub message: String,
-    pub last_check: Duration,
-}
-
-/// Connection statistics
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectionStats {
-    pub messages_sent: u64,
-    pub messages_received: u64,
-    pub bytes_sent: u64,
-    pub bytes_received: u64,
-    pub errors: u64,
-    pub uptime: Duration,
 }

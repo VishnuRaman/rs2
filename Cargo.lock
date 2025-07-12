@@ -1825,15 +1825,12 @@ dependencies = [
 name = "rs2-stream"
 version = "0.3.3"
 dependencies = [
- "async-stream",
  "async-trait",
  "base64 0.21.7",
  "chrono",
  "criterion",
+ "either",
  "flate2",
- "futures",
- "futures-core",
- "futures-util",
  "jsonschema",
  "lazy_static",
  "log",
@@ -1852,7 +1849,6 @@ dependencies = [
  "testcontainers-modules",
  "thiserror 1.0.69",
  "tokio",
- "tokio-stream",
  "tokio-test",
  "uuid",
 ]

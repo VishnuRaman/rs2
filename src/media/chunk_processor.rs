@@ -6,7 +6,10 @@
 use super::codec::MediaCodec;
 use super::types::*;
 use crate::queue::Queue;
-use crate::*;
+use crate::rs2_stream_ext::RS2StreamExt;
+use crate::media::types::MediaChunk;
+use crate::stream::Stream;
+use crate::stream::constructors::unfold;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +25,8 @@ pub enum ChunkProcessingError {
     ValidationFailed(String),
     CodecError(String),
     Timeout,
+    ProcessingFailed(String),
+    InvalidChunk(String),
 }
 
 impl std::fmt::Display for ChunkProcessingError {
@@ -45,6 +50,12 @@ impl std::fmt::Display for ChunkProcessingError {
                 write!(f, "Codec error: {}", reason)
             }
             ChunkProcessingError::Timeout => write!(f, "Processing timeout"),
+            ChunkProcessingError::ProcessingFailed(reason) => {
+                write!(f, "Processing failed: {}", reason)
+            }
+            ChunkProcessingError::InvalidChunk(reason) => {
+                write!(f, "Invalid chunk: {}", reason)
+            }
         }
     }
 }
@@ -60,6 +71,8 @@ pub struct ChunkProcessorConfig {
     pub max_reorder_window: usize,
     pub enable_validation: bool,
     pub parallel_processing: usize,
+    pub timeout: Duration,
+    pub max_retries: usize,
 }
 
 impl Default for ChunkProcessorConfig {
@@ -71,6 +84,8 @@ impl Default for ChunkProcessorConfig {
             max_reorder_window: 32,
             enable_validation: true,
             parallel_processing: 4,
+            timeout: Duration::from_secs(30),
+            max_retries: 3,
         }
     }
 }
@@ -193,6 +208,8 @@ pub struct ChunkProcessorStats {
     pub validation_failures: u64,
     pub average_processing_time_ms: f64,
     pub buffer_utilization: f64,
+    pub processing_time: Duration,
+    pub errors: u64,
 }
 
 /// Main chunk processor
@@ -220,18 +237,18 @@ impl ChunkProcessor {
     }
 
     /// Process a stream of incoming chunks
-    pub fn process_chunk_stream(
+    pub fn process_chunks(
         &self,
-        chunk_stream: RS2Stream<MediaChunk>,
-    ) -> RS2Stream<Result<MediaChunk, ChunkProcessingError>> {
-        let processor = self.clone();
-
-        let stream = chunk_stream.par_eval_map_rs2(self.config.parallel_processing, move |chunk| {
-            let processor = processor.clone();
-            async move { processor.process_single_chunk(chunk).await }
-        });
-
-        auto_backpressure_block(stream, self.config.max_buffer_size)
+        chunk_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt,
+    ) -> impl Stream<Item = Result<MediaChunk, ChunkProcessingError>> + Send + 'static {
+        let processor = Arc::new(self.clone());
+        
+        chunk_stream.par_eval_map_rs2(self.config.parallel_processing, move |chunk| {
+            let processor = Arc::clone(&processor);
+            async move {
+                processor.process_single_chunk(chunk).await
+            }
+        })
     }
 
     /// Process a single chunk
@@ -288,24 +305,21 @@ impl ChunkProcessor {
             }
         }
 
-        // Step 5: Update statistics
+        // Step 5: Update statistics and periodic cleanup
         {
             let mut stats = self.stats.lock().await;
             stats.chunks_processed += 1;
+            // Run cleanup every 100 chunks
+            if stats.chunks_processed % 100 == 0 {
+                log::debug!("Running periodic buffer cleanup");
+                self.cleanup_expired_buffers().await;
+            }
             // Ensure processing time is at least 0.1ms to avoid zero values in tests
             let processing_time = f64::max(0.1, start_time.elapsed().as_millis() as f64);
             stats.average_processing_time_ms = (stats.average_processing_time_ms
                 * (stats.chunks_processed - 1) as f64
                 + processing_time)
                 / stats.chunks_processed as f64;
-        }
-
-        // Step 6: Periodic cleanup - only run occasionally to reduce overhead
-        // Use a 1% chance to run cleanup, which statistically ensures it runs
-        // regularly but not for every chunk
-        if rand::random::<f32>() < 0.01 {
-            log::debug!("Running periodic buffer cleanup");
-            self.cleanup_expired_buffers().await;
         }
 
         // Create a minimal result chunk with just the necessary information
@@ -480,11 +494,13 @@ impl ChunkProcessor {
     }
 
     /// Calculate checksum for validation
-    fn calculate_checksum(&self, data: &[u8]) -> String {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        format!("{:x}", hasher.finalize())
+    fn calculate_checksum(&self, data: &[u8]) -> u32 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        data.hash(&mut hasher);
+        hasher.finish() as u32
     }
 
     /// Get processing statistics
@@ -506,35 +522,18 @@ impl ChunkProcessor {
         stats
     }
 
-    /// Create a monitoring stream for chunk processing
-    pub fn create_monitoring_stream(&self) -> RS2Stream<ChunkProcessorStats> {
-        let stats = Arc::clone(&self.stats);
-        let reorder_buffers = Arc::clone(&self.reorder_buffers);
-        let config = self.config.clone();
-
-        tick(Duration::from_secs(1), ()).par_eval_map_rs2(1, move |_| {
-            let stats = Arc::clone(&stats);
-            let reorder_buffers = Arc::clone(&reorder_buffers);
-            let config = config.clone();
-
+    /// Create monitoring stream
+    pub fn create_monitoring_stream(&self) -> impl Stream<Item = ChunkProcessorStats> + Send + 'static {
+        let processor = Arc::new(self.clone());
+        unfold((), move |_| {
+            let processor = Arc::clone(&processor);
             async move {
-                let mut current_stats = {
-                    let s = stats.lock().await;
-                    s.clone()
-                };
-
-                // Update buffer utilization
-                let buffers = reorder_buffers.read().await;
-                let total_buffer_size: usize = buffers.values().map(|b| b.buffer.len()).sum();
-                let max_possible_size = buffers.len() * config.max_reorder_window;
-
-                current_stats.buffer_utilization = if max_possible_size > 0 {
-                    total_buffer_size as f64 / max_possible_size as f64
-                } else {
-                    0.0
-                };
-
-                current_stats
+                // Wait for a monitoring interval
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                
+                // Get current stats
+                let stats = processor.get_stats().await;
+                Some((stats, ()))
             }
         })
     }

@@ -1,5 +1,5 @@
 use futures_util::stream::StreamExt;
-use rs2_stream::rs2::*;
+use rs2_stream::stream::from_iter;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;

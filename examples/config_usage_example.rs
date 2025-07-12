@@ -1,4 +1,4 @@
-//! Example demonstrating usage of all configuration fields in rs2_new
+//! Example demonstrating usage of all configuration fields in rs2
 //! 
 //! This example shows how all the configuration structs are properly utilized:
 //! - BackpressureConfig with all strategies and watermarks
@@ -11,7 +11,7 @@ use rs2_stream::*;
 use rs2_stream::stream_configuration::*;
 use rs2_stream::error::RetryPolicy;
 use rs2_stream::connectors::stream_connector::CommonConfig;
-use rs2_stream::rs2_new_stream_ext::RS2StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::stream_performance_metrics::HealthThresholds;
 use std::time::Duration;
 
@@ -21,14 +21,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. BackpressureConfig - All fields used
     println!("1. BackpressureConfig with watermarks:");
-    let backpressure_config = rs2_new::BackpressureConfig {
-        strategy: rs2_new::BackpressureStrategy::DropOldest,
+    let backpressure_config = rs2::BackpressureConfig {
+        strategy: rs2::BackpressureStrategy::DropOldest,
         buffer_size: 1000,
         low_watermark: Some(250),   // Resume at 25% capacity
         high_watermark: Some(750),  // Pause at 75% capacity
     };
     
-    let stream = rs2_new::from_iter_rs2(0..10)
+    let stream = rs2::from_iter_rs2(0..10)
         .auto_backpressure_clone_with_rs2(backpressure_config);
     let results: Vec<_> = stream.collect_rs2().await;
     println!("   Processed {} items with drop-oldest backpressure", results.len());
@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         growth_strategy: GrowthStrategy::Exponential(2.0),
     };
     
-    let stream = rs2_new::from_iter_rs2(0..20);
+    let stream = rs2::from_iter_rs2(0..20);
     let results: Vec<_> = stream.collect_with_config_rs2(buffer_config).await;
     println!("   Collected {} items with exponential growth buffer", results.len());
 
@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
     };
     
-    let stream = rs2_new::from_iter_rs2(0..100);
+    let stream = rs2::from_iter_rs2(0..100);
     let (stream, metrics) = stream.with_metrics_config_rs2(
         "example_stream".to_string(),
         HealthThresholds::default(),

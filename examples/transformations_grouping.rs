@@ -1,6 +1,8 @@
-use futures_util::stream::StreamExt;
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use tokio::runtime::Runtime;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 // Define our User type for the example
 #[derive(Debug, Clone, PartialEq)]
@@ -91,7 +93,7 @@ fn main() {
             "online", "online", "away", "away", "online", "offline",
         ])
         .distinct_until_changed_rs2()
-        .collect::<Vec<_>>()
+        .collect_into()
         .await;
 
         println!("Unique status transitions: {:?}", unique_statuses); // ["online", "away", "online", "offline"]

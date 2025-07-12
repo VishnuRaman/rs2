@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use futures::StreamExt;
+use rs2_stream::stream::{StreamExt, from_iter};
 use rs2_stream::state::StateConfig;
 use rs2_stream::state::{CustomKeyExtractor, StateStorage, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
@@ -378,7 +378,7 @@ async fn main() {
 
     let config = StateConfig::new().with_custom_storage(atomic_storage.clone());
 
-    let events = futures::stream::iter(vec![
+    let events = from_iter(vec![
         UserEvent {
             user_id: "user1".to_string(),
             amount: 100.0,

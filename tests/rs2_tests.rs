@@ -1,4 +1,4 @@
-use rs2_stream::rs2_new::*;
+use rs2_stream::rs2::*;
 use rs2_stream::stream::StreamExt;
 use std::collections::{HashSet, BTreeSet, BTreeMap};
 

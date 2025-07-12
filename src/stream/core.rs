@@ -13,6 +13,15 @@ pub trait Stream {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>>;
 }
 
+// Blanket impl for trait objects so combinators like par_join work with boxed streams
+impl<T: Send + 'static> Stream for Box<dyn Stream<Item = T> + Send> {
+    type Item = T;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Safety: Box<dyn Stream> is always Unpin, so this is safe
+        unsafe { self.map_unchecked_mut(|b| &mut **b) }.poll_next(cx)
+    }
+}
+
 /// Extension trait providing stream combinators
 pub trait StreamExt: Stream + Sized {
     /// Get the next item from the stream
@@ -115,11 +124,12 @@ pin_project! {
     }
 }
 
-impl<'a, S: Stream + Unpin> Future for Next<'a, S> {
+impl<'a, S: Stream> Future for Next<'a, S> {
     type Output = Option<S::Item>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut *self.stream).poll_next(cx)
+        // SAFETY: We know that the stream is pinned because we're inside a pinned context
+        unsafe { Pin::new_unchecked(&mut *self.stream).poll_next(cx) }
     }
 }
 
@@ -505,5 +515,124 @@ where
                 Poll::Pending => return Poll::Pending,
             }
         }
+    }
+}
+
+// Bracket combinator for resource management
+pub struct BracketStream<A, O, St, FAcq, FUse, FRel, R>
+where
+    FAcq: Future<Output = A> + Send + 'static,
+    FUse: FnOnce(A) -> St + Send + 'static,
+    St: Stream<Item = O> + Send + 'static,
+    FRel: FnOnce(A) -> R + Send + 'static,
+    R: Future<Output = ()> + Send + 'static,
+    O: Send + 'static,
+    A: Clone + Send + 'static,
+{
+    pub state: BracketState<A, O, St, R>,
+    pub acquire: Option<FAcq>,
+    pub use_fn: Option<FUse>,
+    pub release: Option<FRel>,
+}
+
+pub enum BracketState<A, O, St, R> {
+    Start,
+    Acquiring(Pin<Box<dyn Future<Output = A> + Send>>),
+    Streaming {
+        resource: A,
+        stream: St,
+    },
+    Releasing(Pin<Box<dyn Future<Output = ()> + Send>>),
+    Done,
+    _Phantom(PhantomData<(O, R)>), // Use both O and R type parameters
+}
+
+impl<A, O, St, FAcq, FUse, FRel, R> Stream for BracketStream<A, O, St, FAcq, FUse, FRel, R>
+where
+    FAcq: Future<Output = A> + Send + 'static,
+    FUse: FnOnce(A) -> St + Send + 'static,
+    St: Stream<Item = O> + Send + 'static,
+    FRel: FnOnce(A) -> R + Send + 'static,
+    R: Future<Output = ()> + Send + 'static,
+    O: Send + 'static,
+    A: Clone + Send + 'static,
+{
+    type Item = O;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = unsafe { self.get_unchecked_mut() };
+
+        loop {
+            match &mut this.state {
+                BracketState::Start => {
+                    if let Some(acquire) = this.acquire.take() {
+                        this.state = BracketState::Acquiring(Box::pin(acquire));
+                    } else {
+                        return Poll::Ready(None);
+                    }
+                }
+                BracketState::Acquiring(acquire_future) => {
+                    match acquire_future.as_mut().poll(cx) {
+                        Poll::Ready(resource) => {
+                            if let Some(use_fn) = this.use_fn.take() {
+                                let stream = use_fn(resource.clone());
+                                this.state = BracketState::Streaming { resource, stream };
+                            } else {
+                                this.state = BracketState::Done;
+                                return Poll::Ready(None);
+                            }
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+                BracketState::Streaming { resource, stream } => {
+                    let pinned_stream = unsafe { Pin::new_unchecked(stream) };
+                    match pinned_stream.poll_next(cx) {
+                        Poll::Ready(Some(item)) => return Poll::Ready(Some(item)),
+                        Poll::Ready(None) => {
+                            // Stream finished, start releasing
+                            if let Some(release_fn) = this.release.take() {
+                                let release_future = release_fn(resource.clone());
+                                this.state = BracketState::Releasing(Box::pin(release_future));
+                            } else {
+                                this.state = BracketState::Done;
+                                return Poll::Ready(None);
+                            }
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+                BracketState::Releasing(release_future) => {
+                    match release_future.as_mut().poll(cx) {
+                        Poll::Ready(()) => {
+                            this.state = BracketState::Done;
+                            return Poll::Ready(None);
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+                BracketState::Done => return Poll::Ready(None),
+                BracketState::_Phantom(_) => unreachable!(),
+            }
+        }
+    }
+}
+
+// Implement Stream for Pin<Box<BracketStream<...>>>
+impl<A, O, St, FAcq, FUse, FRel, R> Stream for Pin<Box<BracketStream<A, O, St, FAcq, FUse, FRel, R>>>
+where
+    FAcq: Future<Output = A> + Send + 'static,
+    FUse: FnOnce(A) -> St + Send + 'static,
+    St: Stream<Item = O> + Send + 'static,
+    FRel: FnOnce(A) -> R + Send + 'static,
+    R: Future<Output = ()> + Send + 'static,
+    O: Send + 'static,
+    A: Clone + Send + 'static,
+{
+    type Item = O;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // Safety: Box<BracketStream> is always Unpin, so this is safe
+        unsafe { Pin::get_unchecked_mut(self).as_mut().poll_next(cx) }
     }
 }

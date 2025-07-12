@@ -1,8 +1,9 @@
 use rs2_stream::rs2::*;
 use rs2_stream::state::{KeyExtractor, StateConfig, StateError};
 use rs2_stream::state::stream_ext::StatefulStreamExt;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use serde::{Deserialize, Serialize};
-use futures_util::{StreamExt, stream::iter};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::pin::Pin;

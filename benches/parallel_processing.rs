@@ -1,5 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;

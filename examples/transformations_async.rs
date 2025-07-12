@@ -1,7 +1,9 @@
-use futures_util::stream::StreamExt;
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 // Define our User type for the example
 #[derive(Debug, Clone, PartialEq)]
@@ -36,7 +38,7 @@ fn main() {
         // Use eval_map_rs2 to asynchronously fetch user details for each ID
         let users_stream = user_ids.eval_map_rs2(|id| async move { fetch_user_details(id).await });
 
-        let users = users_stream.collect::<Vec<_>>().await;
+        let users = users_stream.collect_into().await;
 
         for user in users {
             println!("Fetched user: {} ({})", user.name, user.email);
