@@ -1,4 +1,5 @@
 // Remove futures import - use local StreamExt instead
+use rs2_stream::resource_manager::ResourceConfig;
 use rs2_stream::state::stream_ext::StateAccess;
 use rs2_stream::state::StateError;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
@@ -246,6 +247,7 @@ async fn test_stateful_window() {
             };
             Box::pin(fut)
         },
+        ResourceConfig::default(),
     );
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -604,6 +606,7 @@ async fn test_stateful_window_user_events() {
                     Ok(window.len())
                 })
             },
+            ResourceConfig::default(),
         )
         .collect::<Vec<_>>()
         .await;

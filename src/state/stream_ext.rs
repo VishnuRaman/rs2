@@ -1,4 +1,4 @@
-use crate::resource_manager::ResourceManager;
+use crate::resource_manager::{ResourceConfig, ResourceManager};
 use crate::stream::Stream;
 use pin_project_lite::pin_project;
 use std::task::{Context, Poll};
@@ -21,6 +21,8 @@ const MAX_PATTERN_SIZE: usize = 1_000; // Max items per pattern
 const CLEANUP_INTERVAL: u64 = 1000; // Cleanup every 1000 items (increased from 100)
 const RESOURCE_TRACKING_INTERVAL: u64 = 100; // Track resources every 100 items
 const DEFAULT_BUFFER_SIZE: usize = 1024;
+const MAX_BUFFER_SIZE: usize = 10_000; // Max items per buffer
+const MAX_WINDOW_KEYS: usize = 1_000; // Max keys for windowing
 
 // LRU eviction helper
 fn evict_oldest_entries<K, V>(map: &mut HashMap<K, V>, max_keys: usize)
@@ -280,6 +282,7 @@ pin_project_lite::pin_project! {
         window_buffers: std::collections::HashMap<String, Vec<T>>,
         current_future: Option<Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>>>,
         result_queue: VecDeque<Result<R, StateError>>,
+        resource_manager: Arc<ResourceManager>,
         _phantom: std::marker::PhantomData<(R, T)>,
     }
 }
@@ -297,6 +300,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         window_size: usize,
         f: F,
+        resource_manager: Arc<ResourceManager>,
     ) -> Self {
         Self {
             stream,
@@ -307,6 +311,7 @@ where
             window_buffers: std::collections::HashMap::new(),
             current_future: None,
             result_queue: VecDeque::new(),
+            resource_manager,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -350,8 +355,48 @@ where
             match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
                     let key = this.key_extractor.extract_key(&item);
+                    
+                    // Track resource usage when creating new buffer
+                    let is_new_buffer = !this.window_buffers.contains_key(&key);
+                    if is_new_buffer {
+                        if this.window_buffers.len() >= MAX_WINDOW_KEYS {
+                            // Track buffer overflow
+                            tokio::spawn({
+                                let rm = this.resource_manager.clone();
+                                async move {
+                                    track_resource_batch(&rm, 0, 0, 1).await;
+                                }
+                            });
+                            // Drop oldest key to make room
+                            if let Some(oldest_key) = this.window_buffers.keys().next().cloned() {
+                                this.window_buffers.remove(&oldest_key);
+                            }
+                        }
+                        // Track new buffer allocation
+                        tokio::spawn({
+                            let rm = this.resource_manager.clone();
+                            async move {
+                                track_resource_batch(&rm, 1, 0, 0).await;
+                            }
+                        });
+                    }
+                    
                     let buffer = this.window_buffers.entry(key.clone()).or_insert_with(Vec::new);
                     buffer.push(item);
+                    
+                    // Check for buffer overflow
+                    if buffer.len() > MAX_BUFFER_SIZE {
+                        // Track buffer overflow
+                        tokio::spawn({
+                            let rm = this.resource_manager.clone();
+                            async move {
+                                track_resource_batch(&rm, 0, 0, 1).await;
+                            }
+                        });
+                        // Drop oldest items to maintain size limit
+                        buffer.drain(0..buffer.len() - MAX_BUFFER_SIZE);
+                    }
+                    
                     if buffer.len() >= *this.window_size {
                         let items: Vec<T> = buffer.drain(..*this.window_size).collect();
                         let state_access = StateAccess::new(this.storage.clone(), key.clone());
@@ -376,6 +421,7 @@ where
                 Poll::Ready(None) => {
                     // Source stream is exhausted, emit only full windows (no partial windows)
                     if !this.window_buffers.is_empty() {
+                        let buffer_count = this.window_buffers.len();
                         for (key, mut buffer) in this.window_buffers.drain() {
                             if buffer.len() >= *this.window_size {
                                 let items: Vec<T> = buffer.drain(..*this.window_size).collect();
@@ -397,6 +443,15 @@ where
                                 *this.current_future = None;
                             }
                         }
+                        
+                        // Track buffer deallocations
+                        tokio::spawn({
+                            let rm = this.resource_manager.clone();
+                            async move {
+                                track_resource_batch(&rm, 0, buffer_count as u64, 0).await;
+                            }
+                        });
+                        
                         if let Some(result) = this.result_queue.pop_front() {
                             return Poll::Ready(Some(result));
                         }
@@ -1143,18 +1198,21 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         window_size: usize,
         f: F,
+        resource_config: ResourceConfig,
     ) -> StatefulWindow<Self, F, T, R>
     where
         F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
         R: Send + Sync + Unpin + 'static,
         Self: Sized + Unpin,
     {
+        let resource_manager = Arc::new(ResourceManager::with_config(resource_config));
         StatefulWindow::new(
             self,
             config,
             key_extractor,
             window_size,
             f,
+            resource_manager,
         )
     }
 
