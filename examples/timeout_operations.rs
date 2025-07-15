@@ -1,10 +1,11 @@
-use async_stream::stream;
-use futures_util::stream::StreamExt;
+
 use rs2_stream::error::StreamError;
 use rs2_stream::rs2::*;
 use std::error::Error;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
+use rs2_stream::stream::from_iter;
 
 // Simulate a slow operation that might time out
 async fn slow_operation(id: u32, delay_ms: u64) -> Result<String, Box<dyn Error + Send + Sync>> {
