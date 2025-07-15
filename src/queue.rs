@@ -2,7 +2,7 @@
 
 use crate::stream::Stream;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 use std::collections::VecDeque;
 
 /// Queue error types
@@ -20,21 +20,8 @@ pub enum QueueError {
     Internal(String),
 }
 
-#[derive(Clone)]
-enum QueueSender<T> {
-    Bounded(mpsc::Sender<T>),
-    Unbounded(mpsc::UnboundedSender<T>),
-}
-
-enum QueueReceiver<T> {
-    Bounded(mpsc::Receiver<T>),
-    Unbounded(mpsc::UnboundedReceiver<T>),
-}
-
 /// Queue implementation for buffering streams
 pub struct Queue<T> {
-    sender: Option<QueueSender<T>>,
-    receiver: Arc<Mutex<Option<QueueReceiver<T>>>>,
     buffer: Arc<Mutex<VecDeque<T>>>,
     capacity: usize,
     closed: Arc<Mutex<bool>>,
@@ -46,10 +33,7 @@ where
 {
     /// Create a new unbounded queue
     pub fn unbounded() -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
         Self {
-            sender: Some(QueueSender::Unbounded(sender)),
-            receiver: Arc::new(Mutex::new(Some(QueueReceiver::Unbounded(receiver)))),
             buffer: Arc::new(Mutex::new(VecDeque::new())),
             capacity: usize::MAX,
             closed: Arc::new(Mutex::new(false)),
@@ -58,10 +42,7 @@ where
 
     /// Create a new bounded queue
     pub fn bounded(capacity: usize) -> Self {
-        let (sender, receiver) = mpsc::channel(capacity);
         Self {
-            sender: Some(QueueSender::Bounded(sender)),
-            receiver: Arc::new(Mutex::new(Some(QueueReceiver::Bounded(receiver)))),
             buffer: Arc::new(Mutex::new(VecDeque::new())),
             capacity,
             closed: Arc::new(Mutex::new(false)),
@@ -74,14 +55,13 @@ where
             return Err(QueueError::Closed);
         }
 
-        if let Some(sender) = &self.sender {
-            match sender {
-                QueueSender::Bounded(sender) => sender.send(item).await.map_err(|_| QueueError::Closed),
-                QueueSender::Unbounded(sender) => sender.send(item).map_err(|_| QueueError::Closed),
-            }
-        } else {
-            Err(QueueError::Closed)
+        let mut buffer = self.buffer.lock().await;
+        if buffer.len() >= self.capacity {
+            return Err(QueueError::Full);
         }
+
+        buffer.push_back(item);
+        Ok(())
     }
 
     /// Try to enqueue an item without blocking
@@ -90,96 +70,61 @@ where
             return Err(QueueError::Closed);
         }
 
-        if let Some(sender) = &self.sender {
-            match sender {
-                QueueSender::Bounded(sender) => sender.try_send(item).map_err(|_| QueueError::Full),
-                QueueSender::Unbounded(sender) => sender.send(item).map_err(|_| QueueError::Closed),
-            }
-        } else {
-            Err(QueueError::Closed)
+        let mut buffer = self.buffer.lock().await;
+        if buffer.len() >= self.capacity {
+            return Err(QueueError::Full);
         }
+
+        buffer.push_back(item);
+        Ok(())
     }
 
     /// Dequeue an item
     pub async fn dequeue(&self) -> Result<T, QueueError> {
-        if *self.closed.lock().await {
-            return Err(QueueError::Closed);
-        }
-
-        // First try to get from buffer
-        {
-            let mut buffer = self.buffer.lock().await;
-            if let Some(item) = buffer.pop_front() {
-                return Ok(item);
+        loop {
+            // First try to get from buffer
+            {
+                let mut buffer = self.buffer.lock().await;
+                if let Some(item) = buffer.pop_front() {
+                    return Ok(item);
+                }
             }
-        }
 
-        // Then try to get from receiver
-        let mut receiver_guard = self.receiver.lock().await;
-        if let Some(receiver) = receiver_guard.as_mut() {
-            match receiver {
-                QueueReceiver::Bounded(receiver) => receiver.recv().await.ok_or(QueueError::Closed),
-                QueueReceiver::Unbounded(receiver) => receiver.recv().await.ok_or(QueueError::Closed),
+            // If buffer is empty and queue is closed, we're done
+            if *self.closed.lock().await {
+                return Err(QueueError::Closed);
             }
-        } else {
-            Err(QueueError::Closed)
+
+            // Wait a bit before trying again - use a longer sleep for proper blocking
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
     }
 
     /// Try to dequeue an item without blocking
     pub async fn try_dequeue(&self) -> Result<T, QueueError> {
-        if *self.closed.lock().await {
-            return Err(QueueError::Closed);
-        }
-
-        // First try to get from buffer
-        {
-            let mut buffer = self.buffer.lock().await;
-            if let Some(item) = buffer.pop_front() {
-                return Ok(item);
-            }
-        }
-
-        // Then try to get from receiver
-        let mut receiver_guard = self.receiver.lock().await;
-        if let Some(receiver) = receiver_guard.as_mut() {
-            match receiver {
-                QueueReceiver::Bounded(receiver) => receiver.try_recv().map_err(|e| match e {
-                    mpsc::error::TryRecvError::Empty => QueueError::Empty,
-                    mpsc::error::TryRecvError::Disconnected => QueueError::Closed,
-                }),
-                QueueReceiver::Unbounded(receiver) => receiver.try_recv().map_err(|e| match e {
-                    mpsc::error::TryRecvError::Empty => QueueError::Empty,
-                    mpsc::error::TryRecvError::Disconnected => QueueError::Closed,
-                }),
-            }
-        } else {
+        let mut buffer = self.buffer.lock().await;
+        if let Some(item) = buffer.pop_front() {
+            Ok(item)
+        } else if *self.closed.lock().await {
             Err(QueueError::Closed)
+        } else {
+            Err(QueueError::Empty)
         }
     }
 
     /// Get the current length of the queue
     pub async fn len(&self) -> usize {
-        let buffer_len = self.buffer.lock().await.len();
-        let receiver_len = if let Some(receiver) = &*self.receiver.lock().await {
-            match receiver {
-                QueueReceiver::Bounded(receiver) => receiver.len(),
-                QueueReceiver::Unbounded(receiver) => 0,
-            }
-        } else {
-            0
-        };
-        buffer_len + receiver_len
+        self.buffer.lock().await.len()
     }
 
     /// Check if the queue is empty
     pub async fn is_empty(&self) -> bool {
-        self.len().await == 0
+        self.buffer.lock().await.is_empty()
     }
 
     /// Check if the queue is full
     pub async fn is_full(&self) -> bool {
-        self.len().await >= self.capacity
+        self.buffer.lock().await.len() >= self.capacity
     }
 
     /// Get the capacity of the queue
@@ -190,8 +135,6 @@ where
     /// Close the queue
     pub async fn close(&mut self) {
         *self.closed.lock().await = true;
-        self.sender = None;
-        *self.receiver.lock().await = None;
     }
 
     /// Check if the queue is closed
@@ -202,7 +145,6 @@ where
     /// Clear all items from the queue
     pub async fn clear(&self) {
         self.buffer.lock().await.clear();
-        // Note: We can't clear the receiver without consuming it
     }
 
     /// Get a peek at the next item without removing it
@@ -243,54 +185,23 @@ where
 
     /// Drain all items from the queue
     pub async fn drain(&self) -> Vec<T> {
-        let mut items = Vec::new();
-        
-        // Drain buffer
-        {
-            let mut buffer = self.buffer.lock().await;
-            items.extend(buffer.drain(..));
-        }
-
-        // Drain receiver
-        let mut receiver_guard = self.receiver.lock().await;
-        if let Some(receiver) = receiver_guard.as_mut() {
-            match receiver {
-                QueueReceiver::Bounded(receiver) => {
-                    while let Ok(item) = receiver.try_recv() {
-                        items.push(item);
-                    }
-                },
-                QueueReceiver::Unbounded(receiver) => {
-                    while let Ok(item) = receiver.try_recv() {
-                        items.push(item);
-                    }
-                },
-            }
-        }
-
-        items
+        let mut buffer = self.buffer.lock().await;
+        buffer.drain(..).collect()
     }
 
     /// Get a stream that yields items in batches
     pub fn batch_stream(&self, batch_size: usize) -> impl Stream<Item = Vec<T>> + Send + 'static {
-        let receiver = Arc::clone(&self.receiver);
         let buffer = Arc::clone(&self.buffer);
         let closed = Arc::clone(&self.closed);
 
         crate::stream::constructors::unfold((), move |_| {
-            let receiver = Arc::clone(&receiver);
             let buffer = Arc::clone(&buffer);
             let closed = Arc::clone(&closed);
 
             async move {
-                // Check if closed
-                if *closed.lock().await {
-                    return None;
-                }
-
                 let mut batch = Vec::with_capacity(batch_size);
 
-                // First try to get from buffer
+                // First try to get from buffer (even if closed)
                 {
                     let mut buffer_guard = buffer.lock().await;
                     while batch.len() < batch_size {
@@ -302,26 +213,26 @@ where
                     }
                 }
 
-                // Then try to get from receiver
-                let mut receiver_guard = receiver.lock().await;
-                if let Some(receiver) = receiver_guard.as_mut() {
-                    match receiver {
-                        QueueReceiver::Bounded(receiver) => {
-                            while batch.len() < batch_size {
-                                match receiver.try_recv() {
-                                    Ok(item) => batch.push(item),
-                                    Err(_) => break,
-                                }
-                            }
-                        },
-                        QueueReceiver::Unbounded(receiver) => {
-                            while batch.len() < batch_size {
-                                match receiver.try_recv() {
-                                    Ok(item) => batch.push(item),
-                                    Err(_) => break,
-                                }
-                            }
-                        },
+                // If we got items from buffer, return them
+                if !batch.is_empty() {
+                    return Some((batch, ()));
+                }
+
+                // If buffer is empty and queue is closed, we're done
+                if *closed.lock().await {
+                    return None;
+                }
+
+                // Wait a bit before trying again
+                tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+
+                // Then try to get from buffer again
+                let mut buffer_guard = buffer.lock().await;
+                while batch.len() < batch_size {
+                    if let Some(item) = buffer_guard.pop_front() {
+                        batch.push(item);
+                    } else {
+                        break;
                     }
                 }
 
@@ -336,22 +247,15 @@ where
 
     /// Get a stream that yields items with a timeout
     pub fn timeout_stream(&self, timeout: std::time::Duration) -> impl Stream<Item = Result<T, QueueError>> + Send + 'static {
-        let receiver = Arc::clone(&self.receiver);
         let buffer = Arc::clone(&self.buffer);
         let closed = Arc::clone(&self.closed);
 
         crate::stream::constructors::unfold((), move |_| {
-            let receiver = Arc::clone(&receiver);
             let buffer = Arc::clone(&buffer);
             let closed = Arc::clone(&closed);
 
             async move {
-                // Check if closed
-                if *closed.lock().await {
-                    return None;
-                }
-
-                // First try to get from buffer
+                // First try to get from buffer (even if closed)
                 {
                     let mut buffer_guard = buffer.lock().await;
                     if let Some(item) = buffer_guard.pop_front() {
@@ -359,27 +263,22 @@ where
                     }
                 }
 
-                // Then try to get from receiver with timeout
-                let mut receiver_guard = receiver.lock().await;
-                if let Some(receiver) = receiver_guard.as_mut() {
-                    match receiver {
-                        QueueReceiver::Bounded(receiver) => {
-                            match tokio::time::timeout(timeout, receiver.recv()).await {
-                                Ok(Some(item)) => Some((Ok(item), ())),
-                                Ok(None) => Some((Err(QueueError::Closed), ())),
-                                Err(_) => Some((Err(QueueError::Timeout), ())),
-                            }
-                        },
-                        QueueReceiver::Unbounded(receiver) => {
-                            match tokio::time::timeout(timeout, receiver.recv()).await {
-                                Ok(Some(item)) => Some((Ok(item), ())),
-                                Ok(None) => Some((Err(QueueError::Closed), ())),
-                                Err(_) => Some((Err(QueueError::Timeout), ())),
-                            }
-                        },
-                    }
-                } else {
-                    Some((Err(QueueError::Closed), ()))
+                // If buffer is empty and queue is closed, we're done
+                if *closed.lock().await {
+                    return None;
+                }
+
+                // Wait for notification that an item is available with timeout
+                match tokio::time::timeout(timeout, tokio::time::sleep(tokio::time::Duration::from_millis(1))).await {
+                    Ok(_) => {
+                        let mut buffer_guard = buffer.lock().await;
+                        if let Some(item) = buffer_guard.pop_front() {
+                            Some((Ok(item), ()))
+                        } else {
+                            Some((Err(QueueError::Closed), ()))
+                        }
+                    },
+                    Err(_) => Some((Err(QueueError::Timeout), ())),
                 }
             }
         })
@@ -387,48 +286,30 @@ where
 
     /// Get a stream that yields items from the queue
     pub fn stream(&self) -> impl Stream<Item = T> + Send + 'static {
-        let receiver = Arc::clone(&self.receiver);
         let buffer = Arc::clone(&self.buffer);
         let closed = Arc::clone(&self.closed);
 
         crate::stream::constructors::unfold((), move |_| {
-            let receiver = Arc::clone(&receiver);
             let buffer = Arc::clone(&buffer);
             let closed = Arc::clone(&closed);
 
             async move {
-                // Check if closed
-                if *closed.lock().await {
-                    return None;
-                }
-
-                // First try to get from buffer
-                {
-                    let mut buffer_guard = buffer.lock().await;
-                    if let Some(item) = buffer_guard.pop_front() {
-                        return Some((item, ()));
+                loop {
+                    // First try to get from buffer (even if closed)
+                    {
+                        let mut buffer_guard = buffer.lock().await;
+                        if let Some(item) = buffer_guard.pop_front() {
+                            return Some((item, ()));
+                        }
                     }
-                }
 
-                // Then try to get from receiver
-                let mut receiver_guard = receiver.lock().await;
-                if let Some(receiver) = receiver_guard.as_mut() {
-                    match receiver {
-                        QueueReceiver::Bounded(receiver) => {
-                            match receiver.recv().await {
-                                Some(item) => Some((item, ())),
-                                None => None,
-                            }
-                        },
-                        QueueReceiver::Unbounded(receiver) => {
-                            match receiver.recv().await {
-                                Some(item) => Some((item, ())),
-                                None => None,
-                            }
-                        },
+                    // If buffer is empty and queue is closed, we're done
+                    if *closed.lock().await {
+                        return None;
                     }
-                } else {
-                    None
+
+                    // Wait a bit before trying again - use a longer sleep for proper blocking
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                 }
             }
         })
@@ -440,10 +321,8 @@ where
     T: Clone + Send + 'static,
 {
     fn clone(&self) -> Self {
-        // Only the sender, buffer, and closed state are cloned. Receiver is not cloned.
+        // Only the buffer, capacity, and closed state are cloned.
         Self {
-            sender: self.sender.clone(),
-            receiver: Arc::new(Mutex::new(None)), // Receiver is not cloned
             buffer: Arc::clone(&self.buffer),
             capacity: self.capacity,
             closed: Arc::clone(&self.closed),

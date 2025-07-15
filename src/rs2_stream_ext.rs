@@ -82,13 +82,32 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     /// This combinator collects all items from the stream into a collection of type B.
     /// It returns a Future that resolves to the collection.
     /// The buffer configuration allows for optimized memory allocation and growth strategies.
-    async fn collect_with_config_rs2<B>(self, _config: crate::stream_configuration::BufferConfig) -> B
+    async fn collect_with_config_rs2<B>(self, config: crate::stream_configuration::BufferConfig) -> B
     where
         B: Default + Extend<Self::Item> + Send + 'static,
         Self::Item: Send + 'static,
+        Self: Unpin,
     {
         use crate::stream::StreamExt;
-        self.collect().await
+        let mut collection = B::default();
+        let mut count = 0;
+        let max = config.max_capacity;
+        let mut stream = std::pin::pin!(self);
+        loop {
+            if let Some(max) = max {
+                if count >= max {
+                    break;
+                }
+            }
+            match StreamExt::next(stream.as_mut().get_mut()).await {
+                Some(item) => {
+                    collection.extend(std::iter::once(item));
+                    count += 1;
+                }
+                None => break,
+            }
+        }
+        collection
     }
 
     /// Fold over the stream
@@ -743,6 +762,15 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         Self::Item: Send + 'static,
     {
         rs2::chunk(self, size)
+    }
+
+    /// Sample every nth item
+    fn sample_every_nth_rs2(self, n: usize) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static,
+    {
+        use crate::stream::rate::RateStreamExt;
+        self.sample_every_nth(n)
     }
 }
 

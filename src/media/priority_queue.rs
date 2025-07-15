@@ -89,9 +89,9 @@ pub struct MediaPriorityQueue {
 }
 
 impl MediaPriorityQueue {
-    pub fn new(_capacity: usize, priority_buffer_size: usize) -> Self {
+    pub fn new(capacity: usize, priority_buffer_size: usize) -> Self {
         Self {
-            internal_queue: Queue::unbounded(),
+            internal_queue: Queue::bounded(capacity),
             priority_buffer: Arc::new(Mutex::new(BinaryHeap::new())),
             buffer_size: priority_buffer_size,
         }

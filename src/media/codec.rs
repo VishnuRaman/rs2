@@ -127,7 +127,7 @@ impl MediaCodec {
         <S as crate::stream::Stream>::Item: Send,
     {
         let self_clone = self.clone();
-        let stream_id = "stream-1".to_string();
+        // Use stream_id from RawMediaData metadata if present, else fallback
         let backpressure_config = crate::rs2::BackpressureConfig {
             buffer_size: 100,
             strategy: crate::rs2::BackpressureStrategy::Block,
@@ -135,10 +135,15 @@ impl MediaCodec {
             low_watermark: Some(20),
         };
         par_eval_map(raw_data_stream, 4, move |raw_data| {
-            let stream_id = stream_id.clone();
             let codec = self_clone.clone();
+            // Try to extract stream_id from metadata, else fallback
+            let stream_id = raw_data
+                .metadata
+                .get("stream_id")
+                .cloned()
+                .unwrap_or_else(|| "stream-1".to_string());
             async move {
-                codec.encode_chunk(raw_data, &stream_id).await
+                codec.encode_single_frame(raw_data, stream_id).await
             }
         })
         .auto_backpressure_with_rs2(backpressure_config)

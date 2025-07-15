@@ -49,6 +49,74 @@ where
     }
 }
 
+// Interleave - Deterministic alternating between streams
+pin_project! {
+    pub struct Interleave<S1, S2> { 
+        #[pin] pub(crate) s1: S1, 
+        #[pin] pub(crate) s2: S2, 
+        pub(crate) done1: bool, 
+        pub(crate) done2: bool,
+        pub(crate) next_from_s1: bool
+    }
+}
+
+impl<S1, S2> Stream for Interleave<S1, S2>
+where
+    S1: Stream,
+    S2: Stream<Item = S1::Item>,
+{
+    type Item = S1::Item;
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        
+        // Try to get from the stream that should be next
+        if *this.next_from_s1 && !*this.done1 {
+            match this.s1.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    *this.next_from_s1 = false; // Next time, take from s2
+                    return Poll::Ready(Some(item));
+                }
+                Poll::Ready(None) => *this.done1 = true,
+                Poll::Pending => {}
+            }
+        }
+        
+        if !*this.next_from_s1 && !*this.done2 {
+            match this.s2.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    *this.next_from_s1 = true; // Next time, take from s1
+                    return Poll::Ready(Some(item));
+                }
+                Poll::Ready(None) => *this.done2 = true,
+                Poll::Pending => {}
+            }
+        }
+        
+        // If the preferred stream is done, try the other one
+        if *this.next_from_s1 && *this.done1 && !*this.done2 {
+            match this.s2.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => return Poll::Ready(Some(item)),
+                Poll::Ready(None) => *this.done2 = true,
+                Poll::Pending => {}
+            }
+        }
+        
+        if !*this.next_from_s1 && *this.done2 && !*this.done1 {
+            match this.s1.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => return Poll::Ready(Some(item)),
+                Poll::Ready(None) => *this.done1 = true,
+                Poll::Pending => {}
+            }
+        }
+        
+        if *this.done1 && *this.done2 {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
 // Merge - Fair racing (no priority) - Fixed implementation
 pin_project! {
     pub struct Merge<S1, S2> { 
@@ -172,6 +240,7 @@ where S: Stream {
 pub trait SelectStreamExt: Stream + Sized {
     fn select<S2>(self, other: S2) -> Select<Self, S2> where S2: Stream<Item = Self::Item> { Select { s1: self, s2: other, done1: false, done2: false } }
     fn merge<S2>(self, other: S2) -> Merge<Self, S2> where S2: Stream<Item = Self::Item> { Merge { s1: self, s2: other, done1: false, done2: false } }
+    fn interleave<S2>(self, other: S2) -> Interleave<Self, S2> where S2: Stream<Item = Self::Item> { Interleave { s1: self, s2: other, done1: false, done2: false, next_from_s1: true } }
     fn fuse(self) -> Fuse<Self> { Fuse { stream: self, done: false } }
     fn peekable(self) -> Peekable<Self> { Peekable { stream: self, peeked: None } }
 }

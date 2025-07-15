@@ -339,17 +339,24 @@ where
     S: Stream<Item = T> + Send + 'static,
     T: Clone + Send + 'static,
 {
-    StreamExt::filter_map(s.scan(Vec::<T>::new(), move |window, item| {
-        window.push(item);
-        if window.len() > size {
-            window.remove(0);
-        }
-        if window.len() == size {
-            Some(window.clone())
-        } else {
-            None
-        }
-    }), Some)
+    use crate::stream::either::Either;
+    
+    if size == 0 {
+        // Return empty stream for zero size
+        Either::Left(empty_rs2())
+    } else {
+        Either::Right(StreamExt::filter_map(s.scan(Vec::<T>::new(), move |window, item| {
+            window.push(item);
+            if window.len() > size {
+                window.remove(0);
+            }
+            if window.len() == size {
+                Some(window.clone())
+            } else {
+                None
+            }
+        }), Some))
+    }
 }
 
 /// Process elements in batches - Simplified implementation with type annotation
@@ -707,6 +714,17 @@ where
     O: Send + 'static,
 {
     s1.merge(s2)
+}
+
+/// Interleave two streams, alternating between them deterministically
+pub fn interleave<O, S1, S2>(s1: S1, s2: S2) -> impl Stream<Item = O> + Send + 'static
+where
+    S1: Stream<Item = O> + Send + 'static,
+    S2: Stream<Item = O> + Send + 'static,
+    O: Send + 'static,
+{
+    use crate::stream::select::SelectStreamExt;
+    s1.interleave(s2)
 }
 
 /// Create a stream that emits an item at regular intervals - Simple interval approach

@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
+use sha2::{Digest, Sha256};
 
 /// Errors that can occur during chunk processing
 #[derive(Debug, Clone)]
@@ -96,27 +97,25 @@ struct ReorderBuffer {
     buffer: VecDeque<MediaChunk>,
     next_expected_sequence: u64,
     last_received_time: Instant,
-    max_size: usize,
+    max_buffer_size: usize,
+    max_reorder_window: usize,
     // Track sequence numbers for O(1) duplicate detection
     sequence_numbers: std::collections::HashSet<u64>,
 }
 
 impl ReorderBuffer {
-    fn new(max_size: usize) -> Self {
+    fn new(max_buffer_size: usize, max_reorder_window: usize) -> Self {
         Self {
             buffer: VecDeque::new(),
             next_expected_sequence: 0,
             last_received_time: Instant::now(),
-            max_size,
+            max_buffer_size,
+            max_reorder_window,
             sequence_numbers: std::collections::HashSet::new(),
         }
     }
 
     fn try_insert(&mut self, chunk: MediaChunk) -> Result<Vec<MediaChunk>, ChunkProcessingError> {
-        if self.buffer.len() >= self.max_size {
-            return Err(ChunkProcessingError::BufferOverflow);
-        }
-
         self.last_received_time = Instant::now();
 
         // Check for duplicates using O(1) HashSet lookup
@@ -125,26 +124,39 @@ impl ReorderBuffer {
             return Err(ChunkProcessingError::DuplicateChunk(_seq_num));
         }
 
-        // Check for sequence gaps
-        if _seq_num > self.next_expected_sequence && !self.buffer.is_empty() {
-            // If we have a gap and the buffer is not empty, check if the gap is too large
-            // A gap is considered too large if it's more than the reorder window size
-            let max_allowed = self.next_expected_sequence + self.max_size as u64;
+        // Check for sequence gaps first (use max_reorder_window)
+        if _seq_num > self.next_expected_sequence {
+            let max_allowed = self.next_expected_sequence + self.max_reorder_window as u64;
             if _seq_num > max_allowed {
                 return Err(ChunkProcessingError::SequenceGap {
                     expected: self.next_expected_sequence,
                     received: _seq_num,
                 });
             }
-        } else if _seq_num > self.next_expected_sequence + self.max_size as u64 {
-            // Even if buffer is empty, if the gap is too large, it's an error
-            return Err(ChunkProcessingError::SequenceGap {
-                expected: self.next_expected_sequence,
-                received: _seq_num,
-            });
         }
 
-        // Insert in order
+        // If this is the next expected chunk, emit it immediately
+        if _seq_num == self.next_expected_sequence {
+            // Add to sequence numbers set
+            self.sequence_numbers.insert(_seq_num);
+            
+            // Advance the expected sequence
+            self.next_expected_sequence += 1;
+            
+            // Extract any additional ready chunks that can now be emitted
+            let mut ready_chunks = vec![chunk];
+            ready_chunks.extend(self.extract_ready_chunks()?);
+            
+            return Ok(ready_chunks);
+        }
+
+        // For out-of-order chunks, check buffer overflow (use max_buffer_size)
+        // Check if inserting this chunk would exceed the buffer size
+        if self.buffer.len() >= self.max_buffer_size {
+            return Err(ChunkProcessingError::BufferOverflow);
+        }
+
+        // Insert out-of-order chunk in sorted position
         let insert_pos = self
             .buffer
             .binary_search_by_key(&_seq_num, |c| c.sequence_number)
@@ -156,7 +168,7 @@ impl ReorderBuffer {
         // Insert chunk into buffer
         self.buffer.insert(insert_pos, chunk);
 
-        // Extract ready chunks
+        // Extract any ready chunks
         self.extract_ready_chunks()
     }
 
@@ -294,15 +306,17 @@ impl ChunkProcessor {
             vec![chunk]
         };
 
-        // Step 4: Process ready chunks
+        // Step 4: Process ready chunks and return them
+        let mut processed_chunks = Vec::new();
         for ready_chunk in ready_chunks {
             // Enqueue to output - avoid cloning when possible
-            if let Err(e) = self.output_queue.try_enqueue(ready_chunk).await {
+            if let Err(e) = self.output_queue.try_enqueue(ready_chunk.clone()).await {
                 // Queue full, update stats
                 let mut stats = self.stats.lock().await;
                 stats.chunks_dropped += 1;
                 log::debug!("Failed to enqueue chunk: {:?}", e);
             }
+            processed_chunks.push(ready_chunk);
         }
 
         // Step 5: Update statistics and periodic cleanup
@@ -322,25 +336,22 @@ impl ChunkProcessor {
                 / stats.chunks_processed as f64;
         }
 
-        // Create a minimal result chunk with just the necessary information
-        // This is more efficient than cloning the entire chunk at the beginning
-        let stream_id_for_result = original_stream_id.clone(); // Clone to avoid ownership issues
-
-        Ok(MediaChunk {
-            stream_id: stream_id_for_result,
-            sequence_number: if original_seq_num == 0 {
-                self.generate_sequence_number(&original_stream_id).await
-            } else {
-                original_seq_num
-            },
-            // Use minimal default values for fields that aren't needed in the result
-            data: Vec::new(),
-            chunk_type: ChunkType::Metadata,
-            priority: MediaPriority::Normal,
-            timestamp: Duration::from_secs(0),
-            is_final: false,
-            checksum: None,
-        })
+        // Return the first processed chunk (or the original if no reordering)
+        if let Some(first_chunk) = processed_chunks.first() {
+            Ok(first_chunk.clone())
+        } else {
+            // This shouldn't happen, but return the original chunk as fallback
+            Ok(MediaChunk {
+                stream_id: original_stream_id,
+                sequence_number: original_seq_num,
+                data: Vec::new(),
+                chunk_type: ChunkType::Metadata,
+                priority: MediaPriority::Normal,
+                timestamp: Duration::from_secs(0),
+                is_final: false,
+                checksum: None,
+            })
+        }
     }
 
     /// Validate chunk integrity and format
@@ -405,7 +416,7 @@ impl ChunkProcessor {
             if !buffers.contains_key(&stream_id) {
                 buffers.insert(
                     stream_id.clone(),
-                    ReorderBuffer::new(self.config.max_reorder_window),
+                    ReorderBuffer::new(self.config.max_buffer_size, self.config.max_reorder_window),
                 );
             }
 
@@ -495,12 +506,9 @@ impl ChunkProcessor {
 
     /// Calculate checksum for validation
     fn calculate_checksum(&self, data: &[u8]) -> u32 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        hasher.finish() as u32
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.finalize().iter().fold(0u32, |acc, &byte| acc.wrapping_add(byte as u32))
     }
 
     /// Get processing statistics
@@ -511,7 +519,7 @@ impl ChunkProcessor {
         // Calculate buffer utilization
         let buffers = self.reorder_buffers.read().await;
         let total_buffer_size: usize = buffers.values().map(|b| b.buffer.len()).sum();
-        let max_possible_size = buffers.len() * self.config.max_reorder_window;
+        let max_possible_size = buffers.len() * self.config.max_buffer_size;
 
         stats.buffer_utilization = if max_possible_size > 0 {
             total_buffer_size as f64 / max_possible_size as f64

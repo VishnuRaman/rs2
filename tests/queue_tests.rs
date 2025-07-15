@@ -1,7 +1,5 @@
-use rs2_stream::rs2::*;
-use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::queue::{Queue, QueueError};
 use rs2_stream::stream::StreamExt;
-use rs2_stream::queue::Queue;
 use tokio::runtime::Runtime;
 
 #[test]
@@ -15,8 +13,8 @@ fn test_queue_basic() {
         assert!(queue.enqueue(2).await.is_ok());
         assert!(queue.enqueue(3).await.is_ok());
 
-        // Dequeue items - collect from the rs2_stream
-        let mut dequeue_stream = queue.dequeue();
+        // Dequeue items - use stream() method
+        let mut dequeue_stream = queue.stream();
         assert_eq!(dequeue_stream.next().await.unwrap(), 1);
         assert_eq!(dequeue_stream.next().await.unwrap(), 2);
         assert_eq!(dequeue_stream.next().await.unwrap(), 3);
@@ -48,7 +46,7 @@ fn test_queue_try_enqueue() {
 fn test_queue_close() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        let queue = Queue::<i32>::bounded(3);
+        let mut queue = Queue::<i32>::bounded(3);
 
         // Enqueue some items
         assert!(queue.enqueue(1).await.is_ok());
@@ -60,16 +58,21 @@ fn test_queue_close() {
         // Try to enqueue after closing - should fail
         let result = queue.enqueue(3).await;
         assert!(result.is_err());
-        // Check for Closed error if it exists, otherwise just check it's an error
         if let Err(e) = result {
-            // The test should pass if we get any error when queue is closed
             println!("Got expected error when queue closed: {:?}", e);
         }
 
         // Should still be able to dequeue existing items
-        let mut dequeue_stream = queue.dequeue();
-        assert_eq!(dequeue_stream.next().await.unwrap(), 1);
-        assert_eq!(dequeue_stream.next().await.unwrap(), 2);
+        let mut dequeue_stream = queue.stream();
+        let first = dequeue_stream.next().await;
+        println!("First dequeue after close: {:?}", first);
+        assert_eq!(first, Some(1));
+        let second = dequeue_stream.next().await;
+        println!("Second dequeue after close: {:?}", second);
+        assert_eq!(second, Some(2));
+        let third = dequeue_stream.next().await;
+        println!("Third dequeue after close: {:?}", third);
+        assert!(third.is_none(), "Expected None after all items dequeued, got: {:?}", third);
     });
 }
 
@@ -86,7 +89,7 @@ fn test_queue_unbounded() {
         }
 
         // Dequeue all items
-        let mut dequeue_stream = queue.dequeue();
+        let mut dequeue_stream = queue.stream();
         for i in 0..100 {
             assert_eq!(dequeue_stream.next().await.unwrap(), i);
         }
@@ -106,7 +109,7 @@ fn test_queue_try_enqueue_unbounded() {
         }
 
         // Verify all items were enqueued
-        let mut dequeue_stream = queue.dequeue();
+        let mut dequeue_stream = queue.stream();
         for i in 0..50 {
             assert_eq!(dequeue_stream.next().await.unwrap(), i);
         }
@@ -141,13 +144,10 @@ fn test_queue_capacity() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         let queue = Queue::<i32>::bounded(2);
-
-        if let Some(cap) = queue.capacity() {
-            assert_eq!(cap, 2);
-        }
+        assert_eq!(queue.capacity(), 2);
 
         let unbounded_queue = Queue::<i32>::unbounded();
-        assert_eq!(unbounded_queue.capacity(), None);
+        assert_eq!(unbounded_queue.capacity(), usize::MAX);
     });
 }
 
@@ -162,7 +162,7 @@ fn test_queue_is_empty() {
         queue.enqueue(1).await.unwrap();
         assert!(!queue.is_empty().await);
 
-        let mut dequeue_stream = queue.dequeue();
+        let mut dequeue_stream = queue.stream();
         dequeue_stream.next().await.unwrap();
         assert!(queue.is_empty().await);
     });
@@ -180,7 +180,7 @@ fn test_queue_len() {
         queue.enqueue(2).await.unwrap();
         assert_eq!(queue.len().await, 2);
 
-        let mut dequeue_stream = queue.dequeue();
+        let mut dequeue_stream = queue.stream();
         dequeue_stream.next().await.unwrap();
         assert_eq!(queue.len().await, 1);
 
@@ -197,7 +197,7 @@ fn test_queue_dequeue_empty() {
 
         // Dequeue from empty queue should either block indefinitely or return None
         // Using a timeout to test this behavior
-        let mut dequeue_stream = queue.dequeue();
+        let mut dequeue_stream = queue.stream();
         let result =
             tokio::time::timeout(std::time::Duration::from_millis(100), dequeue_stream.next())
                 .await;
@@ -221,8 +221,8 @@ fn test_queue_stream_multiple_items() {
             queue.enqueue(i).await.unwrap();
         }
 
-        // Collect all items from the dequeue rs2_stream
-        let items: Vec<i32> = queue.dequeue().take(5).collect().await;
+        // Collect all items from the dequeue stream
+        let items: Vec<i32> = queue.stream().take(5).collect().await;
         assert_eq!(items, vec![1, 2, 3, 4, 5]);
     });
 }
@@ -243,7 +243,7 @@ fn test_queue_concurrent_access() {
         });
 
         // Collect items as they become available
-        let mut dequeue_stream = queue.dequeue();
+        let mut dequeue_stream = queue.stream();
         let mut collected = Vec::new();
 
         for _ in 0..10 {

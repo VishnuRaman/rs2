@@ -12,6 +12,7 @@ use crate::state::{StateConfig, StateError, StateStorage};
 use std::future::Future;
 use crate::stream::core::StreamExt as CoreStreamExt;
 use std::collections::VecDeque;
+use std::task::{RawWaker, RawWakerVTable, Waker};
 
 // Memory management constants
 const MAX_HASHMAP_KEYS: usize = 10_000;
@@ -357,28 +358,50 @@ where
                         let future = (this.f)(items, state_access);
                         println!("StatefulWindow: emitting window for key {}", key);
                         *this.current_future = Some(Box::pin(future));
-                        // Continue the loop to poll the new future
+                        // Poll the future immediately to completion
+                        let mut pinned = this.current_future.as_mut().unwrap();
+                        match pinned.as_mut().poll(cx) {
+                            Poll::Ready(result) => {
+                                *this.current_future = None;
+                                return Poll::Ready(Some(result));
+                            }
+                            Poll::Pending => {
+                                return Poll::Pending;
+                            }
+                        }
                     } else {
                         continue;
                     }
                 }
                 Poll::Ready(None) => {
-                    // Source stream is exhausted, emit any remaining partial windows
+                    // Source stream is exhausted, emit only full windows (no partial windows)
                     if !this.window_buffers.is_empty() {
-                        // Process remaining partial windows
                         for (key, mut buffer) in this.window_buffers.drain() {
-                            if !buffer.is_empty() {
-                                let items: Vec<T> = buffer.drain(..).collect();
+                            if buffer.len() >= *this.window_size {
+                                let items: Vec<T> = buffer.drain(..*this.window_size).collect();
                                 let state_access = StateAccess::new(this.storage.clone(), key.clone());
                                 let future = (this.f)(items, state_access);
-                                println!("StatefulWindow: processing partial window for key {} at end", key);
                                 *this.current_future = Some(Box::pin(future));
-                                break;
+                                // Poll the future to completion synchronously
+                                let waker = noop_waker();
+                                let mut cx = std::task::Context::from_waker(&waker);
+                                let mut pinned = this.current_future.as_mut().unwrap();
+                                match pinned.as_mut().poll(&mut cx) {
+                                    Poll::Ready(result) => {
+                                        this.result_queue.push_back(result);
+                                    }
+                                    Poll::Pending => {
+                                        this.result_queue.push_back(Err(StateError::Validation("Window future did not complete synchronously at end of stream".to_string())));
+                                    }
+                                }
+                                *this.current_future = None;
                             }
                         }
-                    } else {
-                        return Poll::Ready(None);
+                        if let Some(result) = this.result_queue.pop_front() {
+                            return Poll::Ready(Some(result));
+                        }
                     }
+                    return Poll::Ready(None);
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -463,27 +486,30 @@ where
         use std::sync::Arc;
         struct FoldState<S, R, F, T> {
             stream: S,
-            acc: R,
+            aggregates: std::collections::HashMap<String, R>,
             storage: Arc<dyn StateStorage + Send + Sync>,
             key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
             f: F,
+            initial: R,
         }
         let state = FoldState {
             stream: self,
-            acc: initial,
+            aggregates: std::collections::HashMap::new(),
             storage: config.create_storage_arc(),
             key_extractor: Arc::new(key_extractor),
             f,
+            initial,
         };
         unfold(state, |mut state| async move {
             let next = CoreStreamExt::next(&mut state.stream).await;
             match next {
                 Some(item) => {
                     let key = state.key_extractor.extract_key(&item);
-                    let state_access = StateAccess::new(state.storage.clone(), key);
-                    match (state.f)(state.acc.clone(), item, state_access).await {
+                    let current_acc = state.aggregates.entry(key.clone()).or_insert_with(|| state.initial.clone());
+                    let state_access = StateAccess::new(state.storage.clone(), key.clone());
+                    match (state.f)(current_acc.clone(), item, state_access).await {
                         Ok(new_acc) => {
-                            state.acc = new_acc.clone();
+                            *current_acc = new_acc.clone();
                             Some((Ok(new_acc), state))
                         }
                         Err(e) => Some((Err(e), state)),
@@ -1369,6 +1395,16 @@ fn unix_timestamp_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+fn noop_waker() -> Waker {
+    fn noop(_: *const ()) {}
+    fn clone(_: *const ()) -> RawWaker { noop_raw_waker() }
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+    fn noop_raw_waker() -> RawWaker {
+        RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+    unsafe { Waker::from_raw(noop_raw_waker()) }
 }
 
 impl<T, S> StatefulStreamExt<T> for S

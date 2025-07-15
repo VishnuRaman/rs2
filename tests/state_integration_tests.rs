@@ -1,4 +1,3 @@
-use futures::StreamExt;
 use rs2_stream::state::config::StateConfigs;
 use rs2_stream::state::stream_ext::StateAccess;
 use rs2_stream::state::{CustomKeyExtractor, StatefulStreamExt};
@@ -218,7 +217,7 @@ async fn test_customer_order_analytics() {
         config,
         key_extractor,
         0.0f64,
-        |acc, order, state_access: StateAccess| Box::pin(async move { Ok(acc + order.amount) }),
+        |acc, order, _state_access: StateAccess| Box::pin(async move { Ok(acc + order.amount) }),
     );
 
     let results: Vec<f64> = result_stream
@@ -450,7 +449,7 @@ async fn test_multi_stream_join() {
     let order_stream = from_iter(order_events);
 
     let result_stream = user_stream.stateful_join_rs2(
-        Box::pin(order_stream),
+        order_stream,
         config,
         user_key_extractor,
         order_key_extractor,

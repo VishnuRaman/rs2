@@ -30,7 +30,7 @@ pub struct StreamingStats {
 
 pub struct MediaStreamingService {
     chunk_queue: Arc<MediaPriorityQueue>,
-    metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
+    pub metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
     config: MediaStream,
     backpressure_config: BackpressureConfig,
 }

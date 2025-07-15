@@ -375,7 +375,8 @@ async fn test_interleave() {
     let interleaved = interleave(first, second);
     let result: Vec<_> = interleaved.collect().await;
     assert!(result.len() == 6);
-    assert!(result.contains(&1) && result.contains(&6));
+    // With interleave, we should get alternating items: [1, 2, 3, 4, 5, 6]
+    assert_eq!(result, vec![1, 2, 3, 4, 5, 6]);
 }
 
 #[tokio::test]

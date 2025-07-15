@@ -1,7 +1,7 @@
-use futures_util::stream::StreamExt;
 use rs2_stream::rs2::*;
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::stream::from_iter;
 
 #[test]
@@ -32,7 +32,7 @@ fn test_bracket() {
         );
 
         // Collect the rs2_stream
-        let result = stream.collect::<Vec<_>>().await;
+        let result = stream.collect_rs2().await;
 
         // Verify the rs2_stream produced the expected values
         assert_eq!(result, vec![1, 2, 3]);
@@ -74,7 +74,7 @@ fn test_bracket_case_success() {
         );
 
         // Collect the rs2_stream
-        let result = stream.collect::<Vec<_>>().await;
+        let result = stream.collect_rs2().await;
 
         // Verify the rs2_stream produced the expected values
         assert_eq!(result, vec![Ok(1), Ok(2), Ok(3)]);
@@ -120,7 +120,7 @@ fn test_bracket_case_error() {
         );
 
         // Collect the rs2_stream
-        let result = stream.collect::<Vec<_>>().await;
+        let result = stream.collect_rs2().await;
 
         // Verify the rs2_stream produced the expected values (including the error)
         assert_eq!(result, vec![Ok(1), Err("error"), Ok(3)]);

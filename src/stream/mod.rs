@@ -76,7 +76,4 @@ pub use timeout::TimeoutStream;
 pub use either::Either;
 
 // Re-export from_async_fn
-pub use from_async_fn::{from_async_fn, FromAsyncFn};
-
-// Remove the Box<dyn Stream> implementation entirely
-// Delete lines 63-74 that implement Stream for Box<dyn Stream<Item = T> + Send + 'static> 
+pub use from_async_fn::{from_async_fn, FromAsyncFn}; 

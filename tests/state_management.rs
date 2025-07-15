@@ -1,10 +1,11 @@
-use futures::StreamExt;
+// Remove futures import - use local StreamExt instead
 use rs2_stream::state::stream_ext::StateAccess;
 use rs2_stream::state::StateError;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tokio;
+// Remove unused import
 use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::StreamExt;
 
@@ -289,18 +290,20 @@ async fn test_stateful_join() {
     ];
 
     // Create interleaved streams to ensure deterministic behavior
-    let (stream1_tx, stream1_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (stream2_tx, stream2_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (stream1_tx, _stream1_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (stream2_tx, _stream2_rx) = tokio::sync::mpsc::unbounded_channel();
 
     // Spawn a task to send items in an interleaved manner
+    let data1_clone = data1.clone();
+    let data2_clone = data2.clone();
     tokio::spawn(async move {
-        let max_len = data1.len().max(data2.len());
+        let max_len = data1_clone.len().max(data2_clone.len());
         for i in 0..max_len {
-            if i < data1.len() {
-                stream1_tx.send(data1[i].clone()).unwrap();
+            if i < data1_clone.len() {
+                stream1_tx.send(data1_clone[i].clone()).unwrap();
             }
-            if i < data2.len() {
-                stream2_tx.send(data2[i].clone()).unwrap();
+            if i < data2_clone.len() {
+                stream2_tx.send(data2_clone[i].clone()).unwrap();
             }
             // Small yield to allow polling
             tokio::task::yield_now().await;
@@ -311,7 +314,7 @@ async fn test_stateful_join() {
     let stream2 = from_iter(data2);
 
     let result_stream = stream1.stateful_join_rs2(
-        Box::pin(stream2),
+        stream2,
         config,
         key_extractor1,
         key_extractor2,
@@ -651,10 +654,11 @@ async fn test_stateful_join_user_events() {
     }
 
     // Split into two streams: one for stream1, one for stream2, but yield alternately
-    let (stream1_tx, stream1_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (stream2_tx, stream2_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (stream1_tx, _stream1_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (stream2_tx, _stream2_rx) = tokio::sync::mpsc::unbounded_channel();
+    let interleaved_clone = interleaved.clone();
     tokio::spawn(async move {
-        for (data1, data2) in interleaved {
+        for (data1, data2) in interleaved_clone {
             if let Some(d1) = data1 {
                 stream1_tx.send(d1).unwrap();
             }
@@ -673,7 +677,7 @@ async fn test_stateful_join_user_events() {
     let key_extractor2 = CustomKeyExtractor::new(|data: &TestData| data.id.to_string());
 
     let mut result_stream = stream1.stateful_join_rs2(
-        Box::pin(stream2),
+        stream2,
         config,
         key_extractor1,
         key_extractor2,
@@ -705,10 +709,9 @@ async fn test_stateful_join_user_events() {
         },
     );
 
-    let mut results = Vec::new();
-    while let Some(result) = result_stream.next().await {
-        results.push(result);
-    }
+    let results: Vec<Result<String, StateError>> = result_stream
+        .collect::<Vec<_>>()
+        .await;
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].as_ref().unwrap(), "test1:join1");
