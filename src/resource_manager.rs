@@ -89,6 +89,22 @@ impl ResourceManager {
         }
     }
 
+    /// Track memory allocation (sync version for use in stream combinators)
+    pub fn track_allocation(&self, bytes: u64) {
+        let current = self.memory_usage.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        
+        // Update peak memory
+        let mut peak = self.peak_memory.load(Ordering::Relaxed);
+        while current > peak {
+            match self.peak_memory.compare_exchange_weak(
+                peak, current, Ordering::Relaxed, Ordering::Relaxed
+            ) {
+                Ok(_) => break,
+                Err(new_peak) => peak = new_peak,
+            }
+        }
+    }
+
     /// Track memory allocation
     pub async fn track_memory_allocation(&self, bytes: u64) -> Result<(), ResourceError> {
         let current = self.memory_usage.fetch_add(bytes, Ordering::Relaxed) + bytes;
@@ -117,9 +133,21 @@ impl ResourceManager {
         Ok(())
     }
 
+    /// Track memory deallocation (sync version for use in stream combinators)
+    pub fn track_deallocation(&self, bytes: u64) {
+        self.memory_usage.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
     /// Track memory deallocation
     pub async fn track_memory_deallocation(&self, bytes: u64) {
         self.memory_usage.fetch_sub(bytes, Ordering::Relaxed);
+    }
+
+    /// Track key usage (sync version for use in stream combinators)
+    pub fn track_key_usage(&self, _key: &str) {
+        // For now, just increment active keys without checking limits
+        // This is a simplified version for sync contexts
+        self.active_keys.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Track key creation

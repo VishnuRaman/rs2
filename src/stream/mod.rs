@@ -17,6 +17,11 @@ pub mod metrics;
 pub mod timeout;
 pub mod from_async_fn;
 pub mod either;
+pub mod group_by;
+pub mod deduplicate;
+pub mod stateful_throttle;
+pub mod join;
+pub mod window;
 
 // Re-export core types
 pub use core::{Stream, StreamExt};

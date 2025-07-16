@@ -3,6 +3,7 @@ use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::StreamExt;
 use tokio::runtime::Runtime;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::resource_manager::ResourceConfig;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio;
@@ -71,7 +72,7 @@ async fn test_stateful_map_basic() {
             ))
         };
         Box::pin(fut)
-    });
+    }, ResourceConfig::default());
 
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -136,7 +137,7 @@ async fn test_stateful_filter() {
 
             Ok(item.count >= 10)
         })
-    });
+    }, ResourceConfig::default());
 
     let results: Vec<TestData> = result_stream
         .collect::<Vec<_>>()
@@ -178,7 +179,7 @@ async fn test_stateful_fold() {
     let result_stream =
         stream.stateful_fold_rs2(config, key_extractor, 0u64, |acc, item, _state_access| {
             Box::pin(async move { Ok(acc + item.count as u64) })
-        });
+        }, ResourceConfig::default());
     let results: Vec<u64> = result_stream
         .collect::<Vec<_>>()
         .await
@@ -248,6 +249,7 @@ async fn test_stateful_window() {
             };
             Box::pin(fut)
         },
+        ResourceConfig::default(),
     );
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -327,6 +329,7 @@ async fn test_stateful_join() {
             };
             Box::pin(fut)
         },
+        ResourceConfig::default(),
     );
 
     let results: Vec<String> = result_stream
@@ -407,6 +410,7 @@ async fn test_stateful_join_different_keys() {
             let fut = async move { Ok(format!("{} + {}", left.value, right.value)) };
             Box::pin(fut)
         },
+        ResourceConfig::default(),
     );
 
     let results: Vec<String> = result_stream
@@ -464,7 +468,7 @@ async fn test_stateful_operations_with_empty_stream() {
             ))
         };
         Box::pin(fut)
-    });
+    }, ResourceConfig::default());
 
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -509,7 +513,7 @@ async fn test_stateful_operations_with_single_item() {
 
             Ok(item.count > 50) // Only pass items with count > 50
         })
-    });
+    }, ResourceConfig::default());
 
     let results: Vec<TestData> = result_stream
         .collect::<Vec<_>>()
@@ -556,7 +560,7 @@ async fn test_stateful_operations_with_multiple_keys() {
     let result_stream =
         stream.stateful_fold_rs2(config, key_extractor, 0u64, |acc, item, _state_access| {
             Box::pin(async move { Ok(acc + item.count as u64) })
-        });
+        }, ResourceConfig::default());
 
     let results: Vec<u64> = result_stream
         .collect::<Vec<_>>()
@@ -618,6 +622,7 @@ async fn test_stateful_operations_with_large_data() {
             };
             Box::pin(fut)
         },
+        ResourceConfig::default(),
     );
 
     let results: Vec<String> = result_stream
@@ -649,7 +654,7 @@ async fn test_stateful_operations_error_handling() {
             Ok(format!("{}: processed", item.value))
         };
         Box::pin(fut)
-    });
+    }, ResourceConfig::default());
 
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -690,7 +695,7 @@ async fn test_stateful_operations_concurrent_access() {
     let result_stream =
         stream.stateful_reduce_rs2(config, key_extractor, Some(0u64), |acc, item, _state_access| {
             Box::pin(async move { Ok(acc + item.count as u64) })
-        });
+        }, ResourceConfig::default());
 
     let results: Vec<u64> = result_stream
         .collect::<Vec<_>>()
@@ -753,7 +758,7 @@ async fn test_stateful_operations_with_custom_key_extractor() {
             Ok(format!("{} (total: {})", item.value, state.total_count))
         };
         Box::pin(fut)
-    });
+    }, ResourceConfig::default());
 
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()

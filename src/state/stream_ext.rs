@@ -476,6 +476,7 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         f: F,
+        resource_config: ResourceConfig,
     ) -> StatefulMap<Self, F, R, T>
     where
         F: FnMut(
@@ -499,6 +500,7 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         f: F,
+        resource_config: ResourceConfig,
     ) -> StatefulFilter<Self, F, T>
     where
         F: FnMut(
@@ -522,6 +524,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         initial: R,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
@@ -582,6 +585,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         initial: Option<R>,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
@@ -601,53 +605,39 @@ where
         use std::sync::Arc;
         struct ReduceState<S, R, F, T> {
             stream: S,
-            acc: Option<R>,
-            done: bool,
+            accs: std::collections::HashMap<String, R>,
             storage: Arc<dyn StateStorage + Send + Sync>,
             key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
             f: F,
         }
         let state = ReduceState {
             stream: self,
-            acc: initial,
-            done: false,
+            accs: std::collections::HashMap::new(),
             storage: config.create_storage_arc(),
             key_extractor: Arc::new(key_extractor),
             f,
         };
-        unfold(state, |mut state| async move {
-            if state.done {
-                return None;
-            }
-            let next = CoreStreamExt::next(&mut state.stream).await;
-            match next {
-                Some(item) => {
-                    if let Some(acc) = state.acc.take() {
+        let initial_clone = initial.clone();
+        unfold(state, move |mut state| {
+            let initial = initial_clone.clone();
+            async move {
+                let next = CoreStreamExt::next(&mut state.stream).await;
+                match next {
+                    Some(item) => {
                         let key = state.key_extractor.extract_key(&item);
-                        let state_access = StateAccess::new(state.storage.clone(), key);
-                        match (state.f)(acc, item, state_access).await {
+                        let acc = state.accs.entry(key.clone()).or_insert_with(|| {
+                            initial.clone().expect("No initial accumulator provided and cannot infer from first item")
+                        });
+                        let state_access = StateAccess::new(state.storage.clone(), key.clone());
+                        match (state.f)(acc.clone(), item, state_access).await {
                             Ok(new_acc) => {
-                                state.acc = Some(new_acc.clone());
+                                *acc = new_acc.clone();
                                 Some((Ok(new_acc), state))
                             }
-                            Err(e) => {
-                                state.done = true;
-                                Some((Err(e), state))
-                            }
+                            Err(e) => Some((Err(e), state)),
                         }
-                    } else {
-                        // No initial accumulator provided
-                        state.done = true;
-                        Some((Err(StateError::Validation("No initial accumulator provided and cannot infer from first item".to_string())), state))
                     }
-                }
-                None => {
-                    state.done = true;
-                    if let Some(acc) = state.acc.take() {
-                        Some((Ok(acc), state))
-                    } else {
-                        None
-                    }
+                    None => None,
                 }
             }
         })
@@ -661,6 +651,7 @@ where
         group_timeout: Option<Duration>,
         max_group_size: Option<usize>,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
@@ -671,82 +662,23 @@ where
                 Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
-            + 'static,
+            + 'static
+            + Unpin,
         R: Send + Sync + 'static,
         Self: Sized + Unpin,
     {
-        use crate::stream::constructors::unfold;
-        use crate::stream::core::StreamExt as CoreStreamExt;
-        use std::sync::Arc;
-        struct GroupByState<S, F, T> {
-            stream: S,
-            groups: std::collections::HashMap<String, Vec<T>>,
-            group_timestamps: std::collections::HashMap<String, std::time::Instant>,
-            storage: Arc<dyn StateStorage + Send + Sync>,
-            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
-            f: F,
-            max_size: usize,
-            timeout: std::time::Duration,
-        }
-        let state = GroupByState {
-            stream: self,
-            groups: std::collections::HashMap::new(),
-            group_timestamps: std::collections::HashMap::new(),
-            storage: config.create_storage_arc(),
-            key_extractor: Arc::new(key_extractor),
+        use crate::stream::group_by::StatefulGroupByStream;
+        let storage = config.create_storage_arc();
+        let state_access = StateAccess::new(storage.clone(), String::new());
+        
+        StatefulGroupByStream::new(
+            self,
             f,
-            max_size: max_group_size.unwrap_or(100),
-            timeout: group_timeout.unwrap_or(std::time::Duration::from_secs(60)),
-        };
-        unfold(state, |mut state| async move {
-            let next = CoreStreamExt::next(&mut state.stream).await;
-            match next {
-                Some(item) => {
-                    let key = state.key_extractor.extract_key(&item);
-                    let now = std::time::Instant::now();
-                    
-                    // Add item to group
-                    let group = state.groups.entry(key.clone()).or_insert_with(Vec::new);
-                    group.push(item);
-                    
-                    // Update timestamp
-                    state.group_timestamps.insert(key.clone(), now);
-                    
-                    // Check if group should be emitted
-                    let should_emit = group.len() >= state.max_size;
-                    
-                    if should_emit {
-                        let items = group.drain(..).collect();
-                        state.group_timestamps.remove(&key); // Clean up timestamp when group is emitted
-                        let state_access = StateAccess::new(state.storage.clone(), key.clone());
-                        match (state.f)(key, items, state_access).await {
-                            Ok(result) => Some((Ok(result), state)),
-                            Err(e) => Some((Err(e), state)),
-                        }
-                    } else {
-                        // Continue collecting - return None to continue to next item
-                        None
-                    }
-                }
-                None => {
-                    // Emit remaining groups
-                    let mut results = Vec::new();
-                    for (key, items) in state.groups.drain() {
-                        let state_access = StateAccess::new(state.storage.clone(), key.clone());
-                        match (state.f)(key, items, state_access).await {
-                            Ok(result) => results.push(Ok(result)),
-                            Err(e) => results.push(Err(e)),
-                        }
-                    }
-                    
-                    if let Some(result) = results.pop() {
-                        Some((result, state))
-                    } else {
-                        None
-                    }
-                }
-            }
-        })
+            key_extractor,
+            max_group_size.unwrap_or(100),
+            group_timeout.unwrap_or(Duration::from_secs(60)),
+            state_access,
+        )
     }
 
     /// Apply a stateful group by operation with advanced configuration
@@ -759,6 +691,7 @@ where
         emit_on_key_change: bool,
         emit_on_group_change: bool,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
@@ -769,107 +702,23 @@ where
                 Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
-            + 'static,
+            + 'static
+            + Unpin,
         R: Send + Sync + 'static,
         Self: Sized + Unpin,
     {
-        use crate::stream::constructors::unfold;
-        use crate::stream::core::StreamExt as CoreStreamExt;
-        use std::sync::Arc;
-        struct GroupByAdvancedState<S, F, T> {
-            stream: S,
-            groups: std::collections::HashMap<String, Vec<T>>,
-            group_timestamps: std::collections::HashMap<String, std::time::Instant>,
-            last_key: Option<String>,
-            storage: Arc<dyn StateStorage + Send + Sync>,
-            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
-            f: F,
-            max_size: usize,
-            timeout: std::time::Duration,
-            emit_on_key_change: bool,
-            emit_on_group_change: bool,
-        }
-        let state = GroupByAdvancedState {
-            stream: self,
-            groups: std::collections::HashMap::new(),
-            group_timestamps: std::collections::HashMap::new(),
-            last_key: None,
-            storage: config.create_storage_arc(),
-            key_extractor: Arc::new(key_extractor),
+        use crate::stream::group_by::StatefulGroupByStream;
+        let storage = config.create_storage_arc();
+        let state_access = StateAccess::new(storage.clone(), String::new());
+        
+        StatefulGroupByStream::new(
+            self,
             f,
-            max_size: max_group_size.unwrap_or(100),
-            timeout: group_timeout.unwrap_or(std::time::Duration::from_secs(60)),
-            emit_on_key_change,
-            emit_on_group_change,
-        };
-        unfold(state, |mut state| async move {
-            let next = CoreStreamExt::next(&mut state.stream).await;
-            match next {
-                Some(item) => {
-                    let key = state.key_extractor.extract_key(&item);
-                    let now = std::time::Instant::now();
-                    
-                    // Check for key change
-                    let key_changed = state.last_key.as_ref() != Some(&key);
-                    if key_changed && state.emit_on_key_change {
-                        // Emit previous group if it exists
-                        if let Some(prev_key) = state.last_key.take() {
-                            if let Some(items) = state.groups.remove(&prev_key) {
-                                state.group_timestamps.remove(&prev_key); // Clean up timestamp
-                                let state_access = StateAccess::new(state.storage.clone(), prev_key.clone());
-                                match (state.f)(prev_key, items, state_access).await {
-                                    Ok(result) => return Some((Ok(result), state)),
-                                    Err(e) => return Some((Err(e), state)),
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Add item to group
-                    let group = state.groups.entry(key.clone()).or_insert_with(Vec::new);
-                    group.push(item);
-                    state.last_key = Some(key.clone());
-                    
-                    // Update timestamp
-                    state.group_timestamps.insert(key.clone(), now);
-                    
-                    // Check if group should be emitted
-                    let should_emit = group.len() >= state.max_size || 
-                                    (state.emit_on_group_change && group.len() > 1) ||
-                                    (now.duration_since(*state.group_timestamps.get(&key).unwrap_or(&now)) > state.timeout);
-                    
-                    if should_emit {
-                        let items = group.drain(..).collect();
-                        state.group_timestamps.remove(&key); // Clean up timestamp when group is emitted
-                        let state_access = StateAccess::new(state.storage.clone(), key.clone());
-                        match (state.f)(key, items, state_access).await {
-                            Ok(result) => Some((Ok(result), state)),
-                            Err(e) => Some((Err(e), state)),
-                        }
-                    } else {
-                        // Continue collecting - return None to continue to next item
-                        None
-                    }
-                }
-                None => {
-                    // Emit remaining groups
-                    let mut results = Vec::new();
-                    for (key, items) in state.groups.drain() {
-                        let state_access = StateAccess::new(state.storage.clone(), key.clone());
-                        match (state.f)(key, items, state_access).await {
-                            Ok(result) => results.push(Ok(result)),
-                            Err(e) => results.push(Err(e)),
-                        }
-                    }
-                    
-                    if let Some(result) = results.pop() {
-                        Some((result, state))
-                    } else {
-                        None
-                    }
-                }
-            }
-        })
+            key_extractor,
+            max_group_size.unwrap_or(100),
+            group_timeout.unwrap_or(Duration::from_secs(60)),
+            state_access,
+        )
     }
 
     /// Apply a stateful deduplication operation
@@ -879,53 +728,27 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         ttl: std::time::Duration,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
         F: FnMut(T) -> T + Send + Sync + 'static,
         Self: Sized + Unpin,
     {
-        use crate::stream::constructors::unfold;
-        use crate::stream::core::StreamExt as CoreStreamExt;
+        use crate::stream::deduplicate::StatefulDeduplicateStream;
+        use crate::stream::core::StreamExt;
         use std::sync::Arc;
-        struct DedupState<S, F, T> {
-            stream: S,
-            seen_items: std::collections::HashMap<String, std::time::Instant>,
-            storage: Arc<dyn StateStorage + Send + Sync>,
-            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
-            f: F,
-            ttl: std::time::Duration,
-        }
-        let state = DedupState {
-            stream: self,
-            seen_items: std::collections::HashMap::new(),
-            storage: config.create_storage_arc(),
-            key_extractor: Arc::new(key_extractor),
+        
+        let storage = config.create_storage_arc();
+        let key_extractor = Arc::new(key_extractor);
+        
+        StatefulDeduplicateStream::new(
+            self,
             f,
+            key_extractor,
             ttl,
-        };
-        unfold(state, |mut state| async move {
-            let next = CoreStreamExt::next(&mut state.stream).await;
-            match next {
-                Some(item) => {
-                    let key = state.key_extractor.extract_key(&item);
-                    let now = std::time::Instant::now();
-                    let should_emit = if let Some(last_seen) = state.seen_items.get(&key) {
-                        now.duration_since(*last_seen) > state.ttl
-                    } else {
-                        true
-                    };
-                    if should_emit {
-                        state.seen_items.insert(key, now);
-                        let transformed = (state.f)(item);
-                        Some((Ok(transformed), state))
-                    } else {
-                        // Skip duplicate - return None to continue to next item
-                        None
-                    }
-                }
-                None => None,
-            }
-        })
+            storage,
+        )
+        .map(|item| Ok(item))
     }
 
     /// Apply a stateful throttle operation
@@ -936,58 +759,26 @@ where
         rate_limit: u32,
         window_duration: std::time::Duration,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
         F: FnMut(T) -> T + Send + Sync + 'static,
         Self: Sized + Unpin,
     {
-        use crate::stream::constructors::unfold;
-        use crate::stream::core::StreamExt as CoreStreamExt;
+        use crate::stream::stateful_throttle::StatefulThrottleStream;
+        use crate::stream::core::StreamExt;
         use std::sync::Arc;
-        struct ThrottleStateStruct<S, F, T> {
-            stream: S,
-            throttle_states: std::collections::HashMap<String, ThrottleState>,
-            storage: Arc<dyn StateStorage + Send + Sync>,
-            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
-            f: F,
-            rate_limit: u32,
-            window_duration: std::time::Duration,
-        }
-        let state = ThrottleStateStruct {
-            stream: self,
-            throttle_states: std::collections::HashMap::new(),
-            storage: config.create_storage_arc(),
-            key_extractor: Arc::new(key_extractor),
+        
+        let key_extractor = Arc::new(key_extractor);
+        
+        StatefulThrottleStream::new(
+            self,
             f,
+            key_extractor,
             rate_limit,
             window_duration,
-        };
-        unfold(state, |mut state| async move {
-            let next = CoreStreamExt::next(&mut state.stream).await;
-            match next {
-                Some(item) => {
-                    let key = state.key_extractor.extract_key(&item);
-                    let now = unix_timestamp_millis();
-                    let throttle_state = state.throttle_states.entry(key.clone()).or_insert(ThrottleState {
-                        count: 0,
-                        window_start: now,
-                    });
-                    if now - throttle_state.window_start > state.window_duration.as_millis() as u64 {
-                        throttle_state.count = 0;
-                        throttle_state.window_start = now;
-                    }
-                    if throttle_state.count < state.rate_limit {
-                        throttle_state.count += 1;
-                        let transformed = (state.f)(item);
-                        Some((Ok(transformed), state))
-                    } else {
-                        // Throttled - return None to continue to next item
-                        None
-                    }
-                }
-                None => None,
-            }
-        })
+        )
+        .map(|item| Ok(item))
     }
 
     /// Apply a stateful session operation
@@ -997,6 +788,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         session_timeout: std::time::Duration,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
         F: FnMut(T, bool) -> T + Send + Sync + 'static,
@@ -1054,6 +846,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         pattern_size: usize,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<Option<String>, StateError>> + Send + 'static
     where
         F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<String>, StateError>> + Send>> + Send + Sync + 'static,
@@ -1110,6 +903,7 @@ where
         other_key_extractor: impl KeyExtractor<U> + Send + Sync + 'static,
         window_duration: std::time::Duration,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(T, U, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
@@ -1117,78 +911,24 @@ where
         R: Send + Sync + 'static,
         Self: Sized + Unpin,
     {
-        use crate::stream::constructors::unfold;
-        use crate::stream::core::StreamExt as CoreStreamExt;
+        use crate::stream::join::StatefulJoinStream;
+        use crate::stream::core::StreamExt;
         use std::sync::Arc;
-        struct JoinState<S, O, F, T, U> {
-            stream: S,
-            other: O,
-            left_buffer: std::collections::HashMap<String, Vec<LeftItemWithTime<T>>>,
-            right_buffer: std::collections::HashMap<String, Vec<RightItemWithTime<U>>>,
-            storage: Arc<dyn StateStorage + Send + Sync>,
-            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
-            other_key_extractor: Arc<dyn KeyExtractor<U> + Send + Sync>,
-            f: F,
-            window_duration: std::time::Duration,
-        }
-        let state = JoinState {
-            stream: self,
+        
+        let key_extractor = Arc::new(key_extractor);
+        let other_key_extractor = Arc::new(other_key_extractor);
+        
+        let storage = config.create_storage_arc();
+        
+        StatefulJoinStream::new(
+            self,
             other,
-            left_buffer: std::collections::HashMap::new(),
-            right_buffer: std::collections::HashMap::new(),
-            storage: config.create_storage_arc(),
-            key_extractor: Arc::new(key_extractor),
-            other_key_extractor: Arc::new(other_key_extractor),
             f,
+            storage,
+            key_extractor,
+            other_key_extractor,
             window_duration,
-        };
-        unfold(state, |mut state| async move {
-            let left_item = CoreStreamExt::next(&mut state.stream).await;
-            let right_item = CoreStreamExt::next(&mut state.other).await;
-            match (left_item, right_item) {
-                (Some(left), Some(right)) => {
-                    let left_key = state.key_extractor.extract_key(&left);
-                    let right_key = state.other_key_extractor.extract_key(&right);
-                    let now = unix_timestamp_millis();
-                    state.left_buffer.entry(left_key.clone()).or_insert_with(Vec::new)
-                        .push(LeftItemWithTime { item: left, timestamp: now, key: left_key.clone() });
-                    state.right_buffer.entry(right_key.clone()).or_insert_with(Vec::new)
-                        .push(RightItemWithTime { item: right, timestamp: now, key: right_key.clone() });
-                    if left_key == right_key {
-                        if let (Some(left_items), Some(right_items)) = (state.left_buffer.get(&left_key), state.right_buffer.get(&right_key)) {
-                            for left_item in left_items {
-                                for right_item in right_items {
-                                    if (left_item.timestamp as i64 - right_item.timestamp as i64).abs() <= state.window_duration.as_millis() as i64 {
-                                        let state_access = StateAccess::new(state.storage.clone(), left_key.clone());
-                                        match (state.f)(left_item.item.clone(), right_item.item.clone(), state_access).await {
-                                            Ok(result) => return Some((Ok(result), state)),
-                                            Err(e) => return Some((Err(e), state)),
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // No match found - return None to continue to next items
-                    None
-                }
-                (Some(left), None) => {
-                    let key = state.key_extractor.extract_key(&left);
-                    state.left_buffer.entry(key.clone()).or_insert_with(Vec::new)
-                        .push(LeftItemWithTime { item: left, timestamp: unix_timestamp_millis(), key });
-                    // Continue collecting - return None to continue to next items
-                    None
-                }
-                (None, Some(right)) => {
-                    let key = state.other_key_extractor.extract_key(&right);
-                    state.right_buffer.entry(key.clone()).or_insert_with(Vec::new)
-                        .push(RightItemWithTime { item: right, timestamp: unix_timestamp_millis(), key });
-                    // Continue collecting - return None to continue to next items
-                    None
-                }
-                (None, None) => None,
-            }
-        })
+        )
     }
 
     /// Apply a stateful window operation
@@ -1225,66 +965,29 @@ where
         slide_size: Option<usize>,
         emit_partial: bool,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
-        F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
-        R: Send + Sync + 'static,
+        F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static + Unpin,
         Self: Sized + Unpin,
     {
-        use crate::stream::constructors::unfold;
-        use crate::stream::core::StreamExt as CoreStreamExt;
+        use crate::stream::window::StatefulWindowStream;
         use std::sync::Arc;
-        struct WindowAdvStateStruct<S, F, T> {
-            stream: S,
-            window_buffers: std::collections::HashMap<String, Vec<T>>,
-            storage: Arc<dyn StateStorage + Send + Sync>,
-            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
-            f: F,
-            window_size: usize,
-            slide: usize,
-            emit_partial: bool,
-        }
-        let state = WindowAdvStateStruct {
-            stream: self,
-            window_buffers: std::collections::HashMap::new(),
-            storage: config.create_storage_arc(),
-            key_extractor: Arc::new(key_extractor),
+        
+        let storage = config.create_storage_arc();
+        let key_extractor = Arc::new(key_extractor);
+        let slide_size = slide_size.unwrap_or(1);
+        
+        StatefulWindowStream::new(
+            self,
+            storage,
+            key_extractor,
             f,
             window_size,
-            slide: slide_size.unwrap_or(1),
+            slide_size,
             emit_partial,
-        };
-        unfold(state, |mut state| async move {
-            let next = CoreStreamExt::next(&mut state.stream).await;
-            match next {
-                Some(item) => {
-                    let key = state.key_extractor.extract_key(&item);
-                    let buffer = state.window_buffers.entry(key.clone()).or_insert_with(Vec::new);
-                    buffer.push(item);
-                    let should_emit = if state.emit_partial {
-                        buffer.len() >= state.slide
-                    } else {
-                        buffer.len() >= state.window_size
-                    };
-                    if should_emit {
-                        let items: Vec<T> = if buffer.len() >= state.window_size {
-                            buffer.drain(..state.window_size).collect()
-                        } else {
-                            buffer.drain(..).collect()
-                        };
-                        let state_access = StateAccess::new(state.storage.clone(), key.clone());
-                        match (state.f)(items, state_access).await {
-                            Ok(result) => Some((Ok(result), state)),
-                            Err(e) => Some((Err(e), state)),
-                        }
-                    } else {
-                        // Window not ready yet - return None to continue to next item
-                        None
-                    }
-                }
-                None => None,
-            }
-        })
+        )
     }
 
     /// Apply a stateful aggregate operation
@@ -1294,6 +997,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         initial: R,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(R, T, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
@@ -1346,6 +1050,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         window_duration: std::time::Duration,
         f: F,
+        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
@@ -1436,6 +1141,10 @@ impl StateAccess {
 
     pub async fn set(&self, value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.storage.set(&self.key, value).await
+    }
+
+    pub fn get_storage(&self) -> Arc<dyn StateStorage + Send + Sync> {
+        self.storage.clone()
     }
 }
 

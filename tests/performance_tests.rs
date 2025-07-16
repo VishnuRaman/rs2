@@ -1,11 +1,8 @@
 use rs2_stream::rs2::*;
-use rs2_stream::stream::{StreamExt, from_iter, Stream, RateStreamExt};
+use rs2_stream::stream::{StreamExt, from_iter, RateStreamExt};
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use std::time::{Duration, Instant};
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use tokio::runtime::Runtime;
-use tokio::time::sleep;
 
 // Helper function to run tests with timeout
 async fn run_with_timeout<F, T>(timeout_duration: Duration, future: F) -> T

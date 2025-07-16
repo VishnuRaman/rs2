@@ -1,4 +1,4 @@
-use futures_util::StreamExt;
+use rs2_stream::stream::StreamExt;
 use rs2_stream::media::streaming::{MediaStreamingService, StreamingServiceFactory};
 use rs2_stream::media::types::{MediaStream, MediaType, QualityLevel};
 use std::collections::HashMap;

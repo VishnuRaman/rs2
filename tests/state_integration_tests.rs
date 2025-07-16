@@ -4,6 +4,7 @@ use rs2_stream::state::{CustomKeyExtractor, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio;
+use rs2_stream::resource_manager::ResourceConfig;
 use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::StreamExt;
 
@@ -167,7 +168,7 @@ async fn test_user_activity_tracking() {
                     new_state.event_counts[&event.event_type]
                 ))
             })
-        });
+        }, ResourceConfig::default());
 
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -218,6 +219,7 @@ async fn test_customer_order_analytics() {
         key_extractor,
         0.0f64,
         |acc, order, _state_access: StateAccess| Box::pin(async move { Ok(acc + order.amount) }),
+        ResourceConfig::default(),
     );
 
     let results: Vec<f64> = result_stream
@@ -295,7 +297,7 @@ async fn test_real_time_fraud_detection() {
                 // Flag suspicious activity: orders > 800 or total spent > 1000
                 Ok(order.amount > 800.0 || new_state.total_spent > 1000.0)
             })
-        });
+        }, ResourceConfig::default());
 
     let results: Vec<OrderEvent> = result_stream
         .collect::<Vec<_>>()
@@ -370,7 +372,7 @@ async fn test_session_management() {
                     event.user_id, new_state.total_events, new_state.last_seen
                 ))
             })
-        });
+        }, ResourceConfig::default());
 
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -484,6 +486,7 @@ async fn test_multi_stream_join() {
                 ))
             })
         },
+        ResourceConfig::default(),
     );
 
     let results: Vec<String> = result_stream
@@ -594,7 +597,7 @@ async fn test_error_recovery_and_continuity() {
                     event.event_type, event.user_id, new_state.total_events
                 ))
             })
-        });
+        }, ResourceConfig::default());
 
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -655,7 +658,7 @@ async fn test_performance_under_load() {
                     event.event_type, event.user_id, new_state.total_events
                 ))
             })
-        });
+        }, ResourceConfig::default());
 
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()

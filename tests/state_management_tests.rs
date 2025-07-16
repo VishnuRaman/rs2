@@ -6,6 +6,7 @@ use rs2_stream::state::traits::StateStorageType;
 use rs2_stream::state::{
     CustomKeyExtractor, InMemoryState, KeyExtractor, StateStorage, StatefulStreamExt,
 };
+use rs2_stream::resource_manager::ResourceConfig;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::time::Duration;
@@ -79,6 +80,7 @@ async fn test_stateful_map_basic() {
                     Ok(state)
                 })
             },
+            ResourceConfig::default(),
         )
         .collect::<Vec<_>>()
         .await;
@@ -153,6 +155,7 @@ async fn test_stateful_filter() {
                     Ok(count < 2)
                 })
             },
+            ResourceConfig::default(),
         )
         .collect::<Vec<_>>()
         .await;
@@ -226,6 +229,7 @@ async fn test_stateful_fold() {
                     Ok(state)
                 })
             },
+            ResourceConfig::default(),
         )
         .collect::<Vec<_>>()
         .await;
@@ -399,6 +403,7 @@ async fn test_stateful_window_processing() {
                     Ok((count, total_amount))
                 })
             },
+            ResourceConfig::default(),
         )
         .collect::<Vec<_>>()
         .await;
