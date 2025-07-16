@@ -4,6 +4,8 @@ use crate::connectors::stream_connector::{
 use crate::connectors::connection_errors::ConnectorError;
 use crate::stream::Stream;
 use crate::stream::StreamExt;
+use crate::stream::constructors::FromAsyncFn;
+use crate::stream::FilterMap;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,6 +23,33 @@ use std::pin::Pin;
 use std::future::Future;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+// Wrapper type for Kafka streams to avoid complex associated types
+pub struct KafkaStream<T> {
+    inner: Pin<Box<dyn Stream<Item = T> + Send>>,
+}
+
+impl<T> KafkaStream<T> {
+    pub fn new<S>(stream: S) -> Self 
+    where 
+        S: Stream<Item = T> + Send + 'static,
+    {
+        Self {
+            inner: Box::pin(stream),
+        }
+    }
+}
+
+impl<T> Stream for KafkaStream<T> {
+    type Item = T;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        unsafe {
+            let this = self.get_unchecked_mut();
+            this.inner.as_mut().poll_next(cx)
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KafkaConnector {
@@ -154,77 +183,86 @@ impl KafkaConnector {
     }
 }
 
-// Temporarily disabled due to compilation issues
-/*
 #[async_trait]
 impl<T> StreamConnector<T, KafkaConfig, KafkaMetadata, ConnectorError> for KafkaConnector
 where
-    T: for<'de> Deserialize<'de> + Serialize + Send + 'static,
+    T: for<'de> Deserialize<'de> + Serialize + Send + Sync + 'static,
 {
     type Config = KafkaConfig;
     type Metadata = KafkaMetadata;
     type Error = ConnectorError;
-*/
+    type SourceStream = KafkaStream<T>;
+    type SinkStream = KafkaStream<T>;
 
-    /*
-    async fn from_source(&self, config: Self::Config) -> Result<Box<dyn Stream<Item = T> + Send + Sync>, Self::Error> {
+    async fn from_source(&self, config: Self::Config) -> Result<Self::SourceStream, Self::Error> {
+        log::info!("Creating Kafka consumer for topic: {}", config.topic);
         let client_config = self.create_consumer_config(&config);
         let consumer: StreamConsumer = client_config
             .create()
             .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
+        log::info!("✅ Successfully created Kafka consumer");
 
-        let topics = vec![config.topic.as_str()];
-        consumer
-            .subscribe(&topics)
-            .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
-
+        // Partition/subscription logic: assign if partition is specified, else subscribe
         if let Some(partition) = config.partition {
+            // If partition is specified, assign to that specific partition
             let mut tpl = TopicPartitionList::new();
             tpl.add_partition(&config.topic, partition);
             consumer
                 .assign(&tpl)
                 .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
+            log::info!("Assigned consumer to partition {} of topic {}", partition, config.topic);
+        } else {
+            // Otherwise, subscribe to the entire topic
+            let topics = vec![config.topic.as_str()];
+            consumer
+                .subscribe(&topics)
+                .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
+            log::info!("Subscribed consumer to topic {}", config.topic);
         }
 
         let topic = config.topic.clone();
         let consumer_arc = Arc::new(Mutex::new(consumer));
-        let stream = crate::stream::constructors::from_async_fn(move || {
+        
+        log::info!("Creating message stream for topic: {}", topic);
+        // Create a stream that continuously polls for messages
+        let stream = crate::stream::constructors::from_async_fn::<T, _, _>(move || {
             let consumer_arc = Arc::clone(&consumer_arc);
             let topic = topic.clone();
             async move {
                 let consumer = consumer_arc.lock().await;
+                log::debug!("Polling for message from Kafka topic: {}", topic);
                 match consumer.recv().await {
                     Ok(message) => {
                         if let Some(payload) = message.payload() {
                             match serde_json::from_slice::<T>(payload) {
                                 Ok(item) => {
-                                    log::debug!("Received message from Kafka topic: {}", topic);
+                                    log::info!("✅ Received message from Kafka topic: {} (payload size: {})", topic, payload.len());
                                     Some(item)
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to deserialize Kafka message: {}", e);
+                                    log::error!("Failed to deserialize message from Kafka: {}", e);
                                     None
                                 }
                             }
                         } else {
+                            log::warn!("Received empty message from Kafka topic: {}", topic);
                             None
                         }
                     }
                     Err(e) => {
-                        log::error!("Kafka consumer error: {}", e);
+                        log::error!("Failed to receive message from Kafka: {}", e);
                         None
                     }
                 }
             }
-        })
-        .filter_map(|x| async move { x });
+        });
 
-        Ok(stream.boxed())
+        Ok(KafkaStream::new(stream))
     }
 
     async fn to_sink(
         &self,
-        stream: Box<dyn Stream<Item = T> + Send + Sync>,
+        mut stream: Self::SinkStream,
         config: Self::Config,
     ) -> Result<Self::Metadata, Self::Error> {
         // Validate topic name
@@ -245,9 +283,8 @@ where
         let messages_produced = Arc::new(Mutex::new(0u64));
         let bytes_sent = Arc::new(Mutex::new(0u64));
 
-        // Convert the boxed stream to use our stream methods
-        let mut stream = stream;
-        while let Some(item) = StreamExt::next(&mut stream).await {
+        // Use the stream directly with our custom stream methods
+        while let Some(item) = stream.next().await {
             let producer = producer.clone();
             let topic = config.topic.clone();
             let partition = config.partition;
@@ -279,16 +316,21 @@ where
 
                     if let Some(p) = partition {
                         record = record.partition(p);
+                        log::info!("🎯 Setting explicit partition {} for message to topic {}", p, topic);
                     }
 
                     match producer.send(record, Duration::from_secs(30)).await {
-                        Ok(_) => {
+                        Ok(delivery_result) => {
                             *messages_counter.lock().await += 1;
                             *bytes_counter.lock().await += payload.len() as u64;
-                            log::debug!("Sent message to Kafka topic: {}", topic);
+                            log::info!("✅ Sent message to Kafka topic: {} partition: {} (total: {})", 
+                                topic, 
+                                delivery_result.1, 
+                                *messages_counter.lock().await);
                         }
                         Err((e, _)) => {
-                            log::error!("Failed to send message to Kafka: {}", e);
+                            log::error!("❌ Failed to send message to Kafka topic: {} partition: {:?} - Error: {}", 
+                                topic, partition, e);
                         }
                     }
                 }
@@ -326,35 +368,39 @@ where
         config: Self::Config,
     ) -> Result<
         (
-            Box<dyn Stream<Item = T> + Send + Sync>,
-            Box<dyn Fn(Box<dyn Stream<Item = T> + Send + Sync>) -> BoxFuture<'static, Result<(), Self::Error>> + Send + Sync>,
+            Self::SourceStream,
+            Box<dyn Fn(Self::SinkStream) -> BoxFuture<'static, Result<(), Self::Error>> + Send + Sync>,
         ),
         Self::Error,
     > {
         // Create both consumer and producer
         let consumer_config = self.create_consumer_config(&config);
         let producer_config = self.create_producer_config(&config);
-        
+
         let consumer: StreamConsumer = consumer_config
             .create()
             .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
-            
+
         let producer: FutureProducer = producer_config
             .create()
             .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
 
-        // Set up consumer
-        let topics = vec![config.topic.as_str()];
-        consumer
-            .subscribe(&topics)
-            .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
-
+        // Partition/subscription logic: assign if partition is specified, else subscribe
         if let Some(partition) = config.partition {
+            // If partition is specified, assign to that specific partition
             let mut tpl = TopicPartitionList::new();
             tpl.add_partition(&config.topic, partition);
             consumer
                 .assign(&tpl)
                 .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
+            log::info!("Assigned consumer to partition {} of topic {} (bidirectional)", partition, config.topic);
+        } else {
+            // Otherwise, subscribe to the entire topic
+            let topics = vec![config.topic.as_str()];
+            consumer
+                .subscribe(&topics)
+                .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
+            log::info!("Subscribed consumer to topic {} (bidirectional)", config.topic);
         }
 
         let topic = config.topic.clone();
@@ -388,21 +434,20 @@ where
                 }
             }
         })
-        .filter_map(|x| async move { x });
+        .filter_map(|x| Some(x));
 
         let sink_fn = {
             let producer = producer.clone();
             let topic = config.topic.clone();
             let partition = config.partition;
-            
-            Box::new(move |stream: Box<dyn Stream<Item = T> + Send + Sync>| {
+
+            Box::new(move |mut stream: Self::SinkStream| {
                 let producer = producer.clone();
                 let topic = topic.clone();
                 let partition = partition;
-                
+
                 Box::pin(async move {
-                    let mut stream = stream;
-                    while let Some(item) = StreamExt::next(&mut stream).await {
+                    while let Some(item) = stream.next().await {
                         let producer = producer.clone();
                         let topic = topic.clone();
                         let partition = partition;
@@ -429,14 +474,17 @@ where
 
                                 if let Some(p) = partition {
                                     record = record.partition(p);
+                                    log::info!("🎯 Setting explicit partition {} for message to topic {} (bidirectional)", p, topic);
                                 }
 
                                 match producer.send(record, Duration::from_secs(30)).await {
-                                    Ok(_) => {
-                                        log::debug!("Sent message to Kafka topic: {}", topic);
+                                    Ok(delivery_result) => {
+                                        log::info!("✅ Sent message to Kafka topic: {} partition: {} (bidirectional)", 
+                                            topic, delivery_result.1);
                                     }
                                     Err((e, _)) => {
-                                        log::error!("Failed to send message to Kafka: {}", e);
+                                        log::error!("❌ Failed to send message to Kafka topic: {} partition: {:?} (bidirectional) - Error: {}", 
+                                            topic, partition, e);
                                     }
                                 }
                             }
@@ -446,11 +494,11 @@ where
                         }
                     }
                     Ok(())
-                })
+                }) as BoxFuture<'static, Result<(), Self::Error>>
             })
         };
 
-        Ok((stream.boxed(), sink_fn))
+        Ok((KafkaStream::new(stream), sink_fn))
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {
@@ -496,4 +544,4 @@ where
         Ok(ConnectorStats::default())
     }
 }
-*/
+

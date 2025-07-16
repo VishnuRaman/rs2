@@ -328,31 +328,57 @@ where
 }
 
 /// Create a stream from an async function
-pub fn from_async_fn<T, F, Fut>(f: F) -> FromAsyncFn<F>
+pub fn from_async_fn<T, F, Fut>(f: F) -> FromAsyncFn<F, T>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
+    Fut: Future<Output = Option<T>> + Send + 'static,
 {
-    FromAsyncFn { f }
+    FromAsyncFn { f, future: None }
 }
 
 pin_project! {
-    pub struct FromAsyncFn<F> {
+    pub struct FromAsyncFn<F, T> {
         pub(crate) f: F,
+        #[pin]
+        pub(crate) future: Option<Pin<Box<dyn Future<Output = Option<T>> + Send>>>,
     }
 }
 
-impl<T, F, Fut> Stream for FromAsyncFn<F>
+impl<T, F, Fut> Stream for FromAsyncFn<F, T>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = Option<T>>,
+    Fut: Future<Output = Option<T>> + Send + 'static,
 {
     type Item = T;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
-        // This is a simplified implementation - in practice you'd want to store the future
-        // and poll it properly. For now, we'll just call the function once.
-        Poll::Ready(None)
+        let mut this = self.project();
+        log::info!("FromAsyncFn::poll_next called");
+        // If we have a future in progress, poll it
+        if let Some(fut) = this.future.as_mut().as_pin_mut() {
+            log::info!("Polling existing future");
+            match fut.poll(cx) {
+                Poll::Ready(Some(item)) => {
+                    log::info!("Future ready with Some(item)");
+                    this.future.set(None);
+                    Poll::Ready(Some(item))
+                }
+                Poll::Ready(None) => {
+                    log::info!("Future ready with None");
+                    this.future.set(None);
+                    Poll::Ready(None)
+                }
+                Poll::Pending => {
+                    log::info!("Future pending");
+                    Poll::Pending
+                }
+            }
+        } else {
+            log::info!("Creating new future");
+            let fut = ((*this.f)());
+            this.future.set(Some(Box::pin(fut)));
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
     }
 }

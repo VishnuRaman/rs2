@@ -4,6 +4,10 @@ use crate::stream::Stream;
 use crate::error::RetryPolicy;
 use async_trait::async_trait;
 use std::sync::Arc;
+use std::pin::Pin;
+use std::future::Future;
+
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Configuration for stream connectors
 pub trait ConnectorConfig: Send + Sync + Clone + 'static {}
@@ -16,7 +20,7 @@ pub trait ConnectorError: std::error::Error + Send + Sync + Clone + 'static {}
 
 /// Core trait for stream connectors
 #[async_trait]
-pub trait StreamConnector<T, C, M, E>
+pub trait StreamConnector<T, C: ConnectorConfig, M: ConnectorMetadata, E: std::error::Error + Send + Sync>
 where
     T: Send + 'static,
     C: ConnectorConfig,
@@ -26,14 +30,16 @@ where
     type Config: ConnectorConfig;
     type Metadata: ConnectorMetadata;
     type Error: ConnectorError;
+    type SourceStream: Stream<Item = T> + Send + 'static;
+    type SinkStream: Stream<Item = T> + Send + 'static;
 
     /// Create a source stream from the connector
-    async fn from_source(&self, config: Self::Config) -> Result<Box<dyn Stream<Item = T> + Send + Sync>, Self::Error>;
+    async fn from_source(&self, config: Self::Config) -> Result<Self::SourceStream, Self::Error>;
 
     /// Send a stream to the connector as a sink
     async fn to_sink(
         &self,
-        stream: Box<dyn Stream<Item = T> + Send + Sync>,
+        stream: Self::SinkStream,
         config: Self::Config,
     ) -> Result<Self::Metadata, Self::Error>;
 
@@ -43,8 +49,8 @@ where
         config: Self::Config,
     ) -> Result<
         (
-            Box<dyn Stream<Item = T> + Send + Sync>,
-            Box<dyn Fn(Box<dyn Stream<Item = T> + Send + Sync>) -> Result<(), Self::Error> + Send + Sync>,
+            Self::SourceStream,
+            Box<dyn Fn(Self::SinkStream) -> BoxFuture<'static, Result<(), Self::Error>> + Send + Sync>,
         ),
         Self::Error,
     >;

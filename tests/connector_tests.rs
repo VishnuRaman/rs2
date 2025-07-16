@@ -2,47 +2,12 @@ use async_trait::async_trait;
 use rs2_stream::connectors::stream_connector::{ConnectorConfig, ConnectorMetadata, ConnectorError as StreamConnectorError, ConnectorCapabilities, ConnectorStats, StreamConnector};
 use rs2_stream::connectors::CommonConfig;
 use tokio::runtime::Runtime;
-use rs2_stream::stream::{from_iter, Stream};
+use rs2_stream::stream::{from_iter, Stream, StreamExt};
 use std::sync::Arc;
-
-use std::task::{Context, Poll, Waker, RawWaker, RawWakerVTable};
 use std::pin::Pin;
+use std::future::Future;
 
-// Helper to create a no-op waker
-fn dummy_waker() -> Waker {
-    fn no_op(_: *const ()) {}
-    fn clone(_: *const ()) -> RawWaker { dummy_raw_waker() }
-    fn dummy_raw_waker() -> RawWaker {
-        RawWaker::new(std::ptr::null(), &RawWakerVTable::new(clone, no_op, no_op, no_op))
-    }
-    unsafe { Waker::from_raw(dummy_raw_waker()) }
-}
-
-// Helper function to collect from Box<dyn Stream>
-async fn collect_from_box_stream<T>(mut stream: Box<dyn Stream<Item = T> + Send + Sync>) -> Vec<T>
-where
-    T: Send + 'static,
-{
-    let mut messages = Vec::new();
-    let waker = dummy_waker();
-    let mut cx = Context::from_waker(&waker);
-
-    // SAFETY: We own the Box, so this is safe.
-    let mut pinned: Pin<&mut (dyn Stream<Item = T> + Send + Sync)> = unsafe { Pin::new_unchecked(&mut *stream) };
-
-    loop {
-        match pinned.as_mut().poll_next(&mut cx) {
-            Poll::Ready(Some(item)) => messages.push(item),
-            Poll::Ready(None) => break,
-            Poll::Pending => {
-                // Use a busy-wait approach instead of yielding
-                // This avoids .await and keeps the function Send
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-        }
-    }
-    messages
-}
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // Mock connector for testing
 struct MockConnector {
@@ -80,13 +45,42 @@ impl std::fmt::Display for MockError {
 impl std::error::Error for MockError {}
 impl StreamConnectorError for MockError {}
 
+// Wrapper type for mock streams
+pub struct MockStream<T> {
+    inner: Pin<Box<dyn Stream<Item = T> + Send + Sync>>,
+}
+
+impl<T> MockStream<T> {
+    fn new<S>(stream: S) -> Self 
+    where 
+        S: Stream<Item = T> + Send + Sync + 'static,
+    {
+        Self {
+            inner: Box::pin(stream),
+        }
+    }
+}
+
+impl<T> Stream for MockStream<T> {
+    type Item = T;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        unsafe {
+            let this = self.get_unchecked_mut();
+            this.inner.as_mut().poll_next(cx)
+        }
+    }
+}
+
 #[async_trait]
 impl StreamConnector<String, MockConfig, MockMetadata, MockError> for MockConnector {
     type Config = MockConfig;
     type Metadata = MockMetadata;
     type Error = MockError;
+    type SourceStream = MockStream<String>;
+    type SinkStream = MockStream<String>;
 
-    async fn from_source(&self, config: Self::Config) -> Result<Box<dyn Stream<Item = String> + Send + Sync>, Self::Error> {
+    async fn from_source(&self, config: Self::Config) -> Result<Self::SourceStream, Self::Error> {
         if !self.healthy {
             return Err(MockError {
                 message: "Mock connector is unhealthy".to_string(),
@@ -97,12 +91,12 @@ impl StreamConnector<String, MockConfig, MockMetadata, MockError> for MockConnec
             format!("Message 2 from {}", config.topic),
             format!("Message 3 from {}", config.topic),
         ];
-        Ok(Box::new(from_iter(messages)))
+        Ok(MockStream::new(from_iter(messages)))
     }
 
     async fn to_sink(
         &self,
-        stream: Box<dyn Stream<Item = String> + Send + Sync>,
+        mut stream: Self::SinkStream,
         config: Self::Config,
     ) -> Result<Self::Metadata, Self::Error> {
         if !self.healthy {
@@ -110,8 +104,11 @@ impl StreamConnector<String, MockConfig, MockMetadata, MockError> for MockConnec
                 message: "Mock connector is unhealthy".to_string(),
             });
         }
-        // Collect all items from the stream
-        let messages: Vec<String> = collect_from_box_stream(stream).await;
+        // Collect all items from the stream using our custom stream methods
+        let mut messages = Vec::new();
+        while let Some(item) = stream.next().await {
+            messages.push(item);
+        }
         Ok(MockMetadata {
             topic: config.topic,
             messages_processed: messages.len(),
@@ -123,8 +120,8 @@ impl StreamConnector<String, MockConfig, MockMetadata, MockError> for MockConnec
         config: Self::Config,
     ) -> Result<
         (
-            Box<dyn Stream<Item = String> + Send + Sync>,
-            Box<dyn Fn(Box<dyn Stream<Item = String> + Send + Sync>) -> Result<(), Self::Error> + Send + Sync>,
+            Self::SourceStream,
+            Box<dyn Fn(Self::SinkStream) -> BoxFuture<'static, Result<(), Self::Error>> + Send + Sync>,
         ),
         Self::Error,
     > {
@@ -134,7 +131,9 @@ impl StreamConnector<String, MockConfig, MockMetadata, MockError> for MockConnec
             });
         }
         let source_stream = self.from_source(config.clone()).await?;
-        let sink_fn = Box::new(move |_stream: Box<dyn Stream<Item = String> + Send + Sync>| Ok(()));
+        let sink_fn = Box::new(move |_stream: Self::SinkStream| {
+            Box::pin(async move { Ok(()) }) as BoxFuture<'static, Result<(), Self::Error>>
+        });
         Ok((source_stream, sink_fn))
     }
 
@@ -224,8 +223,11 @@ fn test_mock_connector_source() {
     rt.block_on(async {
         let connector = MockConnector { name: "mock-connector", version: "1.0.0", healthy: true };
         let config = MockConfig { topic: "test-topic".to_string(), common: CommonConfig::default() };
-        let stream = connector.from_source(config).await.unwrap();
-        let messages: Vec<String> = collect_from_box_stream(stream).await;
+        let mut stream = connector.from_source(config).await.unwrap();
+        let mut messages = Vec::new();
+        while let Some(item) = stream.next().await {
+            messages.push(item);
+        }
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0], "Message 1 from test-topic");
         assert_eq!(messages[1], "Message 2 from test-topic");
@@ -245,7 +247,7 @@ fn test_mock_connector_sink() {
             "Test message 3".to_string(),
             "Test message 4".to_string(),
         ];
-        let stream = Box::new(from_iter(messages));
+        let stream = MockStream::new(from_iter(messages));
         let metadata = connector.to_sink(stream, config).await.unwrap();
         assert_eq!(metadata.topic, "test-topic");
         assert_eq!(metadata.messages_processed, 4);
@@ -274,8 +276,8 @@ fn test_mock_connector_sink_unhealthy() {
     rt.block_on(async {
         let connector = MockConnector { name: "mock-connector", version: "1.0.0", healthy: false };
         let config = MockConfig { topic: "test-topic".to_string(), common: CommonConfig::default() };
-        let messages = vec!["Test message 1".to_string(), "Test message 2".to_string()];
-        let stream = Box::new(from_iter(messages));
+        let messages = vec!["Test message".to_string()];
+        let stream = MockStream::new(from_iter(messages));
         let result = connector.to_sink(stream, config).await;
         assert!(result.is_err());
         if let Err(MockError { message }) = result {
@@ -292,19 +294,25 @@ fn test_connector_with_transformations() {
     rt.block_on(async {
         let connector = MockConnector { name: "mock-connector", version: "1.0.0", healthy: true };
         let config = MockConfig { topic: "test-topic".to_string(), common: CommonConfig::default() };
-        let stream = connector.from_source(config.clone()).await.unwrap();
-        let messages: Vec<String> = collect_from_box_stream(stream).await;
+        
+        // Test source with transformations
+        let mut stream = connector.from_source(config.clone()).await.unwrap();
+        let mut messages = Vec::new();
+        while let Some(item) = stream.next().await {
+            messages.push(item);
+        }
+        
+        // Verify we got the expected messages
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0], "Message 1 from test-topic");
-        assert_eq!(messages[1], "Message 2 from test-topic");
-        assert_eq!(messages[2], "Message 3 from test-topic");
-        let new_stream = Box::new(from_iter(vec![
-            "Input 1".to_string(),
-            "Input 2".to_string(),
-            "Input 3".to_string(),
-        ]));
-        let metadata = connector.to_sink(new_stream, config).await.unwrap();
-        assert_eq!(metadata.topic, "test-topic");
+        assert!(messages.iter().all(|msg| msg.contains("test-topic")));
+        
+        // Test sink with transformations
+        let transformed_messages: Vec<String> = messages.into_iter()
+            .map(|msg| format!("TRANSFORMED: {}", msg))
+            .collect();
+        
+        let sink_stream = MockStream::new(from_iter(transformed_messages));
+        let metadata = connector.to_sink(sink_stream, config).await.unwrap();
         assert_eq!(metadata.messages_processed, 3);
     });
 }
