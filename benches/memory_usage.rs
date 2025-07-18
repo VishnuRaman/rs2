@@ -3,6 +3,7 @@ use rs2_stream::rs2::*;
 use rs2_stream::stream::constructors::from_iter;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 // Helper to get current memory usage (simplified)
 fn get_memory_usage() -> usize {
@@ -39,7 +40,7 @@ fn bench_memory_efficiency(c: &mut Criterion) {
                     let result = from_iter(0..size)
                         .chunk_rs2(1000)
                         .map_rs2(|chunk| black_box(chunk.into_iter().sum::<i32>()))
-                        .collect_rs2::<Vec<_>>()
+                        .collect_rs2()
                         .await;
                     black_box(result)
                 });

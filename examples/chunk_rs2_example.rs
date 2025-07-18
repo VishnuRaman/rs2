@@ -19,6 +19,7 @@ fn main() {
 
         // Process the chunked stream
         let mut chunked_stream = chunked_stream;
+        let mut chunk_count = 0;
 
         while let Some(chunk) = chunked_stream.next().await {
             chunk_count += 1;

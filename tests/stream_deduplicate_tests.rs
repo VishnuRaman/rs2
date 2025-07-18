@@ -1,7 +1,7 @@
 use rs2_stream::stream::Stream;
 use rs2_stream::state::StateConfig;
 use rs2_stream::state::stream_ext::StatefulStreamExt;
-use rs2_stream::resource_manager::ResourceConfig;
+
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -99,7 +99,6 @@ async fn test_basic_deduplication() {
         key_extractor,
         Duration::from_millis(1000),
         |item| item,
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream.collect().await;
@@ -126,7 +125,7 @@ async fn test_ttl_expiration() {
         key_extractor.clone(),
         Duration::from_millis(50), // Short TTL
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<_> = result_stream.collect().await;
@@ -147,7 +146,7 @@ async fn test_ttl_expiration() {
         key_extractor.clone(),
         Duration::from_millis(50),
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let results2: Vec<_> = result_stream2.collect().await;
@@ -175,7 +174,7 @@ async fn test_custom_transformation() {
             count: item.count * 2, 
             timestamp: item.timestamp 
         },
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<_> = result_stream.collect().await;
@@ -205,7 +204,7 @@ async fn test_complex_key_extraction() {
         key_extractor,
         Duration::from_millis(1000),
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<_> = result_stream.collect().await;
@@ -230,7 +229,7 @@ async fn test_empty_stream() {
         key_extractor,
         Duration::from_millis(1000),
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<_> = result_stream.collect().await;
@@ -251,7 +250,7 @@ async fn test_single_item() {
         key_extractor,
         Duration::from_millis(1000),
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<_> = result_stream.collect().await;
@@ -276,7 +275,7 @@ async fn test_all_duplicates() {
         key_extractor,
         Duration::from_millis(1000),
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<_> = result_stream.collect().await;
@@ -301,7 +300,7 @@ async fn test_no_duplicates() {
         key_extractor,
         Duration::from_millis(1000),
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<_> = result_stream.collect().await;
@@ -328,7 +327,7 @@ async fn test_large_dataset() {
         key_extractor,
         Duration::from_millis(1000),
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<_> = result_stream.collect().await;
@@ -354,7 +353,7 @@ async fn test_concurrent_access() {
         key_extractor.clone(),
         Duration::from_millis(1000),
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let stream2 = test_stream(data);
@@ -363,7 +362,7 @@ async fn test_concurrent_access() {
         key_extractor.clone(),
         Duration::from_millis(1000),
         |item| item,
-        ResourceConfig::default(),
+
     );
 
     let (results1, results2): (Vec<_>, Vec<_>) = tokio::join!(

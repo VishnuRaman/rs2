@@ -1,6 +1,7 @@
-use rs2_stream::connectors::kafka_connector::KafkaConfig;
+use rs2_stream::connectors::kafka_connector::{KafkaConfig, KafkaMetadata, KafkaStream};
 use rs2_stream::connectors::{KafkaConnector, StreamConnector};
-use rs2_stream::rs2::*;
+use rs2_stream::connectors::connection_errors::ConnectorError;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::runtime::Runtime;
@@ -26,16 +27,15 @@ fn main() {
         };
 
         // Check if the connector is healthy
-        let healthy = <KafkaConnector as StreamConnector<String>>::health_check(&connector)
-            .await
-            .unwrap();
-        if !healthy {
+        let health = <KafkaConnector as StreamConnector<String, KafkaConfig, KafkaMetadata, ConnectorError>>::health_check(&connector)
+            .await;
+        if health.is_err() {
             println!("Kafka connector is not healthy!");
             return;
         }
 
         // Create a stream from Kafka
-        let stream = <KafkaConnector as StreamConnector<String>>::from_source(&connector, config)
+        let stream = <KafkaConnector as StreamConnector<String, KafkaConfig, KafkaMetadata, ConnectorError>>::from_source(&connector, config)
             .await
             .unwrap();
 
@@ -65,10 +65,13 @@ fn main() {
             message_timeout_ms: Some(30000),
         };
 
+        // Wrap the processed stream in KafkaStream
+        let kafka_processed_stream = KafkaStream::new(processed_stream);
+
         // Send to sink
-        let metadata = <KafkaConnector as StreamConnector<String>>::to_sink(
+        let metadata = <KafkaConnector as StreamConnector<String, KafkaConfig, KafkaMetadata, ConnectorError>>::to_sink(
             &connector,
-            processed_stream,
+            kafka_processed_stream,
             sink_config,
         )
         .await

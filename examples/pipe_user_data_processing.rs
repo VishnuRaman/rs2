@@ -1,8 +1,8 @@
-use futures_util::stream::StreamExt;
 use rs2_stream::pipe::*;
-use rs2_stream::rs2::*;
 use std::collections::HashMap;
 use tokio::runtime::Runtime;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
+use rs2_stream::stream::from_iter;
 
 // Define our User type
 #[derive(Debug, Clone, PartialEq)]
@@ -102,7 +102,7 @@ fn main() {
         let stats_stream = process_users.apply(user_stream);
 
         // Collect the results
-        let user_stats = stats_stream.collect::<Vec<_>>().await;
+        let user_stats = stats_stream.collect_rs2().await;
 
         // Print the results
         println!("User Statistics:");
@@ -123,7 +123,7 @@ fn main() {
 
         // Collect and organize by frequency
         let mut frequency_groups: HashMap<&str, Vec<UserStats>> = HashMap::new();
-        let grouped_stats = grouped_stream.collect::<Vec<_>>().await;
+        let grouped_stats = grouped_stream.collect_rs2().await;
 
         for (frequency, stats) in grouped_stats {
             frequency_groups

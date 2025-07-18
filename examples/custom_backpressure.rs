@@ -3,6 +3,7 @@ use rs2_stream::stream::constructors::{from_iter, repeat};
 use rs2_stream::stream::StreamExt;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 fn main() {
     let rt = Runtime::new().unwrap();

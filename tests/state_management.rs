@@ -92,7 +92,7 @@ async fn test_stateful_map() {
                 })
             };
             Box::pin(fut)
-        }, ResourceConfig::default());
+        }, );
     let results: Vec<TestData> = result_stream
         .collect::<Vec<_>>()
         .await
@@ -143,7 +143,7 @@ async fn test_stateful_filter() {
                 };
                 Ok(item.count as u64 > state.total_count)
             })
-        }, ResourceConfig::default());
+        }, );
     let results: Vec<TestData> = result_stream
         .collect::<Vec<_>>()
         .await
@@ -186,7 +186,6 @@ async fn test_stateful_fold() {
             let fut = async move { Ok(acc + item.count as u64) };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
     let results: Vec<u64> = result_stream
         .collect::<Vec<_>>()
@@ -247,8 +246,8 @@ async fn test_stateful_window() {
                 ))
             };
             Box::pin(fut)
-        },
-        ResourceConfig::default(),
+        }, ResourceConfig::default()
+        ,
     );
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -343,7 +342,7 @@ async fn test_stateful_join() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<String> = result_stream
@@ -451,7 +450,7 @@ async fn test_stateful_map_user_events() {
 
                 Ok(state)
             })
-        }, ResourceConfig::default())
+        }, )
         .collect::<Vec<_>>()
         .await;
 
@@ -511,7 +510,7 @@ async fn test_stateful_filter_user_events() {
 
                 Ok(new_state.total_events <= 2)
             })
-        }, ResourceConfig::default())
+        }, )
         .collect::<Vec<_>>()
         .await;
 
@@ -548,7 +547,7 @@ async fn test_stateful_fold_user_events() {
             key_extractor,
             0u64,
             |acc, _event, _state_access: StateAccess| Box::pin(async move { Ok(acc + 1) }),
-            ResourceConfig::default(),
+
         )
         .collect::<Vec<_>>()
         .await;
@@ -608,8 +607,8 @@ async fn test_stateful_window_user_events() {
 
                     Ok(window.len())
                 })
-            },
-            ResourceConfig::default(),
+            }, ResourceConfig::default()
+            ,
         )
         .collect::<Vec<_>>()
         .await;
@@ -713,7 +712,7 @@ async fn test_stateful_join_user_events() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
+
     );
 
     let results: Vec<Result<String, StateError>> = result_stream

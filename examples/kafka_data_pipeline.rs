@@ -61,23 +61,54 @@
 //! ---
 //! This example is intended as a real-world, extensible template for streaming pipelines using `rs2` and the new Pipeline builder.
 
-use async_stream::stream;
 use chrono::{DateTime, Utc};
-use rs2_stream::rs2::*;
-use rs2_stream::stream::constructors::from_iter;
-use rs2_stream::stream::StreamExt;
 use rand::{thread_rng, Rng};
-use rdkafka::consumer::Consumer;
-use rs2_stream::connectors::kafka_connector::KafkaConfig;
-use rs2_stream::connectors::{KafkaConnector, StreamConnector};
-use rs2_stream::pipeline::builder::Pipeline;
+use rs2_stream::connectors::kafka_connector::{KafkaConfig, KafkaMetadata};
+use rs2_stream::connectors::{KafkaConnector, StreamConnector, ConnectorError};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::schema_validation::JsonSchemaValidator;
+use rs2_stream::stream::constructors::{from_iter, unfold};
+use rs2_stream::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
+
+// Create a custom stream wrapper that implements the necessary traits
+struct StreamWrapper<T> {
+    inner: Box<dyn Stream<Item = T> + Send + Unpin>,
+}
+
+impl<T> StreamWrapper<T> {
+    fn new(stream: impl Stream<Item = T> + Send + Unpin + 'static) -> Self {
+        Self {
+            inner: Box::new(stream),
+        }
+    }
+}
+
+impl<T> Stream for StreamWrapper<T> {
+    type Item = T;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use rs2_stream::stream::Stream as StreamTrait;
+        // For Box<dyn Stream>, we need to pin it and call poll_next
+        let pinned = std::pin::Pin::new(self.inner.as_mut());
+        pinned.poll_next(cx)
+    }
+}
+
+impl<T> Unpin for StreamWrapper<T> {}
+
+// RS2StreamExt is automatically implemented for all Stream types
+
+// Create type aliases for the complex function types
+type StreamProcessor<T> = Box<dyn Fn(StreamWrapper<T>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>;
 
 // ================================
 // Data Models
@@ -279,64 +310,57 @@ fn check_for_alerts(activity: &ValidatedActivity) -> Option<ActivityAlert> {
 }
 
 // --- Analytics Transform: Time-based Windowed Aggregation ---
-fn analytics_transform<S>(mut stream: S) -> RS2Stream<ActivityAnalytics>
-where
-    S: StreamExt + Unpin + Send + 'static,
-{
-    use chrono::Utc;
-    use std::collections::HashMap;
-    use tokio::time::interval;
-    stream! {
-        let mut buffer: Vec<ValidatedActivity> = Vec::new();
-        let mut window_start = Utc::now();
-        let mut ticker = interval(Duration::from_secs(10));
-        loop {
-            tokio::select! {
-                _ = ticker.tick() => {
-                    if !buffer.is_empty() {
-                        let user_id = buffer[0].activity.user_id;
-                        let mut activity_counts = HashMap::new();
-                        for va in &buffer {
-                            *activity_counts.entry(va.activity.activity_type.clone()).or_insert(0) += 1;
+fn analytics_transform(
+    stream: StreamWrapper<ValidatedActivity>
+) -> impl Stream<Item = ActivityAnalytics> + Send + 'static {
+    unfold(
+        (stream, Vec::<ValidatedActivity>::new(), Utc::now()),
+        |(mut stream, mut buffer, mut window_start)| async move {
+            // Simple windowing: collect items for 1 second, then emit analytics
+            let window_duration = Duration::from_secs(1);
+            let start_time = std::time::Instant::now();
+            
+            // Collect items until window expires or we get enough items
+            while start_time.elapsed() < window_duration && buffer.len() < 10 {
+                tokio::select! {
+                    item = stream.next() => {
+                        if let Some(va) = item {
+                            buffer.push(va);
+                        } else {
+                            // Stream ended
+                            break;
                         }
-                        let analytics = ActivityAnalytics {
-                            window_start,
-                            window_end: Utc::now(),
-                            user_id,
-                            activity_counts,
-                            total_activities: buffer.len() as u64,
-                        };
-                        yield analytics;
-                        buffer.clear();
-                        window_start = Utc::now();
                     }
-                }
-                item = stream.next() => {
-                    if let Some(va) = item {
-                        buffer.push(va);
-                    } else {
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                        // Check timeout periodically
                         break;
                     }
                 }
             }
-        }
-        // Emit any remaining
-        if !buffer.is_empty() {
-            let user_id = buffer[0].activity.user_id;
-            let mut activity_counts = HashMap::new();
-            for va in &buffer {
-                *activity_counts.entry(va.activity.activity_type.clone()).or_insert(0) += 1;
+            
+            if !buffer.is_empty() {
+                // Create analytics from buffer
+                let user_id = buffer[0].activity.user_id;
+                let mut activity_counts = HashMap::new();
+                for va in &buffer {
+                    *activity_counts.entry(va.activity.activity_type.clone()).or_insert(0) += 1;
+                }
+                let analytics = ActivityAnalytics {
+                    window_start,
+                    window_end: Utc::now(),
+                    user_id,
+                    activity_counts,
+                    total_activities: buffer.len() as u64,
+                };
+                buffer.clear();
+                window_start = Utc::now();
+                Some((analytics, (stream, buffer, window_start)))
+            } else {
+                // No more items and buffer is empty
+                None
             }
-            let analytics = ActivityAnalytics {
-                window_start,
-                window_end: Utc::now(),
-                user_id,
-                activity_counts,
-                total_activities: buffer.len() as u64,
-            };
-            yield analytics;
         }
-    }.boxed()
+    )
 }
 
 // --- Metrics Struct ---
@@ -349,22 +373,19 @@ struct SinkMetrics {
 async fn kafka_sink<T: Serialize + std::fmt::Debug>(
     connector: &KafkaConnector,
     config: &KafkaConfig,
-    mut stream: RS2Stream<T>,
+    mut stream: StreamWrapper<T>,
     metrics: Arc<SinkMetrics>,
 ) {
-    use futures_util::stream;
-    use rs2_stream::connectors::StreamConnector;
-    use tokio::time::sleep;
     while let Some(item) = stream.next().await {
         let msg = serde_json::to_string(&item).unwrap();
         let mut attempts = 0;
         let max_retries = 5;
         loop {
-            let msg_clone = msg.clone();
-            let single_item_stream = stream::once(async move { msg_clone }).boxed();
-            let result = <KafkaConnector as StreamConnector<String>>::to_sink(
+            // Create a single item stream for the connector
+            let single_item_stream = from_iter(vec![msg.clone()]);
+            let result = <KafkaConnector as StreamConnector<String, KafkaConfig, KafkaMetadata, ConnectorError>>::to_sink(
                 connector,
-                single_item_stream,
+                Box::new(single_item_stream), // Box the stream
                 config.clone(),
             )
             .await;
@@ -388,9 +409,54 @@ async fn kafka_sink<T: Serialize + std::fmt::Debug>(
                     break;
                 }
                 let backoff = Duration::from_millis(100 * 2u64.pow(attempts as u32));
-                sleep(backoff).await;
+                tokio::time::sleep(backoff).await;
             }
         }
+    }
+}
+
+// Create a simplified pipeline runner
+async fn run_pipeline<T: Clone + Send + 'static>(
+    source_stream: impl Stream<Item = T> + Send + 'static,
+    sinks: Vec<StreamProcessor<T>>,
+) {
+    // Create a broadcast channel for distributing items to multiple sinks
+    let (tx, _) = broadcast::channel::<T>(1000);
+    
+    // Spawn the source task
+    let tx_clone = tx.clone();
+    let source_task = tokio::spawn(async move {
+        use rs2_stream::stream::StreamExt;
+        let mut source_stream = source_stream;
+        while let Some(item) = source_stream.next().await {
+            if tx_clone.send(item).is_err() {
+                break; // All receivers dropped
+            }
+        }
+    });
+    
+    // Start sink tasks
+    let mut sink_tasks = Vec::new();
+    for sink_fn in sinks {
+        let rx = tx.subscribe();
+        let sink_stream = unfold(rx, |mut rx| async move {
+            match rx.recv().await {
+                Ok(item) => Some((item, rx)),
+                Err(_) => None,
+            }
+        });
+        let wrapped_stream = StreamWrapper::new(sink_stream);
+        let task = tokio::spawn(sink_fn(wrapped_stream));
+        sink_tasks.push(task);
+    }
+    
+    // Wait for source to complete
+    let _ = source_task.await;
+    
+    // Wait for all sinks to complete (with timeout)
+    let timeout_duration = Duration::from_secs(5);
+    for task in sink_tasks {
+        let _ = tokio::time::timeout(timeout_duration, task).await;
     }
 }
 
@@ -400,6 +466,8 @@ async fn kafka_sink<T: Serialize + std::fmt::Debug>(
 
 #[tokio::main]
 async fn main() {
+    println!("🚀 Starting Kafka Data Pipeline Example");
+    
     // 1. Setup connectors and configs
     let kafka_brokers = "localhost:9092";
     let connector = KafkaConnector::new(kafka_brokers).with_consumer_group("prod-group");
@@ -431,10 +499,10 @@ async fn main() {
         loop {
             let activity = generate_random_activity();
             let msg = serde_json::to_string(&activity).unwrap();
-            let single_item_stream = futures_util::stream::once(async move { msg }).boxed();
-            let _ = <KafkaConnector as StreamConnector<String>>::to_sink(
+            let single_item_stream = from_iter(vec![msg]);
+            let _ = <KafkaConnector as StreamConnector<String, KafkaConfig, KafkaMetadata, ConnectorError>>::to_sink(
                 &connector_clone,
-                single_item_stream,
+                Box::new(single_item_stream), // Box the stream
                 producer_config.clone(),
             )
             .await;
@@ -474,138 +542,116 @@ async fn main() {
     });
     let schema_validator = JsonSchemaValidator::new("user-activity-v1", user_activity_schema);
 
+    println!("📡 Connecting to Kafka source...");
+
     // --- Kafka source and schema validation ---
-    let raw_activity_stream = <KafkaConnector as StreamConnector<String>>::from_source(
+    let raw_activity_stream = <KafkaConnector as StreamConnector<String, KafkaConfig, KafkaMetadata, ConnectorError>>::from_source(
         &*connector,
         source_config.clone(),
     )
     .await
     .expect("Failed to connect to Kafka source");
+    
     let schema_validated_stream = raw_activity_stream
         .with_schema_validation_rs2(schema_validator)
-        .filter_map(|json| async move { serde_json::from_str::<UserActivity>(&json).ok() })
-        .boxed();
-    let validated_stream = schema_validated_stream.map_rs2(validate_activity).boxed();
+        .filter_map_rs2(|json: String| { 
+            serde_json::from_str::<UserActivity>(&json).ok() 
+        });
+    
+    let validated_stream = schema_validated_stream.map_rs2(validate_activity);
 
-    // --- Broadcast validated stream ---
-    let (tx, _) = broadcast::channel(100);
-    let mut validated_stream_for_broadcast = validated_stream;
-    let tx_clone = tx.clone();
-    tokio::spawn(async move {
-        while let Some(item) = validated_stream_for_broadcast.next().await {
-            let _ = tx_clone.send(item);
-        }
-    });
+    println!("🔄 Setting up processing pipeline...");
 
-    // --- Main pipeline ---
-    let tx_main = tx.clone();
-    let connector_main = connector.clone();
-    let producer_config_main = producer_config.clone();
-    let validated_metrics_main = validated_metrics.clone();
-    let analytics_metrics_main = analytics_metrics.clone();
-    let alert_metrics_main = alert_metrics.clone();
-    let analytics_config_main = analytics_config.clone();
-    let alert_config_main = alert_config.clone();
-
-    Pipeline::<ValidatedActivity>::new()
-        .source(move || {
-            let mut rx = tx_main.clone().subscribe();
-            async_stream::stream! {
-                while let Ok(item) = rx.recv().await {
-                    yield item;
-                }
-            }.boxed()
+    // --- Create sink functions ---
+    let validated_sink: StreamProcessor<ValidatedActivity> = {
+        let connector = Arc::clone(&connector);
+        let config = Arc::clone(&producer_config);
+        let metrics = Arc::clone(&validated_metrics);
+        Box::new(move |stream| {
+            let connector = Arc::clone(&connector);
+            let config = Arc::clone(&config);
+            let metrics = Arc::clone(&metrics);
+            Box::pin(async move {
+                kafka_sink(&*connector, &*config, stream, metrics).await;
+            })
         })
-        .branch(
-            "main-branch",
-            move |stream| {
-                let connector = connector_main.clone();
-                let producer_config = producer_config_main.clone();
-                let metrics = validated_metrics_main.clone();
-                Box::pin(async move {
-                    let connector = connector.clone();
-                    let producer_config = producer_config.clone();
-                    let metrics = metrics.clone();
-                    kafka_sink(&*connector, &*producer_config, stream, metrics).await;
-                })
-            },
-            move |_| {
-                let tx_analytics = tx.clone();
-                let tx_alerts = tx.clone();
-                let connector_analytics = connector.clone();
-                let analytics_config = analytics_config_main.clone();
-                let analytics_metrics = analytics_metrics_main.clone();
-                let connector_alerts = connector.clone();
-                let alert_config = alert_config_main.clone();
-                let alert_metrics = alert_metrics_main.clone();
-                let analytics_pipeline = Pipeline::<ActivityAnalytics>::new()
-                    .source(move || {
-                        let mut rx = tx_analytics.clone().subscribe();
-                        async_stream::stream! {
-                            while let Ok(item) = rx.recv().await {
-                                for agg in analytics_transform(futures_util::stream::once(async move { item }).boxed()).collect::<Vec<_>>().await {
-                                    yield agg;
-                                }
-                            }
-                        }.boxed()
-                    })
-                    .sink(move |stream| {
-                        let connector = connector_analytics.clone();
-                        let analytics_config = analytics_config.clone();
-                        let metrics = analytics_metrics.clone();
-                        Box::pin(async move {
-                            let connector = connector.clone();
-                            let analytics_config = analytics_config.clone();
-                            let metrics = metrics.clone();
-                            kafka_sink(&*connector, &*analytics_config, stream, metrics).await;
-                        })
-                    });
-                let alerts_pipeline = Pipeline::<ActivityAlert>::new()
-                    .source(move || {
-                        let mut rx = tx_alerts.clone().subscribe();
-                        async_stream::stream! {
-                            while let Ok(item) = rx.recv().await {
-                                if let Some(alert) = check_for_alerts(&item) {
-                                    yield alert;
-                                }
-                            }
-                        }.boxed()
-                    })
-                    .sink(move |stream| {
-                        let connector = connector_alerts.clone();
-                        let alert_config = alert_config.clone();
-                        let metrics = alert_metrics.clone();
-                        Box::pin(async move {
-                            let connector = connector.clone();
-                            let alert_config = alert_config.clone();
-                            let metrics = metrics.clone();
-                            kafka_sink(&*connector, &*alert_config, stream, metrics).await;
-                        })
-                    });
-                Box::pin(async move {
-                    let _ = tokio::join!(analytics_pipeline.run(), alerts_pipeline.run());
-                })
-            }
-        )
-        .sink(|_| Box::pin(async {}))
-        .run()
-        .await
-        .expect("Pipeline run failed");
+    };
+
+    let analytics_sink: StreamProcessor<ValidatedActivity> = {
+        let connector = Arc::clone(&connector);
+        let config = Arc::clone(&analytics_config);
+        let metrics = Arc::clone(&analytics_metrics);
+        Box::new(move |stream| {
+            let connector = Arc::clone(&connector);
+            let config = Arc::clone(&config);
+            let metrics = Arc::clone(&metrics);
+            Box::pin(async move {
+                let analytics_stream = analytics_transform(stream);
+                let wrapped_analytics_stream = StreamWrapper::new(analytics_stream);
+                kafka_sink(&*connector, &*config, wrapped_analytics_stream, metrics).await;
+            })
+        })
+    };
+
+    let alerts_sink: StreamProcessor<ValidatedActivity> = {
+        let connector = Arc::clone(&connector);
+        let config = Arc::clone(&alert_config);
+        let metrics = Arc::clone(&alert_metrics);
+        Box::new(move |stream| {
+            let connector = Arc::clone(&connector);
+            let config = Arc::clone(&config);
+            let metrics = Arc::clone(&metrics);
+            Box::pin(async move {
+                // Create alerts stream manually
+                let alerts_stream = unfold(stream, |mut stream| async move {
+                    while let Some(activity) = stream.next().await {
+                        if let Some(alert) = check_for_alerts(&activity) {
+                            return Some((alert, stream));
+                        }
+                    }
+                    None
+                });
+                let wrapped_alerts_stream = StreamWrapper::new(alerts_stream);
+                kafka_sink(&*connector, &*config, wrapped_alerts_stream, metrics).await;
+            })
+        })
+    };
+
+    println!("🎯 Running pipeline for 30 seconds...");
+
+    // --- Run the pipeline ---
+    let pipeline_task = run_pipeline(
+        validated_stream,
+        vec![validated_sink, analytics_sink, alerts_sink]
+    );
+
+    // Run pipeline for 30 seconds
+    tokio::select! {
+        _ = pipeline_task => {
+            println!("Pipeline completed");
+        }
+        _ = tokio::time::sleep(Duration::from_secs(30)) => {
+            println!("⏰ Time limit reached, stopping pipeline");
+        }
+    }
 
     // --- Print final metrics ---
+    println!("\n📊 Final Pipeline Metrics:");
     println!(
-        "Validated Sink: processed={}, errors={}",
+        "✅ Validated Sink: processed={}, errors={}",
         validated_metrics.processed.load(Ordering::Relaxed),
         validated_metrics.errors.load(Ordering::Relaxed)
     );
     println!(
-        "Analytics Sink: processed={}, errors={}",
+        "📈 Analytics Sink: processed={}, errors={}",
         analytics_metrics.processed.load(Ordering::Relaxed),
         analytics_metrics.errors.load(Ordering::Relaxed)
     );
     println!(
-        "Alert Sink: processed={}, errors={}",
+        "🚨 Alert Sink: processed={}, errors={}",
         alert_metrics.processed.load(Ordering::Relaxed),
         alert_metrics.errors.load(Ordering::Relaxed)
     );
+    
+    println!("🏁 Kafka Data Pipeline Example completed!");
 }

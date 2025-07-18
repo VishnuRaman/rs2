@@ -22,8 +22,10 @@ impl<T> TestStream<T> {
 impl<T> Stream for TestStream<T> {
     type Item = T;
 
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Poll::Ready(self.items.pop_front())
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        // SAFETY: We never move fields that are !Unpin
+        let this = unsafe { self.get_unchecked_mut() };
+        Poll::Ready(this.items.pop_front())
     }
 }
 

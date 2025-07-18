@@ -80,7 +80,6 @@ async fn test_stateful_map_basic() {
                     Ok(state)
                 })
             },
-            ResourceConfig::default(),
         )
         .collect::<Vec<_>>()
         .await;
@@ -155,7 +154,6 @@ async fn test_stateful_filter() {
                     Ok(count < 2)
                 })
             },
-            ResourceConfig::default(),
         )
         .collect::<Vec<_>>()
         .await;
@@ -229,7 +227,6 @@ async fn test_stateful_fold() {
                     Ok(state)
                 })
             },
-            ResourceConfig::default(),
         )
         .collect::<Vec<_>>()
         .await;

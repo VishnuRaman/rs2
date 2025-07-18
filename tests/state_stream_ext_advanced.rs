@@ -82,7 +82,6 @@ async fn test_stateful_reduce() {
         key_extractor,
         Some(0u64), // initial value must be Option
         |acc, item, state_access| Box::pin(async move { Ok(acc + item.count) }),
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -153,7 +152,6 @@ async fn test_stateful_group_by() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -214,8 +212,6 @@ async fn test_stateful_group_by_advanced() {
         key_extractor,
         None, // group_timeout
         Some(3), // max_group_size (matches group size for id=1)
-        false,  // emit_on_key_change
-        false,  // emit_on_group_change
         |group_key: String, group_items: Vec<TestData>, state_access: StateAccess| {
             let fut = async move {
                 let state_bytes = state_access.get().await.unwrap_or(Vec::new());
@@ -244,7 +240,6 @@ async fn test_stateful_group_by_advanced() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -306,7 +301,6 @@ async fn test_stateful_deduplicate() {
         key_extractor,
         Duration::from_millis(100), // TTL is less than sleep, so deduplication should occur for the second item only
         |item| item,                // Identity function for deduplication
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -414,7 +408,6 @@ async fn test_stateful_throttle() {
             );
             item
         }, // Identity function with debug
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -471,7 +464,6 @@ async fn test_stateful_session() {
             item.is_new_session = Some(is_new_session);
             item
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -567,7 +559,6 @@ async fn test_stateful_pattern() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -694,7 +685,6 @@ async fn test_stateful_throttle_real_time() {
         max_per_interval,
         Duration::from_millis(throttle_interval_ms),
         |item| item,
-        ResourceConfig::default(),
     );
 
     // Collect results with timestamps
@@ -789,7 +779,7 @@ async fn test_stateful_operations_with_empty_state() {
             }
         };
         Box::pin(fut)
-    }, ResourceConfig::default());
+    });
 
     let results: Vec<_> = result_stream
         .collect::<Vec<_>>()
@@ -846,7 +836,6 @@ async fn test_stateful_operations_with_concurrent_keys() {
         key_extractor,
         Some(0u64), // init value
         |acc, item, state_access| Box::pin(async move { Ok(acc + item.count) }),
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -934,8 +923,7 @@ async fn test_stateful_window_with_overlapping_windows() {
                 ))
             };
             Box::pin(fut)
-        },
-        ResourceConfig::default(),
+        }, ResourceConfig::default()
     );
 
     let results: Vec<_> = result_stream
@@ -1003,7 +991,6 @@ async fn test_stateful_session_with_timeout() {
             item.is_new_session = Some(is_new_session);
             item
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -1092,7 +1079,6 @@ async fn test_stateful_pattern_with_complex_sequence() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -1231,7 +1217,6 @@ async fn test_stateful_join_with_multiple_matches() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -1345,7 +1330,6 @@ async fn test_stateful_throttle_with_multiple_keys() {
             );
             item
         }, // Identity function with debug
-        ResourceConfig::default(),
     );
 
     // Collect results with timestamps
@@ -1445,7 +1429,6 @@ async fn test_stateful_deduplicate_with_custom_comparison() {
         key_extractor,
         Duration::from_millis(100), // TTL is less than sleep, so deduplication should occur for the second item only
         |item| item,                // Identity function for deduplication
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -1515,7 +1498,6 @@ async fn test_stateful_group_by_with_aggregation() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -1578,7 +1560,6 @@ async fn test_stateful_window_sliding_overlap() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream
@@ -1619,7 +1600,6 @@ async fn test_stateful_window_partial_window() {
             let fut = async move { Ok(format!("Partial window: {} items", window.len())) };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
     let results: Vec<_> = result_stream
         .collect::<Vec<_>>()
@@ -1689,7 +1669,6 @@ async fn test_stateful_window_multi_key() {
             };
             Box::pin(fut)
         },
-        ResourceConfig::default(),
     );
 
     let results: Vec<_> = result_stream

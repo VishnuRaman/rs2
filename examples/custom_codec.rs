@@ -84,8 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let raw_data_stream = from_iter(vec![raw_data.clone()]);
 
         // Encode with custom codec
-        let mut custom_stream =
-            custom_codec.encode_stream(raw_data_stream, "test-stream".to_string());
+        let mut custom_stream = custom_codec.create_encoding_stream(raw_data_stream);
 
         // Get the first (and only) result
         if let Some(custom_result) = custom_stream.next().await {
@@ -124,8 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let raw_data_stream = from_iter(vec![raw_data]);
 
         // Encode with standard codec
-        let mut standard_stream =
-            standard_codec.encode_stream(raw_data_stream, "test-stream".to_string());
+        let mut standard_stream = standard_codec.create_encoding_stream(raw_data_stream);
 
         // Get the first (and only) result
         if let Some(standard_result) = standard_stream.next().await {

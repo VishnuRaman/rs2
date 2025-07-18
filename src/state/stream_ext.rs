@@ -1,7 +1,6 @@
 use crate::resource_manager::{ResourceConfig, ResourceManager};
 use crate::stream::Stream;
-use pin_project_lite::pin_project;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker, RawWaker, RawWakerVTable};
 use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,7 +11,6 @@ use crate::state::{StateConfig, StateError, StateStorage};
 use std::future::Future;
 use crate::stream::core::StreamExt as CoreStreamExt;
 use std::collections::VecDeque;
-use std::task::{RawWaker, RawWakerVTable, Waker};
 
 // Memory management constants
 const MAX_HASHMAP_KEYS: usize = 10_000;
@@ -87,13 +85,16 @@ struct RightItemWithTime<U> {
 // Custom stream implementations to replace async_stream::stream
 
 /// Stateful map stream combinator
-pub struct StatefulMap<S, F, R, T> {
-    stream: S,
-    f: F,
-    storage: Arc<dyn StateStorage + Send + Sync>,
-    key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
-    current_future: Option<Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>>>,
-    _phantom: std::marker::PhantomData<(R, T)>,
+pin_project_lite::pin_project! {
+    pub struct StatefulMap<S, F, R, T> {
+        #[pin]
+        stream: S,
+        f: F,
+        storage: Arc<dyn StateStorage + Send + Sync>,
+        key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+        current_future: Option<Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>>>,
+        _phantom: std::marker::PhantomData<(R, T)>,
+    }
 }
 
 impl<S, F, R, T> StatefulMap<S, F, R, T>
@@ -124,8 +125,8 @@ where
 {
     type Item = Result<R, StateError>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
         
         // First, poll the current future if we have one
         if let Some(mut future) = this.current_future.take() {
@@ -134,19 +135,19 @@ where
                     return Poll::Ready(Some(result));
                 }
                 Poll::Pending => {
-                    this.current_future = Some(future);
+                    *this.current_future = Some(future);
                     return Poll::Pending;
                 }
             }
         }
         
         // If no current future, poll the stream for the next item
-        match Pin::new(&mut this.stream).poll_next(cx) {
+        match this.stream.as_mut().poll_next(cx) {
             Poll::Ready(Some(item)) => {
                 let key = this.key_extractor.extract_key(&item);
                 let state_access = StateAccess::new(this.storage.clone(), key);
                 let future = (this.f)(item, state_access);
-                this.current_future = Some(future);
+                *this.current_future = Some(future);
                 
                 // Poll the future immediately
                 if let Some(mut future) = this.current_future.take() {
@@ -155,7 +156,7 @@ where
                             Poll::Ready(Some(result))
                         }
                         Poll::Pending => {
-                            this.current_future = Some(future);
+                            *this.current_future = Some(future);
                             Poll::Pending
                         }
                     }
@@ -170,13 +171,16 @@ where
 }
 
 /// Stateful filter stream combinator
-pub struct StatefulFilter<S, F, T> {
-    stream: S,
-    f: F,
-    storage: Arc<dyn StateStorage + Send + Sync>,
-    key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
-    current_future: Option<Pin<Box<dyn Future<Output = Result<bool, StateError>> + Send>>>,
-    current_item: Option<T>,
+pin_project_lite::pin_project! {
+    pub struct StatefulFilter<S, F, T> {
+        #[pin]
+        stream: S,
+        f: F,
+        storage: Arc<dyn StateStorage + Send + Sync>,
+        key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+        current_future: Option<Pin<Box<dyn Future<Output = Result<bool, StateError>> + Send>>>,
+        current_item: Option<T>,
+    }
 }
 
 impl<S, F, T> StatefulFilter<S, F, T>
@@ -206,66 +210,68 @@ where
     type Item = Result<T, StateError>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = unsafe { self.as_mut().get_unchecked_mut() };
-        
-        // First, poll the current future if we have one
-        if let Some(mut future) = this.current_future.take() {
-            match future.as_mut().poll(cx) {
-                Poll::Ready(Ok(should_include)) => {
-                    let item = this.current_item.take().unwrap();
-                    if should_include {
-                        Poll::Ready(Some(Ok(item)))
-                    } else {
-                        // Continue to next item
-                        self.poll_next(cx)
+        loop {
+            let mut this = self.as_mut().project();
+            
+            // First, poll the current future if we have one
+            if let Some(mut future) = this.current_future.take() {
+                match future.as_mut().poll(cx) {
+                    Poll::Ready(Ok(should_include)) => {
+                        let item = this.current_item.take().unwrap();
+                        if should_include {
+                            return Poll::Ready(Some(Ok(item)));
+                        } else {
+                            // Continue to next item by continuing the loop
+                            continue;
+                        }
+                    }
+                    Poll::Ready(Err(e)) => {
+                        this.current_item.take(); // Clear the item
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                    Poll::Pending => {
+                        *this.current_future = Some(future);
+                        return Poll::Pending;
                     }
                 }
-                Poll::Ready(Err(e)) => {
-                    this.current_item.take(); // Clear the item
-                    Poll::Ready(Some(Err(e)))
-                }
-                Poll::Pending => {
-                    this.current_future = Some(future);
-                    Poll::Pending
-                }
-            }
-        } else {
-            // If no current future, poll the stream for the next item
-            match Pin::new(&mut this.stream).poll_next(cx) {
-                Poll::Ready(Some(item)) => {
-                    let key = this.key_extractor.extract_key(&item);
-                    let state_access = StateAccess::new(this.storage.clone(), key);
-                    let future = (this.f)(&item, state_access);
-                    this.current_future = Some(future);
-                    this.current_item = Some(item);
-                    
-                    // Poll the future immediately
-                    if let Some(mut future) = this.current_future.take() {
-                        match future.as_mut().poll(cx) {
-                            Poll::Ready(Ok(should_include)) => {
-                                let item = this.current_item.take().unwrap();
-                                if should_include {
-                                    Poll::Ready(Some(Ok(item)))
-                                } else {
-                                    // Continue to next item
-                                    self.poll_next(cx)
+            } else {
+                // If no current future, poll the stream for the next item
+                match this.stream.as_mut().poll_next(cx) {
+                    Poll::Ready(Some(item)) => {
+                        let key = this.key_extractor.extract_key(&item);
+                        let state_access = StateAccess::new(this.storage.clone(), key);
+                        let future = (this.f)(&item, state_access);
+                        *this.current_future = Some(future);
+                        *this.current_item = Some(item);
+                        
+                        // Poll the future immediately
+                        if let Some(mut future) = this.current_future.take() {
+                            match future.as_mut().poll(cx) {
+                                Poll::Ready(Ok(should_include)) => {
+                                    let item = this.current_item.take().unwrap();
+                                    if should_include {
+                                        return Poll::Ready(Some(Ok(item)));
+                                    } else {
+                                        // Continue to next item by continuing the loop
+                                        continue;
+                                    }
+                                }
+                                Poll::Ready(Err(e)) => {
+                                    this.current_item.take(); // Clear the item
+                                    return Poll::Ready(Some(Err(e)));
+                                }
+                                Poll::Pending => {
+                                    *this.current_future = Some(future);
+                                    return Poll::Pending;
                                 }
                             }
-                            Poll::Ready(Err(e)) => {
-                                this.current_item.take(); // Clear the item
-                                Poll::Ready(Some(Err(e)))
-                            }
-                            Poll::Pending => {
-                                this.current_future = Some(future);
-                                Poll::Pending
-                            }
+                        } else {
+                            return Poll::Pending;
                         }
-                    } else {
-                        Poll::Pending
                     }
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => return Poll::Pending,
                 }
-                Poll::Ready(None) => Poll::Ready(None),
-                Poll::Pending => Poll::Pending,
             }
         }
     }
@@ -279,7 +285,7 @@ pin_project_lite::pin_project! {
         storage: Arc<dyn StateStorage + Send + Sync>,
         key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
         window_size: usize,
-        window_buffers: std::collections::HashMap<String, Vec<T>>,
+        window_buffers: HashMap<String, Vec<T>>,
         current_future: Option<Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>>>,
         result_queue: VecDeque<Result<R, StateError>>,
         resource_manager: Arc<ResourceManager>,
@@ -308,7 +314,7 @@ where
             storage: config.create_storage_arc(),
             key_extractor: Arc::new(key_extractor),
             window_size,
-            window_buffers: std::collections::HashMap::new(),
+            window_buffers: HashMap::new(),
             current_future: None,
             result_queue: VecDeque::new(),
             resource_manager,
@@ -351,7 +357,6 @@ where
         
         // Poll the source stream and process items
         loop {
-            println!("StatefulWindow: polling source stream");
             match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
                     let key = this.key_extractor.extract_key(&item);
@@ -430,7 +435,7 @@ where
                                 *this.current_future = Some(Box::pin(future));
                                 // Poll the future to completion synchronously
                                 let waker = noop_waker();
-                                let mut cx = std::task::Context::from_waker(&waker);
+                                let mut cx = Context::from_waker(&waker);
                                 let mut pinned = this.current_future.as_mut().unwrap();
                                 match pinned.as_mut().poll(&mut cx) {
                                     Poll::Ready(result) => {
@@ -476,14 +481,13 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         f: F,
-        resource_config: ResourceConfig,
     ) -> StatefulMap<Self, F, R, T>
     where
         F: FnMut(
                 T,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
             + 'static,
@@ -499,15 +503,14 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        f: F,
-        resource_config: ResourceConfig,
+        f: F
     ) -> StatefulFilter<Self, F, T>
     where
         F: FnMut(
                 &T,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<bool, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<bool, StateError>> + Send>,
             > + Send
             + Sync
             + 'static,
@@ -523,16 +526,15 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         initial: R,
-        f: F,
-        resource_config: ResourceConfig,
+        f: F
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
                 R,
                 T,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
             + 'static,
@@ -544,7 +546,7 @@ where
         use std::sync::Arc;
         struct FoldState<S, R, F, T> {
             stream: S,
-            aggregates: std::collections::HashMap<String, R>,
+            aggregates: HashMap<String, R>,
             storage: Arc<dyn StateStorage + Send + Sync>,
             key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
             f: F,
@@ -552,7 +554,7 @@ where
         }
         let state = FoldState {
             stream: self,
-            aggregates: std::collections::HashMap::new(),
+            aggregates: HashMap::new(),
             storage: config.create_storage_arc(),
             key_extractor: Arc::new(key_extractor),
             f,
@@ -584,16 +586,15 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         initial: Option<R>,
-        f: F,
-        resource_config: ResourceConfig,
+        f: F
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
                 R,
                 T,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
             + 'static,
@@ -605,7 +606,7 @@ where
         use std::sync::Arc;
         struct ReduceState<S, R, F, T> {
             stream: S,
-            accs: std::collections::HashMap<String, R>,
+            accs: HashMap<String, R>,
             storage: Arc<dyn StateStorage + Send + Sync>,
             key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
             f: F,
@@ -650,8 +651,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         group_timeout: Option<Duration>,
         max_group_size: Option<usize>,
-        f: F,
-        resource_config: ResourceConfig,
+        f: F
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
@@ -688,10 +688,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         group_timeout: Option<std::time::Duration>,
         max_group_size: Option<usize>,
-        emit_on_key_change: bool,
-        emit_on_group_change: bool,
-        f: F,
-        resource_config: ResourceConfig,
+        f: F
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
@@ -726,9 +723,8 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        ttl: std::time::Duration,
-        f: F,
-        resource_config: ResourceConfig,
+        ttl: Duration,
+        f: F
     ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
         F: FnMut(T) -> T + Send + Sync + 'static,
@@ -757,9 +753,8 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         rate_limit: u32,
-        window_duration: std::time::Duration,
+        window_duration: Duration,
         f: F,
-        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
         F: FnMut(T) -> T + Send + Sync + 'static,
@@ -769,11 +764,13 @@ where
         use crate::stream::core::StreamExt;
         use std::sync::Arc;
         
+        let storage = config.create_storage_arc();
         let key_extractor = Arc::new(key_extractor);
         
         StatefulThrottleStream::new(
             self,
             f,
+            storage,
             key_extractor,
             rate_limit,
             window_duration,
@@ -788,7 +785,6 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         session_timeout: std::time::Duration,
         f: F,
-        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
         F: FnMut(T, bool) -> T + Send + Sync + 'static,
@@ -846,7 +842,6 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         pattern_size: usize,
         f: F,
-        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<Option<String>, StateError>> + Send + 'static
     where
         F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<String>, StateError>> + Send>> + Send + Sync + 'static,
@@ -903,7 +898,6 @@ where
         other_key_extractor: impl KeyExtractor<U> + Send + Sync + 'static,
         window_duration: std::time::Duration,
         f: F,
-        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(T, U, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
@@ -965,10 +959,9 @@ where
         slide_size: Option<usize>,
         emit_partial: bool,
         f: F,
-        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
-        F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
         R: Send + Sync + 'static + Unpin,
         Self: Sized + Unpin,
     {
@@ -997,7 +990,6 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         initial: R,
         f: F,
-        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(R, T, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
@@ -1009,7 +1001,7 @@ where
         use std::sync::Arc;
         struct AggStateStruct<S, F, T, R> {
             stream: S,
-            aggregates: std::collections::HashMap<String, R>,
+            aggregates: HashMap<String, R>,
             storage: Arc<dyn StateStorage + Send + Sync>,
             key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
             f: F,
@@ -1017,7 +1009,7 @@ where
         }
         let state = AggStateStruct {
             stream: self,
-            aggregates: std::collections::HashMap::new(),
+            aggregates: HashMap::new(),
             storage: config.create_storage_arc(),
             key_extractor: Arc::new(key_extractor),
             f,
@@ -1050,7 +1042,6 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         window_duration: std::time::Duration,
         f: F,
-        resource_config: ResourceConfig,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
@@ -1165,12 +1156,18 @@ fn unix_timestamp_millis() -> u64 {
 }
 
 fn noop_waker() -> Waker {
+    // This creates a no-op waker that does nothing when woken
+    // It's used in contexts where we need a waker but don't actually want to wake anything
     fn noop(_: *const ()) {}
     fn clone(_: *const ()) -> RawWaker { noop_raw_waker() }
     static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
     fn noop_raw_waker() -> RawWaker {
         RawWaker::new(std::ptr::null(), &VTABLE)
     }
+    // SAFETY: This is safe because:
+    // 1. The RawWaker is created with a null pointer and a valid VTable
+    // 2. The VTable functions are all no-ops that don't access the data pointer
+    // 3. The waker is only used in contexts where it won't be woken
     unsafe { Waker::from_raw(noop_raw_waker()) }
 }
 

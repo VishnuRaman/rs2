@@ -11,6 +11,7 @@ use rs2_stream::rs2::*;
 use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::StreamExt;
 use rs2_stream::media::types::{MediaChunk, MediaStream, MediaType, QualityLevel};
+use rs2_stream::media::StreamingServiceFactory;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -46,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting file stream from: {:?}", file_path);
 
     // Start streaming from the file
-    let chunk_stream = streaming_service
+    let chunk_stream: _ = streaming_service
         .start_file_stream(file_path, stream_config)
         .await;
 

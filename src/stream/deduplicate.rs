@@ -75,19 +75,15 @@ where
                     let transformed = (this.f)(item);
                     return Poll::Ready(Some(transformed));
                 } else {
-                    // Skip duplicate - continue to next item
                     continue;
                 }
             }
-            // If stream is done, we're finished
             if this.stream_done {
                 return Poll::Ready(None);
             }
-            // Poll the underlying stream for the next item
             match Pin::new(&mut this.stream).poll_next(cx) {
                 Poll::Ready(Some(item)) => {
                     this.current_item = Some(item);
-                    // Continue loop to process this item
                     continue;
                 }
                 Poll::Ready(None) => {

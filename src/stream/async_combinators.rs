@@ -362,32 +362,34 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = unsafe { self.as_mut().get_unchecked_mut() };
 
-        // If we have a future, poll it
-        if let Some(future) = &mut this.future {
-            match poll_pinned_future(future, cx) {
+        loop {
+            // If we have a future, poll it
+            if let Some(future) = &mut this.future {
+                match poll_pinned_future(future, cx) {
+                    Poll::Ready(Some(item)) => {
+                        this.future = None;
+                        return Poll::Ready(Some(item));
+                    }
+                    Poll::Ready(None) => {
+                        this.future = None;
+                        // Continue to get next item from stream
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            // Get next item from stream and start processing it
+            let stream = unsafe { Pin::new_unchecked(&mut this.stream) };
+            match stream.poll_next(cx) {
                 Poll::Ready(Some(item)) => {
-                    this.future = None;
-                    return Poll::Ready(Some(item));
+                    let future = (this.f)(item);
+                    this.future = Some(Box::pin(future));
+                    // Continue the loop to poll the new future immediately
+                    // instead of recursively calling self.poll_next(cx)
                 }
-                Poll::Ready(None) => {
-                    this.future = None;
-                    // Continue to get next item from stream
-                }
+                Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
             }
-        }
-
-        // Get next item from stream and start processing it
-        let stream = unsafe { Pin::new_unchecked(&mut this.stream) };
-        match stream.poll_next(cx) {
-            Poll::Ready(Some(item)) => {
-                let future = (this.f)(item);
-                this.future = Some(Box::pin(future));
-                // Poll the new future immediately
-                self.poll_next(cx)
-            }
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
         }
     }
 }

@@ -1,11 +1,9 @@
-use rs2_stream::rs2::*;
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::StreamExt;
-use tokio::runtime::Runtime;
-use rs2_stream::connectors::kafka_connector::{KafkaConfig, KafkaMetadata, KafkaStream};
+use rs2_stream::connectors::kafka_connector::{KafkaConfig, KafkaMetadata, KafkaConnector};
 use rs2_stream::connectors::connection_errors::ConnectorError;
-use rs2_stream::connectors::*;
+use rs2_stream::connectors::stream_connector::StreamConnector;
 use serial_test::serial;
 use std::time::Duration;
 use testcontainers::runners::AsyncRunner;
@@ -16,11 +14,6 @@ use uuid::Uuid;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::ClientConfig;
 use rdkafka::config::RDKafkaLogLevel;
-use rdkafka::consumer::{Consumer, StreamConsumer};
-use rdkafka::producer::{FutureProducer, FutureRecord};
-use rdkafka::types::RDKafkaErrorCode;
-use rdkafka::util::Timeout;
-use rdkafka::Message;
 
 struct KafkaTestEnvironment {
     connector: KafkaConnector,
@@ -77,14 +70,14 @@ impl KafkaTestEnvironment {
         let admin_client: AdminClient<_> = admin_config.create()?;
         let new_topic = NewTopic::new(topic_name, num_partitions, TopicReplication::Fixed(1));
         let admin_options = AdminOptions::new()
-            .operation_timeout(Some(Timeout::After(Duration::from_secs(10))));
+            .operation_timeout(Some(rdkafka::util::Timeout::After(Duration::from_secs(10))));
         match admin_client.create_topics(&[new_topic], &admin_options).await {
             Ok(results) => {
                 for result in results {
                     match result {
                         Ok(_) => println!("✅ Successfully created topic '{}'", topic_name),
                         Err((topic, e)) => {
-                            if e == RDKafkaErrorCode::TopicAlreadyExists {
+                            if e == rdkafka::types::RDKafkaErrorCode::TopicAlreadyExists {
                                 println!("ℹ️ Topic '{}' already exists", topic);
                             } else {
                                 println!("❌ Failed to create topic '{}': {:?}", topic, e);
@@ -156,10 +149,10 @@ async fn test_kafka_connector_with_testcontainers() {
         "Final message".to_string(),
     ];
 
-    let producer_stream = KafkaStream::new(from_iter(test_messages.clone()));
+    let producer_stream = from_iter(test_messages.clone());
     let metadata = env
         .connector
-        .to_sink(producer_stream, env.producer_config())
+        .to_sink(Box::new(producer_stream), env.producer_config())
         .await
         .unwrap();
 
@@ -177,7 +170,7 @@ async fn test_kafka_connector_with_testcontainers() {
     
     // First, produce some test messages to the new topic
     let test_messages: Vec<String> = (0..5).map(|i| format!("Test message {}", i)).collect();
-    let producer_stream = KafkaStream::new(from_iter(test_messages.clone()));
+    let producer_stream = from_iter(test_messages.clone());
     
     let consumer_test_producer_config = KafkaConfig {
         topic: consumer_test_topic.clone(),
@@ -192,7 +185,7 @@ async fn test_kafka_connector_with_testcontainers() {
     };
     
     env.connector
-        .to_sink(producer_stream, consumer_test_producer_config)
+        .to_sink(Box::new(producer_stream), consumer_test_producer_config)
         .await
         .expect("Failed to produce test messages");
 
@@ -212,7 +205,7 @@ async fn test_kafka_connector_with_testcontainers() {
         message_timeout_ms: Some(30000),
     };
     
-    let consumer_stream: KafkaStream<String> = env
+    let consumer_stream = env
         .connector
         .from_source(consumer_test_config)
         .await
@@ -261,10 +254,10 @@ async fn test_kafka_connector_with_testcontainers() {
     let start = std::time::Instant::now();
 
     // Send the large dataset
-    let producer_stream = KafkaStream::new(from_iter(large_dataset.clone()));
+    let producer_stream = from_iter(large_dataset.clone());
     let metadata = env
         .connector
-        .to_sink(producer_stream, env.producer_config())
+        .to_sink(Box::new(producer_stream), env.producer_config())
         .await
         .unwrap();
 
@@ -308,9 +301,9 @@ async fn test_kafka_connector_with_testcontainers() {
 
     // Produce messages
     println!("Producing messages for multiple consumers test");
-    let producer_stream = KafkaStream::new(from_iter(multi_test_data.clone()));
+    let producer_stream = from_iter(multi_test_data.clone());
     env.connector
-        .to_sink(producer_stream, multi_producer_config.clone())
+        .to_sink(Box::new(producer_stream), multi_producer_config.clone())
         .await
         .unwrap();
 
@@ -345,13 +338,13 @@ async fn test_kafka_connector_with_testcontainers() {
     };
 
     // Start both consumers
-    let consumer_stream_1: KafkaStream<String> = env
+    let consumer_stream_1 = env
         .connector
         .from_source(consumer_config_1)
         .await
         .expect("Failed to create first consumer");
 
-    let consumer_stream_2: KafkaStream<String> = env
+    let consumer_stream_2 = env
         .connector
         .from_source(consumer_config_2)
         .await
@@ -438,9 +431,9 @@ async fn test_kafka_connector_with_testcontainers() {
     let initial_messages: Vec<String> = (0..10).map(|i| format!("Initial message {}", i)).collect();
 
     println!("Producing initial batch of messages");
-    let producer_stream = KafkaStream::new(from_iter(initial_messages.clone()));
+    let producer_stream = from_iter(initial_messages.clone());
     env.connector
-        .to_sink(producer_stream, offset_producer_config.clone())
+        .to_sink(Box::new(producer_stream), offset_producer_config.clone())
         .await
         .unwrap();
 
@@ -462,7 +455,7 @@ async fn test_kafka_connector_with_testcontainers() {
 
     // Consume the initial batch
     println!("Consuming initial batch of messages");
-    let consumer_stream: KafkaStream<String> = env
+    let consumer_stream = env
         .connector
         .from_source(offset_consumer_config.clone())
         .await
@@ -487,9 +480,9 @@ async fn test_kafka_connector_with_testcontainers() {
         .collect();
 
     println!("Producing second batch of messages");
-    let producer_stream = KafkaStream::new(from_iter(second_batch.clone()));
+    let producer_stream = from_iter(second_batch.clone());
     env.connector
-        .to_sink(producer_stream, offset_producer_config.clone())
+        .to_sink(Box::new(producer_stream), offset_producer_config.clone())
         .await
         .unwrap();
 
@@ -499,7 +492,7 @@ async fn test_kafka_connector_with_testcontainers() {
     // Create a new consumer with the same group ID
     // It should only receive the second batch since the group offset was committed
     println!("Creating new consumer with same group ID");
-    let consumer_stream: KafkaStream<String> = env
+    let consumer_stream = env
         .connector
         .from_source(offset_consumer_config.clone())
         .await
@@ -546,7 +539,7 @@ async fn test_kafka_connector_with_testcontainers() {
     
     println!("📤 Producing {} ordered messages: {:?}", ordered_msgs.len(), ordered_msgs);
 
-    let order_producer_stream = KafkaStream::new(from_iter(ordered_msgs.clone()));
+    let order_producer_stream = from_iter(ordered_msgs.clone());
     let order_producer_config = KafkaConfig {
         topic: order_topic.clone(),
         group_id: Some("producer-group".to_string()),
@@ -558,7 +551,7 @@ async fn test_kafka_connector_with_testcontainers() {
         session_timeout_ms: Some(30000),
         message_timeout_ms: Some(30000),
     };
-    env.connector.to_sink(order_producer_stream, order_producer_config).await.unwrap();
+    env.connector.to_sink(Box::new(order_producer_stream), order_producer_config).await.unwrap();
     sleep(Duration::from_secs(2)).await;
     let order_consumer_config = KafkaConfig {
         topic: order_topic,
@@ -571,7 +564,7 @@ async fn test_kafka_connector_with_testcontainers() {
         session_timeout_ms: Some(30000),
         message_timeout_ms: Some(30000),
     };
-    let order_consumer_stream: KafkaStream<String> = env.connector.from_source(order_consumer_config).await.unwrap();
+    let order_consumer_stream = env.connector.from_source(order_consumer_config).await.unwrap();
     let received_ordered: Vec<String> = tokio::time::timeout(
         Duration::from_secs(10),
         order_consumer_stream.take_rs2(ordered_msgs.len()).collect_rs2(),

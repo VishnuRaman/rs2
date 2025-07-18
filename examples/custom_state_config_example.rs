@@ -1,7 +1,7 @@
-use futures::StreamExt;
 use rs2_stream::{
     state::config::{StateConfigBuilder, StateConfigs},
     state::{CustomKeyExtractor, StateConfig, StatefulStreamExt},
+    stream::{from_iter, StreamExt},
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -61,7 +61,7 @@ async fn main() {
     println!("   Cleanup Interval: 10 minutes");
     println!("   Max Size: 5000 entries");
 
-    let builder_results: Vec<String> = futures::stream::iter(events.clone())
+    let builder_results: Vec<String> = from_iter(events.clone())
         .stateful_map_rs2(
             custom_config,
             CustomKeyExtractor::new(|event: &UserEvent| event.user_id.clone()),
@@ -123,7 +123,7 @@ async fn main() {
     println!("   Cleanup Interval: 2 minutes");
     println!("   Max Size: 2000 entries");
 
-    let chained_results: Vec<String> = futures::stream::iter(events.clone())
+    let chained_results: Vec<String> = from_iter(events.clone())
         .stateful_map_rs2(
             chained_config,
             CustomKeyExtractor::new(|event: &UserEvent| event.user_id.clone()),
@@ -183,7 +183,7 @@ async fn main() {
     println!("   Base: Session config (30min TTL, 5min cleanup, 1000 max)");
     println!("   Modified: 45min TTL, 2000 max size");
 
-    let modified_results: Vec<String> = futures::stream::iter(events.clone())
+    let modified_results: Vec<String> = from_iter(events.clone())
         .stateful_map_rs2(
             modified_config,
             CustomKeyExtractor::new(|event: &UserEvent| event.user_id.clone()),
@@ -248,7 +248,7 @@ async fn main() {
     println!("   Cleanup Interval: 15 minutes");
     println!("   Max Size: 3000 entries");
 
-    let direct_results: Vec<String> = futures::stream::iter(events)
+    let direct_results: Vec<String> = from_iter(events)
         .stateful_map_rs2(
             direct_config,
             CustomKeyExtractor::new(|event: &UserEvent| event.user_id.clone()),
@@ -340,4 +340,5 @@ async fn main() {
     println!("  - StateConfig::new().ttl().cleanup_interval().max_size()");
     println!("  - StateConfig {{ ttl, cleanup_interval, max_size, .. }}");
     println!("  - Start from predefined and modify: StateConfigs::session().ttl().max_size()");
+    println!("\n=== All examples completed successfully! ===");
 }

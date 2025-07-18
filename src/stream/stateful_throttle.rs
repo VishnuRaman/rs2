@@ -1,15 +1,17 @@
 use crate::stream::Stream;
 use crate::state::traits::KeyExtractor;
+use crate::state::StateStorage;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+use serde::{Serialize, Deserialize};
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ThrottleState {
     count: u32,
-    window_start: Instant,
+    window_start: u64, // Store as timestamp for serialization
 }
 
 pub struct StatefulThrottleStream<S, F, T>
@@ -19,7 +21,8 @@ where
     T: Send + Sync + Clone + 'static,
 {
     stream: S,
-    throttle_states: HashMap<String, ThrottleState>,
+    storage: Arc<dyn StateStorage + Send + Sync>,
+    throttle_states: HashMap<String, ThrottleState>, // Keep in-memory for now
     key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
     f: F,
     rate_limit: u32,
@@ -38,12 +41,14 @@ where
     pub fn new(
         stream: S,
         f: F,
+        storage: Arc<dyn StateStorage + Send + Sync>,
         key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
         rate_limit: u32,
         window_duration: Duration,
     ) -> Self {
         Self {
             stream,
+            storage,
             throttle_states: HashMap::new(),
             key_extractor,
             f,
@@ -80,16 +85,17 @@ where
         if let Some(item) = this.current_item.take() {
             let key = this.key_extractor.extract_key(&item);
             let now = Instant::now();
+            let now_timestamp = Self::unix_timestamp_millis();
             
             let throttle_state = this.throttle_states.entry(key.clone()).or_insert(ThrottleState {
                 count: 0,
-                window_start: now,
+                window_start: now_timestamp,
             });
 
             // Reset window if expired
-            if now.duration_since(throttle_state.window_start) > this.window_duration {
+            if now_timestamp - throttle_state.window_start > this.window_duration.as_millis() as u64 {
                 throttle_state.count = 0;
-                throttle_state.window_start = now;
+                throttle_state.window_start = now_timestamp;
             }
 
             // Check if we can emit this item
@@ -98,13 +104,13 @@ where
                 return Poll::Ready(Some((this.f)(item)));
             } else {
                 // Rate limit exceeded, delay this item
-                let next_window_start = throttle_state.window_start + this.window_duration;
-                let delay_until = next_window_start;
+                let next_window_start = throttle_state.window_start + this.window_duration.as_millis() as u64;
+                let delay_until = Instant::now() + Duration::from_millis((next_window_start - now_timestamp) as u64);
                 
                 if now >= delay_until {
                     // Window has passed, reset and emit
                     throttle_state.count = 1;
-                    throttle_state.window_start = now;
+                    throttle_state.window_start = now_timestamp;
                     return Poll::Ready(Some((this.f)(item)));
                 } else {
                     // Still in current window, delay until next window

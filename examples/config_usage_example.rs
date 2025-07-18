@@ -10,7 +10,7 @@
 use rs2_stream::*;
 use rs2_stream::stream_configuration::*;
 use rs2_stream::error::RetryPolicy;
-use rs2_stream::connectors::stream_connector::CommonConfig;
+use rs2_stream::connectors::stream_connector::{CommonConfig, ConnectorRetryConfig};
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::stream_performance_metrics::HealthThresholds;
 use std::time::Duration;
@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     
     let stream = rs2::from_iter_rs2(0..10)
-        .auto_backpressure_clone_with_rs2(backpressure_config);
+        .auto_backpressure_with_rs2(backpressure_config);
     let results: Vec<_> = stream.collect_rs2().await;
     println!("   Processed {} items with drop-oldest backpressure", results.len());
 
@@ -110,18 +110,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 6. CommonConfig for connectors - Using RetryPolicy
     println!("\n6. CommonConfig for connectors:");
     let connector_config = CommonConfig {
-        batch_size: 500,
-        timeout_ms: 5000,
-        retry_policy: RetryPolicy::Fixed {
-            max_retries: 3,
-            delay: Duration::from_millis(200),
+        buffer_size: 500,
+        timeout: Duration::from_millis(5000),
+        retry_config: ConnectorRetryConfig {
+            policy: RetryPolicy::Fixed {
+                max_retries: 3,
+                delay: Duration::from_millis(200),
+            },
+            max_attempts: 3,
+            backoff_multiplier: 2.0,
         },
-        compression: true,
+        enable_metrics: true,
     };
-    println!("   Connector config: batch_size={}, timeout={}ms, compression={}", 
-             connector_config.batch_size, connector_config.timeout_ms, connector_config.compression);
+    println!("   Connector config: buffer_size={}, timeout={:?}, enable_metrics={}", 
+             connector_config.buffer_size, connector_config.timeout, connector_config.enable_metrics);
     println!("   Retry policy: Fixed with {} retries",
-             match connector_config.retry_policy { RetryPolicy::Fixed { max_retries, .. } => max_retries, _ => 0 });
+             match connector_config.retry_config.policy { RetryPolicy::Fixed { max_retries, .. } => max_retries, _ => 0 });
 
     println!("\n=== All configuration fields are properly utilized! ===");
     Ok(())

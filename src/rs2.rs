@@ -21,19 +21,6 @@ use crate::stream::core::{BracketStream, BracketState};
 use crate::stream::timeout::TimeoutStream;
 
 // Create a simple noop waker for testing
-fn noop_waker() -> Waker {
-    use std::task::{RawWaker, RawWakerVTable};
-    
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(
-        |_| RawWaker::new(std::ptr::null(), &VTABLE), // clone
-        |_| {},                                       // wake
-        |_| {},                                       // wake_by_ref
-        |_| {},                                       // drop
-    );
-    
-    let raw_waker = RawWaker::new(std::ptr::null(), &VTABLE);
-    unsafe { Waker::from_raw(raw_waker) }
-}
 
 /// Backpressure strategy for automatic flow control
 #[derive(Debug, Clone, Copy)]

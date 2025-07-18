@@ -1,12 +1,9 @@
-use async_stream::stream;
-use futures_util::stream::StreamExt;
-use rs2_stream::stream::from_iter;
-use rs2_stream::rs2::*;
+use rs2_stream::stream::{from_iter, Stream, StreamExt};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
-use futures::Stream;
 
 // Acquire a resource - returns a path to the file
 async fn acquire_resource() -> PathBuf {
@@ -14,13 +11,9 @@ async fn acquire_resource() -> PathBuf {
     PathBuf::from("data.txt")
 }
 
-// Release a resource with exit case information
-async fn release_resource(path: PathBuf, exit_case: ExitCase<String>) {
-    println!(
-        "Resource released: {} with exit case: {:?}",
-        path.display(),
-        exit_case
-    );
+// Release a resource (custom API expects only the resource, not exit case)
+async fn release_resource_simple(path: PathBuf) {
+    println!("Resource released: {}", path.display());
 }
 
 // Use a resource to create a stream of results
@@ -36,25 +29,25 @@ fn use_resource(path: PathBuf) -> impl Stream<Item = Result<String, String>> + S
     };
 
     let reader = BufReader::new(file);
-    let lines = reader.lines();
-
-    // Map each line to a Result
-    stream! {
-        for (i, line_result) in lines.enumerate() {
+    let lines: Vec<Result<String, String>> = reader
+        .lines()
+        .enumerate()
+        .map(|(i, line_result)| {
             match line_result {
                 Ok(line) => {
                     // Simulate an error for demonstration purposes
                     if line.contains("ERROR") {
-                        yield Err(format!("Error in line {}: {}", i + 1, line));
+                        Err(format!("Error in line {}: {}", i + 1, line))
                     } else {
-                        yield Ok(line);
+                        Ok(line)
                     }
                 },
-                Err(e) => yield Err(format!("IO error: {}", e)),
+                Err(e) => Err(format!("IO error: {}", e)),
             }
-        }
-    }
-    .boxed()
+        })
+        .collect();
+
+    from_iter(lines)
 }
 
 fn main() {
@@ -64,17 +57,17 @@ fn main() {
 
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        println!("Demonstrating bracket_case extension method for resource management");
+        println!("Demonstrating bracket extension method for resource management");
 
         // Create a stream of results
         let stream = from_iter(vec![Ok::<String, String>("Initial value".to_string())]);
 
-        // Use bracket_case extension method to ensure resource is released
+        // Use bracket extension method to ensure resource is released
         let result = stream
-            .bracket_case_rs2(
+            .bracket_rs2(
                 acquire_resource(),
                 |resource| use_resource(resource),
-                release_resource,
+                release_resource_simple,
             )
             .collect::<Vec<_>>()
             .await;

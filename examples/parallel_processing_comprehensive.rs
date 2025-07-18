@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use futures_util::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UserProfile {
@@ -145,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let sequential_results: Vec<ProcessedUser> = from_iter(users.clone())
         .eval_map_rs2(|user| Box::pin(cpu_intensive_processing(user)))
-        .collect()
+        .collect_rs2()
         .await;
     let sequential_time = start.elapsed();
     println!("   ✅ Sequential: {} users in {:?}", sequential_results.len(), sequential_time);
@@ -155,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let parallel_ordered_results: Vec<ProcessedUser> = from_iter(users.clone())
         .par_eval_map_rs2(10, |user| Box::pin(cpu_intensive_processing(user)))
-        .collect()
+        .collect_rs2()
         .await;
     let parallel_ordered_time = start.elapsed();
     println!("   ✅ Parallel (Ordered): {} users in {:?}", parallel_ordered_results.len(), parallel_ordered_time);
@@ -166,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let parallel_unordered_results: Vec<ProcessedUser> = from_iter(users.clone())
         .par_eval_map_unordered_rs2(10, |user| Box::pin(cpu_intensive_processing(user)))
-        .collect()
+        .collect_rs2()
         .await;
     let parallel_unordered_time = start.elapsed();
     println!("   ✅ Parallel (Unordered): {} users in {:?}", parallel_unordered_results.len(), parallel_unordered_time);
@@ -184,7 +185,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (processed_user, api_response, db_record)
             })
         })
-        .collect()
+        .collect_rs2()
         .await;
     let mixed_time = start.elapsed();
     println!("   ✅ Mixed Workload: {} users in {:?}", mixed_results.len(), mixed_time);
@@ -196,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .par_eval_map_rs2(6, |user| Box::pin(cpu_intensive_processing(user)))
         .par_eval_map_rs2(4, |processed_user| Box::pin(api_call(processed_user.id)))
         .par_eval_map_rs2(8, |api_response| Box::pin(file_processing(api_response.user_id)))
-        .collect()
+        .collect_rs2()
         .await;
     let pipeline_time = start.elapsed();
     println!("   ✅ Pipeline: {} users in {:?}", pipeline_results.len(), pipeline_time);
@@ -209,7 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let start = Instant::now();
         let results: Vec<ProcessedUser> = from_iter(users.clone())
             .par_eval_map_rs2(concurrency, |user| Box::pin(cpu_intensive_processing(user)))
-            .collect()
+            .collect_rs2()
             .await;
         let time = start.elapsed();
         println!("   🔧 Concurrency {}: {} users in {:?} ({:.2} users/sec)", 
@@ -240,7 +241,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             })
         })
-        .collect()
+        .collect_rs2()
         .await;
 
     let success_count = error_results.iter().filter(|r| r.is_ok()).count();
@@ -253,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Note: buffer_unordered is only for streams of futures, not values. Here we just collect directly.
     let resource_results: Vec<ProcessedUser> = from_iter(users.clone())
         .par_eval_map_rs2(4, |user| Box::pin(cpu_intensive_processing(user)))
-        .collect()
+        .collect_rs2()
         .await;
     let resource_time = start.elapsed();
     println!("   ✅ Resource Managed: {} users in {:?}", resource_results.len(), resource_time);
@@ -273,7 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (order_id, api_response, db_record, file_result)
             })
         })
-        .collect()
+        .collect_rs2()
         .await;
     let order_time = start.elapsed();
     println!("   ✅ E-commerce Processing: {} orders in {:?}", order_results.len(), order_time);

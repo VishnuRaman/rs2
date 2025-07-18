@@ -4,8 +4,6 @@ use crate::connectors::stream_connector::{
 use crate::connectors::connection_errors::ConnectorError;
 use crate::stream::Stream;
 use crate::stream::StreamExt;
-use crate::stream::constructors::FromAsyncFn;
-use crate::stream::FilterMap;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -23,33 +21,6 @@ use std::pin::Pin;
 use std::future::Future;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-// Wrapper type for Kafka streams to avoid complex associated types
-pub struct KafkaStream<T> {
-    inner: Pin<Box<dyn Stream<Item = T> + Send>>,
-}
-
-impl<T> KafkaStream<T> {
-    pub fn new<S>(stream: S) -> Self 
-    where 
-        S: Stream<Item = T> + Send + 'static,
-    {
-        Self {
-            inner: Box::pin(stream),
-        }
-    }
-}
-
-impl<T> Stream for KafkaStream<T> {
-    type Item = T;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
-        unsafe {
-            let this = self.get_unchecked_mut();
-            this.inner.as_mut().poll_next(cx)
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KafkaConnector {
@@ -191,8 +162,9 @@ where
     type Config = KafkaConfig;
     type Metadata = KafkaMetadata;
     type Error = ConnectorError;
-    type SourceStream = KafkaStream<T>;
-    type SinkStream = KafkaStream<T>;
+    // Use boxed streams for type erasure - minimal necessary boxing
+    type SourceStream = Box<dyn Stream<Item = T> + Send + 'static>;
+    type SinkStream = Box<dyn Stream<Item = T> + Send + 'static>;
 
     async fn from_source(&self, config: Self::Config) -> Result<Self::SourceStream, Self::Error> {
         log::info!("Creating Kafka consumer for topic: {}", config.topic);
@@ -224,8 +196,8 @@ where
         let consumer_arc = Arc::new(Mutex::new(consumer));
         
         log::info!("Creating message stream for topic: {}", topic);
-        // Create a stream that continuously polls for messages
-        let stream = crate::stream::constructors::from_async_fn::<T, _, _>(move || {
+        // Create a stream that continuously polls for messages - no boxing!
+        let stream = crate::stream::constructors::from_async_fn(move || {
             let consumer_arc = Arc::clone(&consumer_arc);
             let topic = topic.clone();
             async move {
@@ -257,7 +229,7 @@ where
             }
         });
 
-        Ok(KafkaStream::new(stream))
+        Ok(Box::new(stream))
     }
 
     async fn to_sink(
@@ -284,6 +256,7 @@ where
         let bytes_sent = Arc::new(Mutex::new(0u64));
 
         // Use the stream directly with our custom stream methods
+        use crate::stream::StreamExt;
         while let Some(item) = stream.next().await {
             let producer = producer.clone();
             let topic = config.topic.clone();
@@ -433,8 +406,7 @@ where
                     }
                 }
             }
-        })
-        .filter_map(|x| Some(x));
+        });
 
         let sink_fn = {
             let producer = producer.clone();
@@ -447,6 +419,7 @@ where
                 let partition = partition;
 
                 Box::pin(async move {
+                    use crate::stream::StreamExt;
                     while let Some(item) = stream.next().await {
                         let producer = producer.clone();
                         let topic = topic.clone();
@@ -498,7 +471,7 @@ where
             })
         };
 
-        Ok((KafkaStream::new(stream), sink_fn))
+        Ok((Box::new(stream), sink_fn))
     }
 
     fn capabilities(&self) -> ConnectorCapabilities {
