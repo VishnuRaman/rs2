@@ -1,5 +1,5 @@
-use futures::StreamExt;
-use rs2_stream::state::{CustomKeyExtractor, StatefulStreamExt};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
+use rs2_stream::state::{CustomKeyExtractor, StatefulStreamExt, StateConfig};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,9 +62,9 @@ async fn main() {
 
     // Example 1: Detect brute force attacks (3 failed logins)
     println!("1. Detect Brute Force Attacks (3 failed logins):");
-    let brute_force_stream = futures::stream::iter(events.clone())
+    let brute_force_stream: Vec<String> = rs2_stream::rs2::from_iter_rs2(events.clone())
         .stateful_pattern_rs2(
-            rs2_stream::state::StateConfig::new(),
+            StateConfig::default(),
             CustomKeyExtractor::new(|event: &SecurityEvent| event.ip_address.clone()),
             3, // pattern size
             |pattern_events, state_access| {
@@ -108,24 +108,23 @@ async fn main() {
                 Box::pin(fut)
             },
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .flatten()
+        .collect();
 
     println!("  Brute force detections:");
     for detection in &brute_force_stream {
-        if let Some(msg) = detection {
-            println!("    {}", msg);
-        }
+        println!("    {}", detection);
     }
 
     // Example 2: Detect port scanning (2 port scan events)
     println!("\n2. Detect Port Scanning (2 port scan events):");
-    let anomaly_stream = futures::stream::iter(events.clone())
+    let anomaly_stream: Vec<String> = rs2_stream::rs2::from_iter_rs2(events.clone())
         .stateful_pattern_rs2(
-            rs2_stream::state::StateConfig::new(),
+            StateConfig::default(),
             CustomKeyExtractor::new(|event: &SecurityEvent| event.ip_address.clone()),
             2, // pattern size
             |pattern_events, state_access| {
@@ -169,24 +168,23 @@ async fn main() {
                 Box::pin(fut)
             },
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .flatten()
+        .collect();
 
     println!("  Port scan detections:");
     for detection in &anomaly_stream {
-        if let Some(msg) = detection {
-            println!("    {}", msg);
-        }
+        println!("    {}", detection);
     }
 
     // Example 3: Detect time-based patterns (events within 100ms)
     println!("\n3. Detect Time-Based Patterns (events within 100ms):");
-    let time_pattern_stream = futures::stream::iter(events.clone())
+    let time_pattern_stream: Vec<String> = rs2_stream::rs2::from_iter_rs2(events.clone())
         .stateful_pattern_rs2(
-            rs2_stream::state::StateConfig::new(),
+            StateConfig::default(),
             CustomKeyExtractor::new(|event: &SecurityEvent| event.ip_address.clone()),
             2, // pattern size
             |pattern_events, state_access| {
@@ -228,24 +226,23 @@ async fn main() {
                 Box::pin(fut)
             },
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .flatten()
+        .collect();
 
     println!("  Time-based pattern detections:");
     for detection in &time_pattern_stream {
-        if let Some(msg) = detection {
-            println!("    {}", msg);
-        }
+        println!("    {}", detection);
     }
 
     // Example 4: Detect multi-pattern sequences
     println!("\n4. Detect Multi-Pattern Sequences:");
-    let multi_pattern_stream = futures::stream::iter(events.clone())
+    let multi_pattern_stream: Vec<String> = rs2_stream::rs2::from_iter_rs2(events.clone())
         .stateful_pattern_rs2(
-            rs2_stream::state::StateConfig::new(),
+            StateConfig::default(),
             CustomKeyExtractor::new(|event: &SecurityEvent| event.ip_address.clone()),
             3, // pattern size
             |pattern_events, state_access| {
@@ -289,18 +286,23 @@ async fn main() {
                 Box::pin(fut)
             },
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .flatten()
+        .collect();
 
     println!("  Multi-pattern detections:");
     for detection in &multi_pattern_stream {
-        if let Some(msg) = detection {
-            println!("    {}", msg);
-        }
+        println!("    {}", detection);
     }
 
     println!("\n=== Stateful Pattern Example Complete ===");
+    println!("\nKey Features Demonstrated:");
+    println!("1. Brute force detection: Multiple failed login attempts from same IP");
+    println!("2. Port scan detection: Multiple port scan events from same IP");
+    println!("3. Time-based patterns: Events occurring within rapid timeframes");
+    println!("4. Multi-pattern detection: Complex sequences across different event types");
+    println!("5. Stateful pattern matching: Maintaining state across pattern detections");
 }

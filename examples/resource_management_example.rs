@@ -5,6 +5,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use tokio::runtime::Runtime;
+use rs2_stream::resource_manager::get_global_resource_manager;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let data = vec![item; 1000];
             data.len()
         })
-        .collect_rs2::<Vec<_>>()
+        .collect_rs2()
         .await;
 
     // Get metrics from the global resource manager
@@ -39,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Group operations automatically track memory
     let grouped_stream = from_iter(0..500)
         .group_by_rs2(|&x| x % 10)
-        .collect_rs2::<Vec<_>>()
+        .collect_rs2()
         .await;
     
     let metrics2 = global_manager.get_metrics().await;
@@ -50,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Sliding window operations also track memory
     let windowed_stream = from_iter(0..200)
         .sliding_window_rs2(10)
-        .collect_rs2::<Vec<_>>()
+        .collect_rs2()
         .await;
     
     let metrics3 = global_manager.get_metrics().await;

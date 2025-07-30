@@ -1,6 +1,7 @@
-use futures::StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::state::{CustomKeyExtractor, StateConfig, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct Event {
@@ -16,7 +17,7 @@ async fn main() {
     println!("=== RS2 Stateful Deduplicate Example ===\n");
 
     // Create state configuration
-    let config = StateConfig::new();
+    let config = StateConfig::default();
 
     // Create sample events with duplicates
     let events = vec![
@@ -66,18 +67,18 @@ async fn main() {
 
     // Example 1: Deduplicate by event ID
     println!("1. Deduplicate by Event ID:");
-    let dedup_by_id = futures::stream::iter(events.clone())
+    let dedup_by_id: Vec<Event> = rs2_stream::rs2::from_iter_rs2(events.clone())
         .stateful_deduplicate_rs2(
             config.clone(),
-            CustomKeyExtractor::new(|event: &Event| event.id.to_string()),
-            std::time::Duration::from_secs(60), // 60 second TTL
+            CustomKeyExtractor::new(|event: &Event| event.id.clone()),
+            Duration::from_secs(60), // 60 second TTL
             |event| event.clone(),
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .collect();
 
     println!("  Unique events by ID:");
     for event in &dedup_by_id {
@@ -89,18 +90,18 @@ async fn main() {
 
     // Example 2: Deduplicate by user + action combination
     println!("\n2. Deduplicate by User + Action:");
-    let dedup_by_user_action = futures::stream::iter(events.clone())
+    let dedup_by_user_action: Vec<Event> = rs2_stream::rs2::from_iter_rs2(events.clone())
         .stateful_deduplicate_rs2(
             config.clone(),
             CustomKeyExtractor::new(|event: &Event| format!("{}_{}", event.user_id, event.action)),
-            std::time::Duration::from_secs(30), // 30 second TTL
+            Duration::from_secs(30), // 30 second TTL
             |event| event.clone(),
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .collect();
 
     println!("  Unique user-action combinations:");
     for event in &dedup_by_user_action {
@@ -109,20 +110,18 @@ async fn main() {
 
     // Example 3: Deduplicate by data content
     println!("\n3. Deduplicate by Data Content:");
-    let dedup_by_data = futures::stream::iter(events.clone())
+    let dedup_by_data: Vec<Event> = rs2_stream::rs2::from_iter_rs2(events.clone())
         .stateful_deduplicate_rs2(
             config.clone(),
-            CustomKeyExtractor::new(|event: &Event| {
-                serde_json::to_string(&event.data).unwrap_or_default()
-            }),
-            std::time::Duration::from_secs(120), // 2 minute TTL
+            CustomKeyExtractor::new(|event: &Event| event.data.clone()),
+            Duration::from_secs(120), // 2 minute TTL
             |event| event.clone(),
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .collect();
 
     println!("  Unique data content:");
     for event in &dedup_by_data {
@@ -131,18 +130,18 @@ async fn main() {
 
     // Example 4: Deduplicate by timestamp window
     println!("\n4. Deduplicate by Timestamp Window:");
-    let dedup_by_timestamp = futures::stream::iter(events.clone())
+    let dedup_by_timestamp: Vec<Event> = rs2_stream::rs2::from_iter_rs2(events.clone())
         .stateful_deduplicate_rs2(
             config.clone(),
             CustomKeyExtractor::new(|event: &Event| (event.timestamp / 100).to_string()), // 100ms windows
-            std::time::Duration::from_secs(10), // 10 second TTL
+            Duration::from_secs(10), // 10 second TTL
             |event| event.clone(),
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .collect();
 
     println!("  Unique timestamp windows:");
     for event in &dedup_by_timestamp {

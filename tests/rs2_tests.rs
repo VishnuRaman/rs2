@@ -1,6 +1,8 @@
 use rs2_stream::rs2::*;
 use rs2_stream::stream::StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use std::collections::{HashSet, BTreeSet, BTreeMap};
+use std::time::Duration;
 
 #[tokio::test]
 async fn test_collect_stream_vec() {
@@ -58,6 +60,41 @@ async fn test_empty_stream() {
     let stream = empty_stream::<i32>();
     let result: Vec<i32> = collect_stream(stream).await;
     assert!(result.is_empty());
+}
+
+#[tokio::test]
+async fn test_tick() {
+    // Test tick function that emits an item at regular intervals
+    let start_time = std::time::Instant::now();
+    
+    // Create a tick stream that emits "ping" every 50ms
+    let tick_stream = tick(Duration::from_millis(50), "ping");
+    
+    // Take 3 items and verify they are correct
+    let result: Vec<_> = tick_stream.take_rs2(3).collect_rs2().await;
+    
+    assert_eq!(result, vec!["ping", "ping", "ping"]);
+    
+    // Verify that roughly the right amount of time has passed (3 ticks * 50ms)
+    let elapsed = start_time.elapsed();
+    assert!(elapsed >= Duration::from_millis(150)); // At least 150ms should have passed
+    assert!(elapsed < Duration::from_millis(300));  // But not too much more
+}
+
+#[tokio::test] 
+async fn test_tick_with_numbers() {
+    // Test tick with different value types
+    let tick_stream = tick(Duration::from_millis(10), 42);
+    let result: Vec<_> = tick_stream.take_rs2(5).collect_rs2().await;
+    assert_eq!(result, vec![42, 42, 42, 42, 42]);
+}
+
+#[tokio::test]
+async fn test_tick_zero_items() {
+    // Test taking zero items from tick stream
+    let tick_stream = tick(Duration::from_millis(10), "test");
+    let result: Vec<_> = tick_stream.take_rs2(0).collect_rs2().await;
+    assert_eq!(result, Vec::<&str>::new());
 }
 
 /*

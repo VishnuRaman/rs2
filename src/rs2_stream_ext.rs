@@ -120,6 +120,23 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         items.into_iter().fold(init, f)
     }
 
+    /// Reduce the stream using a binary operation
+    /// Returns None if the stream is empty, otherwise returns Some with the reduced value
+    async fn reduce_rs2<F>(self, f: F) -> Option<Self::Item>
+    where
+        F: Fn(Self::Item, Self::Item) -> Self::Item + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        let items = self.collect_rs2().await;
+        let mut iter = items.into_iter();
+        
+        if let Some(first) = iter.next() {
+            Some(iter.fold(first, f))
+        } else {
+            None
+        }
+    }
+
     /// Count items in the stream
     async fn count_rs2(self) -> usize {
         use crate::stream::StreamExt;
@@ -252,6 +269,15 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         self.skip_while(f)
     }
 
+    /// Drop while a predicate is true (same as skip_while)
+    fn drop_while_rs2<F>(self, f: F) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        F: FnMut(&Self::Item) -> bool + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        crate::rs2::drop_while(self, f)
+    }
+
     /// Take while a predicate is true
     fn take_while_rs2<F>(self, f: F) -> impl Stream<Item = Self::Item> + Send + 'static
     where
@@ -305,8 +331,9 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         F: FnMut(Self::Item) -> Fut + Send + 'static,
         Fut: Future<Output = U> + Send + 'static,
         U: Send + 'static,
+        Self::Item: Send + 'static,
     {
-        self.then(f)
+        rs2::eval_map(self, f)
     }
 
     /// Flatten nested streams

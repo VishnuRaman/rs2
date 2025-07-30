@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rs2_stream::rs2::*;
-use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -160,38 +160,38 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
                 b.to_async(&rt).iter(|| async {
                     let result = match task_type {
                         "light_cpu" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .eval_map_rs2(|x| light_cpu_task(x))
                                 .map_rs2(|_| 1) // Normalize result type
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         "medium_cpu" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .eval_map_rs2(|x| medium_cpu_task(x))
                                 .map_rs2(|_| 1)
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         "heavy_cpu" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .eval_map_rs2(|x| heavy_cpu_task(x))
                                 .map_rs2(|_| 1)
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         "io_simulation" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .eval_map_rs2(|x| io_simulation_task(x))
                                 .map_rs2(|_| 1)
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         "variable_workload" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .eval_map_rs2(|x| variable_workload_task(x))
                                 .map_rs2(|_| 1)
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         _ => vec![],
@@ -223,38 +223,38 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
                     b.to_async(&rt).iter(|| async {
                         let result = match task_type {
                             "light_cpu" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_rs2(conc, |x| light_cpu_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "medium_cpu" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_rs2(conc, |x| medium_cpu_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "heavy_cpu" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_rs2(conc, |x| heavy_cpu_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "io_simulation" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_rs2(conc, |x| io_simulation_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "variable_workload" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_rs2(conc, |x| variable_workload_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             _ => vec![],
@@ -275,38 +275,38 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
                     b.to_async(&rt).iter(|| async {
                         let result = match task_type {
                             "light_cpu" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_unordered_rs2(conc, |x| light_cpu_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "medium_cpu" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_unordered_rs2(conc, |x| medium_cpu_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "heavy_cpu" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_unordered_rs2(conc, |x| heavy_cpu_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "io_simulation" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_unordered_rs2(conc, |x| io_simulation_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "variable_workload" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .par_eval_map_unordered_rs2(conc, |x| variable_workload_task(x))
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             _ => vec![],
@@ -346,15 +346,15 @@ fn bench_parallel_scaling(c: &mut Criterion) {
                 b.to_async(&rt).iter(|| async {
                     let result = if conc == 1 {
                         // Sequential for concurrency = 1
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .eval_map_rs2(|x| heavy_cpu_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     } else {
                         // Parallel for concurrency > 1
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .par_eval_map_unordered_rs2(conc, |x| heavy_cpu_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     };
                     black_box(result)
@@ -369,14 +369,14 @@ fn bench_parallel_scaling(c: &mut Criterion) {
             |b, &conc| {
                 b.to_async(&rt).iter(|| async {
                     let result = if conc == 1 {
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .eval_map_rs2(|x| io_simulation_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     } else {
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .par_eval_map_unordered_rs2(conc, |x| io_simulation_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     };
                     black_box(result)
@@ -391,14 +391,14 @@ fn bench_parallel_scaling(c: &mut Criterion) {
             |b, &conc| {
                 b.to_async(&rt).iter(|| async {
                     let result = if conc == 1 {
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .eval_map_rs2(|x| variable_workload_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     } else {
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .par_eval_map_unordered_rs2(conc, |x| variable_workload_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     };
                     black_box(result)
@@ -438,22 +438,22 @@ fn bench_ordered_vs_unordered(c: &mut Criterion) {
                     async move {
                         let result = match task {
                             "uniform_fast" => {
-                                from_iter(0..data_size)
+                                from_iter_rs2(0..data_size)
                                     .par_eval_map_rs2(concurrency, |x| light_cpu_task(x))
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "uniform_slow" => {
-                                from_iter(0..data_size)
+                                from_iter_rs2(0..data_size)
                                     .par_eval_map_rs2(concurrency, |x| medium_cpu_task(x))
                                     .map_rs2(|_| 1) // Map to i32 to match other arms
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "variable_mixed" => {
-                                from_iter(0..data_size)
+                                from_iter_rs2(0..data_size)
                                     .par_eval_map_rs2(concurrency, |x| variable_workload_task(x))
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             _ => vec![],
@@ -474,24 +474,24 @@ fn bench_ordered_vs_unordered(c: &mut Criterion) {
                     async move {
                         let result = match task {
                             "uniform_fast" => {
-                                from_iter(0..data_size)
+                                from_iter_rs2(0..data_size)
                                     .par_eval_map_unordered_rs2(concurrency, |x| light_cpu_task(x))
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "uniform_slow" => {
-                                from_iter(0..data_size)
+                                from_iter_rs2(0..data_size)
                                     .par_eval_map_unordered_rs2(concurrency, |x| medium_cpu_task(x))
                                     .map_rs2(|_| 1) // Map to i32 to match other arms
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "variable_mixed" => {
-                                from_iter(0..data_size)
+                                from_iter_rs2(0..data_size)
                                     .par_eval_map_unordered_rs2(concurrency, |x| {
                                         variable_workload_task(x)
                                     })
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             _ => vec![],
@@ -529,14 +529,14 @@ fn bench_concurrency_optimization(c: &mut Criterion) {
             |b, &conc| {
                 b.to_async(&rt).iter(|| async {
                     let result = if conc == 1 {
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .eval_map_rs2(|x| io_simulation_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     } else {
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .par_eval_map_unordered_rs2(conc, |x| io_simulation_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     };
                     black_box(result)
@@ -559,14 +559,14 @@ fn bench_concurrency_optimization(c: &mut Criterion) {
             |b, &conc| {
                 b.to_async(&rt).iter(|| async {
                     let result = if conc == 1 {
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .eval_map_rs2(|x| heavy_cpu_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     } else {
-                        from_iter(0..data_size)
+                        from_iter_rs2(0..data_size)
                             .par_eval_map_unordered_rs2(conc, |x| heavy_cpu_task(x))
-                            .collect_rs2::<Vec<_>>()
+                            .collect_rs2()
                             .await
                     };
                     black_box(result)
@@ -690,24 +690,24 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
                 b.to_async(&rt).iter(|| async {
                     let result = match task_type {
                         "light_cpu" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .map_rs2(light_cpu_sync)
                                 .map_rs2(|_| 1) // Normalize result type
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         "medium_cpu" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .map_rs2(medium_cpu_sync)
                                 .map_rs2(|_| 1)
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         "heavy_cpu" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .map_rs2(heavy_cpu_sync)
                                 .map_rs2(|_| 1)
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         _ => vec![],
@@ -725,24 +725,24 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
                 b.to_async(&rt).iter(|| async {
                     let result = match task_type {
                         "light_cpu" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .map_parallel_rs2(light_cpu_sync)
                                 .map_rs2(|_| 1) // Normalize result type
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         "medium_cpu" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .map_parallel_rs2(medium_cpu_sync)
                                 .map_rs2(|_| 1)
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         "heavy_cpu" => {
-                            from_iter(0..size)
+                            from_iter_rs2(0..size)
                                 .map_parallel_rs2(heavy_cpu_sync)
                                 .map_rs2(|_| 1)
-                                .collect_rs2::<Vec<_>>()
+                                .collect_rs2()
                                 .await
                         }
                         _ => vec![],
@@ -772,24 +772,24 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
                     b.to_async(&rt).iter(|| async {
                         let result = match task_type {
                             "light_cpu" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .map_parallel_with_concurrency_rs2(conc, light_cpu_sync)
                                     .map_rs2(|_| 1) // Normalize result type
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "medium_cpu" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .map_parallel_with_concurrency_rs2(conc, medium_cpu_sync)
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             "heavy_cpu" => {
-                                from_iter(0..size)
+                                from_iter_rs2(0..size)
                                     .map_parallel_with_concurrency_rs2(conc, heavy_cpu_sync)
                                     .map_rs2(|_| 1)
-                                    .collect_rs2::<Vec<_>>()
+                                    .collect_rs2()
                                     .await
                             }
                             _ => vec![],
@@ -859,10 +859,10 @@ fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
         &data_size,
         |b, &size| {
             b.to_async(&rt).iter(|| async {
-                let result = from_iter(0..size)
+                let result = from_iter_rs2(0..size)
                     .map_rs2(heavy_cpu_work)
                     .map_rs2(|_| 1) // Normalize result type
-                    .collect_rs2::<Vec<_>>()
+                    .collect_rs2()
                     .await;
                 black_box(result)
             });
@@ -875,10 +875,10 @@ fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
         &data_size,
         |b, &size| {
             b.to_async(&rt).iter(|| async {
-                let result = from_iter(0..size)
+                let result = from_iter_rs2(0..size)
                     .map_parallel_rs2(heavy_cpu_work)
                     .map_rs2(|_| 1) // Normalize result type
-                    .collect_rs2::<Vec<_>>()
+                    .collect_rs2()
                     .await;
                 black_box(result)
             });
@@ -891,10 +891,10 @@ fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
         &data_size,
         |b, &size| {
             b.to_async(&rt).iter(|| async {
-                let result = from_iter(0..size)
+                let result = from_iter_rs2(0..size)
                     .map_parallel_with_concurrency_rs2(concurrency, heavy_cpu_work)
                     .map_rs2(|_| 1) // Normalize result type
-                    .collect_rs2::<Vec<_>>()
+                    .collect_rs2()
                     .await;
                 black_box(result)
             });
@@ -907,10 +907,10 @@ fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
         &data_size,
         |b, &size| {
             b.to_async(&rt).iter(|| async {
-                let result = from_iter(0..size)
+                let result = from_iter_rs2(0..size)
                     .par_eval_map_rs2(concurrency, |x| async move { heavy_cpu_work(x) })
                     .map_rs2(|_| 1) // Normalize result type
-                    .collect_rs2::<Vec<_>>()
+                    .collect_rs2()
                     .await;
                 black_box(result)
             });
@@ -923,10 +923,10 @@ fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
         &data_size,
         |b, &size| {
             b.to_async(&rt).iter(|| async {
-                let result = from_iter(0..size)
+                let result = from_iter_rs2(0..size)
                     .par_eval_map_unordered_rs2(concurrency, |x| async move { heavy_cpu_work(x) })
                     .map_rs2(|_| 1) // Normalize result type
-                    .collect_rs2::<Vec<_>>()
+                    .collect_rs2()
                     .await;
                 black_box(result)
             });

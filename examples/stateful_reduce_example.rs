@@ -1,7 +1,5 @@
-use futures::StreamExt;
-use rs2_stream::state::{CustomKeyExtractor, StateConfig, StatefulStreamExt};
-use rs2_stream::stream::from_iter;
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
+use rs2_stream::state::{CustomKeyExtractor, StateConfig, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -61,18 +59,18 @@ async fn main() {
 
     // Example 1: Simple aggregation with custom config
     println!("1. Simple Transaction Aggregation:");
-    let custom_config = StateConfig::new();
+    let custom_config = StateConfig::default();
 
-    let aggregation_stream = from_iter(transactions.clone()).stateful_reduce_rs2(
+    let aggregation_stream = rs2_stream::rs2::from_iter_rs2(transactions.clone()).stateful_reduce_rs2(
         custom_config,
         CustomKeyExtractor::new(|tx: &Transaction| tx.user_id.clone()),
-        UserAggregation {
+        Some(UserAggregation {
             total_spent: 0.0,
             transaction_count: 0,
             categories: HashMap::new(),
             last_transaction: 0,
-        },
-        |acc, transaction, state_access| {
+        }),
+        |acc: UserAggregation, transaction: Transaction, state_access| {
             Box::pin(async move {
                 // Get current state
                 let mut state = if let Some(bytes) = state_access.get().await {
@@ -103,10 +101,10 @@ async fn main() {
     );
 
     let results: Vec<UserAggregation> = aggregation_stream
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
+        .filter_map(Result::ok)
         .collect();
 
     for (i, result) in results.iter().enumerate() {
@@ -122,13 +120,13 @@ async fn main() {
 
     // Example 2: Real-time analytics with session config
     println!("\n2. Real-time Analytics with Session Config:");
-    let session_config = StateConfig::new();
+    let session_config = StateConfig::default();
 
-    let analytics_stream = from_iter(transactions.clone()).stateful_reduce_rs2(
+    let analytics_stream = rs2_stream::rs2::from_iter_rs2(transactions.clone()).stateful_reduce_rs2(
         session_config,
         CustomKeyExtractor::new(|tx: &Transaction| "global_analytics".to_string()),
-        HashMap::<String, f64>::new(),
-        |acc, transaction, state_access| {
+        Some(HashMap::<String, f64>::new()),
+        |acc: HashMap<String, f64>, transaction: Transaction, state_access| {
             Box::pin(async move {
                 // Get current analytics state
                 let mut analytics = if let Some(bytes) = state_access.get().await {
@@ -156,10 +154,10 @@ async fn main() {
     );
 
     let analytics_results: Vec<HashMap<String, f64>> = analytics_stream
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
+        .filter_map(Result::ok)
         .collect();
 
     for (i, analytics) in analytics_results.iter().enumerate() {
@@ -175,13 +173,13 @@ async fn main() {
 
     // Example 3: Fraud detection with long-lived config
     println!("\n3. Fraud Detection with Long-lived Config:");
-    let fraud_config = StateConfig::new();
+    let fraud_config = StateConfig::default();
 
-    let fraud_stream = from_iter(transactions.clone()).stateful_reduce_rs2(
+    let fraud_stream = rs2_stream::rs2::from_iter_rs2(transactions.clone()).stateful_reduce_rs2(
         fraud_config,
         CustomKeyExtractor::new(|tx: &Transaction| tx.user_id.clone()),
-        (0.0, 0u64, false), // (total_amount, count, flagged)
-        |acc, transaction, state_access| {
+        Some((0.0, 0u64, false)), // (total_amount, count, flagged)
+        |acc: (f64, u64, bool), transaction: Transaction, state_access| {
             Box::pin(async move {
                 // Get current fraud state
                 let mut fraud_state = if let Some(bytes) = state_access.get().await {
@@ -209,11 +207,12 @@ async fn main() {
     );
 
     let fraud_results: Vec<(f64, u64, bool)> = fraud_stream
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
+        .filter_map(Result::ok)
         .collect();
+
     for (i, fraud_state) in fraud_results.iter().enumerate() {
         println!(
             "  Fraud {}: Total: ${:.2}, Count: {}, Flagged: {}",
@@ -225,4 +224,10 @@ async fn main() {
     }
 
     println!("\n=== Stateful Reduce Example Complete ===");
+    println!("\nKey Features Demonstrated:");
+    println!("1. User-based transaction aggregation with custom state management");
+    println!("2. Global analytics with real-time metric updates");
+    println!("3. Fraud detection with threshold-based flagging");
+    println!("4. Persistent state across stream processing operations");
+    println!("5. Multiple concurrent stateful reduction streams");
 }

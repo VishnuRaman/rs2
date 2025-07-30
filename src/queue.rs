@@ -137,6 +137,11 @@ where
         *self.closed.lock().await = true;
     }
 
+    /// Close the queue (immutable version for Arc usage)
+    pub async fn close_immutable(&self) {
+        *self.closed.lock().await = true;
+    }
+
     /// Check if the queue is closed
     pub async fn is_closed(&self) -> bool {
         *self.closed.lock().await

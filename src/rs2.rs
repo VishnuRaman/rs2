@@ -730,6 +730,19 @@ where
     })
 }
 
+/// Map elements of the stream with an async function (sequential)
+pub fn eval_map<S, I, O, Fut, F>(s: S, f: F) -> impl Stream<Item = O> + Send + 'static
+where
+    S: Stream<Item = I> + Send + 'static,
+    F: FnMut(I) -> Fut + Send + 'static,
+    Fut: Future<Output = O> + Send + 'static,
+    O: Send + 'static,
+    I: Send + 'static,
+{
+    use crate::stream::StreamExt;
+    s.then(f)
+}
+
 /// Parallel map with concurrency control - Preserves order
 pub fn par_eval_map<S, I, O, Fut, F>(s: S, concurrency: usize, f: F) -> impl Stream<Item = O> + Send + 'static
 where

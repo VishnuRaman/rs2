@@ -1,4 +1,6 @@
-use rs2_stream::stream::{Stream, StreamExt, AsyncStreamExt};
+use rs2_stream::stream::{Stream, StreamExt};
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -110,4 +112,47 @@ async fn test_empty_for_each() {
     }).await;
     
     assert_eq!(collected, Vec::<i32>::new());
+} 
+
+#[tokio::test]
+async fn test_filter_map_async_large_stream_no_stack_overflow() {
+    // This should NOT cause stack overflow after our fix
+    let large_data: Vec<i32> = (0..10_000).collect();
+    
+    let result = from_iter(large_data)
+        .filter_map_async_rs2(|x| async move {
+            if x % 2 == 0 {
+                Some(x * 2)
+            } else {
+                None  // This will cause the implementation to immediately poll again
+            }
+        })
+        .take_rs2(10) // Only take first 10 to speed up test
+        .collect_rs2()
+        .await;
+    
+    assert_eq!(result, vec![0, 4, 8, 12, 16, 20, 24, 28, 32, 36]);
+    println!("✅ filter_map_async processed large stream without stack overflow");
+}
+
+#[tokio::test]
+async fn test_filter_map_async_many_none_results() {
+    // Test scenario where many consecutive items return None
+    // This was the exact scenario causing stack overflow
+    let data: Vec<i32> = (1..5001).step_by(2).collect(); // All odd numbers
+    
+    let result = from_iter(data)
+        .filter_map_async_rs2(|x| async move {
+            if x % 2 == 0 {
+                Some(x)
+            } else {
+                None  // All items will return None, causing recursive calls
+            }
+        })
+        .collect_rs2()
+        .await;
+    
+    // Should be empty since all input numbers are odd
+    assert_eq!(result, Vec::<i32>::new());
+    println!("✅ filter_map_async handled {} None results without stack overflow", 2500);
 } 

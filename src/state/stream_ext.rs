@@ -13,12 +13,6 @@ use crate::stream::core::StreamExt as CoreStreamExt;
 use std::collections::VecDeque;
 
 // Memory management constants
-const MAX_HASHMAP_KEYS: usize = 10_000;
-const MAX_GROUP_SIZE: usize = 10_000; // Max items per group
-const MAX_PATTERN_SIZE: usize = 1_000; // Max items per pattern
-const CLEANUP_INTERVAL: u64 = 1000; // Cleanup every 1000 items (increased from 100)
-const RESOURCE_TRACKING_INTERVAL: u64 = 100; // Track resources every 100 items
-const DEFAULT_BUFFER_SIZE: usize = 1024;
 const MAX_BUFFER_SIZE: usize = 10_000; // Max items per buffer
 const MAX_WINDOW_KEYS: usize = 1_000; // Max keys for windowing
 
@@ -613,7 +607,7 @@ where
         }
         let state = ReduceState {
             stream: self,
-            accs: std::collections::HashMap::new(),
+            accs: HashMap::new(),
             storage: config.create_storage_arc(),
             key_extractor: Arc::new(key_extractor),
             f,
@@ -686,7 +680,7 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        group_timeout: Option<std::time::Duration>,
+        group_timeout: Option<Duration>,
         max_group_size: Option<usize>,
         f: F
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
@@ -783,7 +777,7 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        session_timeout: std::time::Duration,
+        session_timeout: Duration,
         f: F,
     ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
@@ -795,15 +789,15 @@ where
         use std::sync::Arc;
         struct SessionStateStruct<S, F, T> {
             stream: S,
-            session_states: std::collections::HashMap<String, SessionState>,
+            session_states: HashMap<String, SessionState>,
             storage: Arc<dyn StateStorage + Send + Sync>,
             key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
             f: F,
-            session_timeout: std::time::Duration,
+            session_timeout: Duration,
         }
         let state = SessionStateStruct {
             stream: self,
-            session_states: std::collections::HashMap::new(),
+            session_states: HashMap::new(),
             storage: config.create_storage_arc(),
             key_extractor: Arc::new(key_extractor),
             f,
@@ -844,7 +838,7 @@ where
         f: F,
     ) -> impl Stream<Item = Result<Option<String>, StateError>> + Send + 'static
     where
-        F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<String>, StateError>> + Send>> + Send + Sync + 'static,
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<Option<String>, StateError>> + Send>> + Send + Sync + 'static,
         Self: Sized + Unpin,
     {
         use crate::stream::constructors::unfold;
@@ -852,7 +846,7 @@ where
         use std::sync::Arc;
         struct PatternStateStruct<S, F, T> {
             stream: S,
-            pattern_buffers: std::collections::HashMap<String, Vec<T>>,
+            pattern_buffers: HashMap<String, Vec<T>>,
             storage: Arc<dyn StateStorage + Send + Sync>,
             key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
             f: F,
@@ -860,7 +854,7 @@ where
         }
         let state = PatternStateStruct {
             stream: self,
-            pattern_buffers: std::collections::HashMap::new(),
+            pattern_buffers: HashMap::new(),
             storage: config.create_storage_arc(),
             key_extractor: Arc::new(key_extractor),
             f,
@@ -896,17 +890,16 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         other_key_extractor: impl KeyExtractor<U> + Send + Sync + 'static,
-        window_duration: std::time::Duration,
+        window_duration: Duration,
         f: F,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
-        F: FnMut(T, U, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        F: FnMut(T, U, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
         U: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + 'static,
         R: Send + Sync + 'static,
         Self: Sized + Unpin,
     {
         use crate::stream::join::StatefulJoinStream;
-        use crate::stream::core::StreamExt;
         use std::sync::Arc;
         
         let key_extractor = Arc::new(key_extractor);
@@ -935,7 +928,7 @@ where
         resource_config: ResourceConfig,
     ) -> StatefulWindow<Self, F, T, R>
     where
-        F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
         R: Send + Sync + Unpin + 'static,
         Self: Sized + Unpin,
     {
@@ -992,7 +985,7 @@ where
         f: F,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
-        F: FnMut(R, T, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        F: FnMut(R, T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
         R: Send + Sync + Clone + 'static,
         Self: Sized + Unpin,
     {
@@ -1040,11 +1033,11 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        window_duration: std::time::Duration,
+        window_duration: Duration,
         f: F,
     ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
-        F: FnMut(Vec<T>, StateAccess) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
         R: Send + Sync + 'static,
         Self: Sized + Unpin,
     {
@@ -1053,15 +1046,15 @@ where
         use std::sync::Arc;
         struct TimeWindowStateStruct<S, F, T> {
             stream: S,
-            time_windows: std::collections::HashMap<String, (Vec<T>, std::time::Instant)>,
+            time_windows: HashMap<String, (Vec<T>, std::time::Instant)>,
             storage: Arc<dyn StateStorage + Send + Sync>,
             key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
             f: F,
-            window_duration: std::time::Duration,
+            window_duration: Duration,
         }
         let state = TimeWindowStateStruct {
             stream: self,
-            time_windows: std::collections::HashMap::new(),
+            time_windows: HashMap::new(),
             storage: config.create_storage_arc(),
             key_extractor: Arc::new(key_extractor),
             f,

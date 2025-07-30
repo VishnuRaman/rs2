@@ -1,8 +1,8 @@
-use futures_util::stream::StreamExt;
 use rs2_stream::queue::*;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::time::{sleep, Duration};
+use rs2_stream::stream::core::StreamExt;
 
 fn main() {
     let rt = Runtime::new().unwrap();
@@ -28,14 +28,14 @@ fn main() {
             }
 
             // Close the queue when done
-            producer_queue.close().await;
+            producer_queue.close_immutable().await;
             println!("Producer: Done, queue closed");
         });
 
         // Spawn consumer task
         let consumer = tokio::spawn(async move {
-            // Get dequeue stream
-            let mut items = consumer_queue.dequeue();
+            // Get stream from queue
+            let mut items = consumer_queue.stream();
 
             // Process items as they arrive
             while let Some(item) = items.next().await {

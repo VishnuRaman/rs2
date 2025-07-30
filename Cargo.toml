@@ -87,13 +87,5 @@ name = "memory_usage"
 harness = false
 
 [[bench]]
-name = "ecosystem_comparison"
-harness = false
-
-[[bench]]
 name = "state_operations"
-harness = false
-
-[[bench]]
-name = "rs2_comparison"
 harness = false

@@ -1,7 +1,5 @@
-use rs2_stream::rs2::*;
 use rs2_stream::stream::from_iter;
 use serde::{Deserialize, Serialize};
-use futures_util::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
@@ -90,7 +88,7 @@ async fn api_call(user_id: u64) -> ApiResponse {
 
 // Simulate database operations
 async fn database_operation(user_id: u64) -> DatabaseRecord {
-    let start = Instant::now();
+    Instant::now();
     
     // Simulate database delay
     sleep(Duration::from_millis(20 + (user_id % 50))).await;
