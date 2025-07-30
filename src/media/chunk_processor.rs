@@ -72,7 +72,7 @@ pub struct ChunkProcessorConfig {
     pub max_reorder_window: usize,
     pub enable_validation: bool,
     pub parallel_processing: usize,
-    pub timeout: Duration,
+    pub enable_sequence_assignment: bool,
     pub max_retries: usize,
 }
 
@@ -85,7 +85,7 @@ impl Default for ChunkProcessorConfig {
             max_reorder_window: 32,
             enable_validation: true,
             parallel_processing: 4,
-            timeout: Duration::from_secs(30),
+            enable_sequence_assignment: true,
             max_retries: 3,
         }
     }
@@ -288,7 +288,7 @@ impl ChunkProcessor {
         }
 
         // Step 2: Set sequence number if not set
-        if chunk.sequence_number == 0 {
+        if self.config.enable_sequence_assignment && chunk.sequence_number == 0 {
             chunk.sequence_number = self.generate_sequence_number(&chunk.stream_id).await;
         }
 

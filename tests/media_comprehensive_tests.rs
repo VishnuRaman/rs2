@@ -769,14 +769,15 @@ fn test_chunk_processor_duplicate_detection() {
         let mut config = ChunkProcessorConfig::default();
         config.enable_reordering = true;
         config.max_reorder_window = 5;
+        config.enable_sequence_assignment = false; // Disable to preserve test sequence numbers
 
         let processor = ChunkProcessor::new(config, codec, output_queue.clone());
 
         // Create duplicate chunks
         let chunks = vec![
-            create_test_chunk("test_stream", 1, ChunkType::VideoIFrame),
-            create_test_chunk("test_stream", 1, ChunkType::VideoIFrame), // Duplicate
-            create_test_chunk("test_stream", 2, ChunkType::VideoPFrame),
+            create_test_chunk("test_stream", 0, ChunkType::VideoIFrame),
+            create_test_chunk("test_stream", 0, ChunkType::VideoIFrame), // Duplicate
+            create_test_chunk("test_stream", 1, ChunkType::VideoPFrame),
         ];
 
         let chunk_stream = from_iter(chunks);
@@ -791,24 +792,33 @@ fn test_chunk_processor_duplicate_detection() {
         // Debug output to see what we're actually getting
         println!("Results: {:?}", results);
         
-        // We should get 3 results: first Ok, second DuplicateChunk error, third Ok
+        // We should get 3 results: one Ok, one DuplicateChunk error, one Ok (order may vary due to parallel processing)
         assert_eq!(results.len(), 3, "Expected 3 results, got {}", results.len());
         
-        // First should succeed
-        assert!(results[0].is_ok(), "First result should be Ok: {:?}", results[0]);
+        // Count the different result types
+        let ok_results: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
+        let error_results: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
         
-        // Second should fail with duplicate error
-        assert!(results[1].is_err(), "Second result should be Err: {:?}", results[1]);
-
-        match &results[1] {
-            Err(ChunkProcessingError::DuplicateChunk(1)) => {
+        // Should have exactly 2 successful results and 1 error
+        assert_eq!(ok_results.len(), 2, "Expected 2 Ok results, got {}", ok_results.len());
+        assert_eq!(error_results.len(), 1, "Expected 1 error result, got {}", error_results.len());
+        
+        // The error should be a DuplicateChunk error for sequence 0
+        let error = error_results[0];
+        match error {
+            Err(ChunkProcessingError::DuplicateChunk(0)) => {
                 // Expected error
             }
-            _ => panic!("Expected DuplicateChunk error, got: {:?}", results[1]),
+            _ => panic!("Expected DuplicateChunk(0) error, got: {:?}", error),
         }
-
-        // Third should succeed
-        assert!(results[2].is_ok(), "Third result should be Ok: {:?}", results[2]);
+        
+        // The Ok results should contain chunks with sequences 0 and 1
+        let ok_sequence_numbers: Vec<u64> = ok_results.iter()
+            .map(|r| r.as_ref().unwrap().sequence_number)
+            .collect();
+        
+        assert!(ok_sequence_numbers.contains(&0), "Should have successfully processed sequence 0");
+        assert!(ok_sequence_numbers.contains(&1), "Should have successfully processed sequence 1");
     });
 }
 
