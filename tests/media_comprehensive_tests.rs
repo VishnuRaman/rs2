@@ -16,6 +16,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use serial_test::serial;
+use rs2_stream::media::types::*;
 
 // ============================================================================
 // Types Tests
@@ -707,9 +709,9 @@ fn test_chunk_processor_reordering() {
 
         // Create chunks out of order to simulate real-world conditions
         let chunks = vec![
-            create_test_chunk("test_stream", 2, ChunkType::VideoPFrame),
-            create_test_chunk("test_stream", 0, ChunkType::VideoIFrame),
-            create_test_chunk("test_stream", 1, ChunkType::VideoPFrame),
+            create_test_chunk("reordering_test_stream", 2, ChunkType::VideoPFrame),
+            create_test_chunk("reordering_test_stream", 0, ChunkType::VideoIFrame),
+            create_test_chunk("reordering_test_stream", 1, ChunkType::VideoPFrame),
         ];
 
         let chunk_stream = from_iter(chunks);
@@ -775,9 +777,9 @@ fn test_chunk_processor_duplicate_detection() {
 
         // Create duplicate chunks
         let chunks = vec![
-            create_test_chunk("test_stream", 0, ChunkType::VideoIFrame),
-            create_test_chunk("test_stream", 0, ChunkType::VideoIFrame), // Duplicate
-            create_test_chunk("test_stream", 1, ChunkType::VideoPFrame),
+            create_test_chunk("duplicate_detection_test_stream", 0, ChunkType::VideoIFrame),
+            create_test_chunk("duplicate_detection_test_stream", 0, ChunkType::VideoIFrame), // Duplicate
+            create_test_chunk("duplicate_detection_test_stream", 1, ChunkType::VideoPFrame),
         ];
 
         let chunk_stream = from_iter(chunks);
@@ -823,6 +825,7 @@ fn test_chunk_processor_duplicate_detection() {
 }
 
 #[test]
+#[serial]
 fn test_chunk_processor_buffer_overflow() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
@@ -833,15 +836,16 @@ fn test_chunk_processor_buffer_overflow() {
         config.enable_reordering = true;
         config.max_buffer_size = 2; // Very small buffer
         config.max_reorder_window = 5; // Large enough window to allow chunks 1,2,3
+        config.parallel_processing = 1; // Use sequential processing for deterministic behavior
 
         let processor = ChunkProcessor::new(config, codec, output_queue.clone());
 
         // Insert out-of-order chunks within the allowed window to fill the buffer and cause overflow
         let chunks = vec![
-            create_test_chunk("test_stream", 0, ChunkType::VideoIFrame), // First chunk (expected sequence)
-            create_test_chunk("test_stream", 2, ChunkType::VideoPFrame), // Out of order, buffer: [2]
-            create_test_chunk("test_stream", 3, ChunkType::VideoPFrame), // Out of order, buffer: [2,3]
-            create_test_chunk("test_stream", 4, ChunkType::VideoPFrame), // Out of order, should overflow
+            create_test_chunk("buffer_overflow_test_stream", 0, ChunkType::VideoIFrame), // First chunk (expected sequence)
+            create_test_chunk("buffer_overflow_test_stream", 2, ChunkType::VideoPFrame), // Out of order, buffer: [2]
+            create_test_chunk("buffer_overflow_test_stream", 3, ChunkType::VideoPFrame), // Out of order, buffer: [2,3]
+            create_test_chunk("buffer_overflow_test_stream", 4, ChunkType::VideoPFrame), // Out of order, should overflow
         ];
 
         let chunk_stream = from_iter(chunks);
@@ -854,31 +858,32 @@ fn test_chunk_processor_buffer_overflow() {
                 .expect("Test timed out - buffer overflow test may be hanging");
 
         // First three should succeed, fourth should fail with buffer overflow
+        // Note: With max_buffer_size=2, the overflow happens on the fourth chunk
         println!("Results: {:?}", results);
         assert!(
             results[0].is_ok(),
             "First result should be Ok: {:?}",
             results[0]
         );
+        
+        // Second result should also be Ok (processed before buffer overflow)
         assert!(
             results[1].is_ok(),
             "Second result should be Ok: {:?}",
             results[1]
         );
+        
+        // Third result should also be Ok (processed before buffer overflow)
         assert!(
             results[2].is_ok(),
             "Third result should be Ok: {:?}",
             results[2]
         );
-        assert!(
-            results[3].is_err(),
-            "Fourth result should be Err: {:?}",
-            results[3]
-        );
-
+        
+        // Fourth result is now the buffer overflow due to small buffer size
         match &results[3] {
             Err(ChunkProcessingError::BufferOverflow) => {
-                // Expected error
+                // Expected error - buffer overflow happens when trying to add sequence 4
             }
             _ => panic!("Expected BufferOverflow error, got: {:?}", results[3]),
         }
@@ -895,13 +900,14 @@ fn test_chunk_processor_sequence_gap_detection() {
         let mut config = ChunkProcessorConfig::default();
         config.enable_reordering = true;
         config.max_reorder_window = 3; // Small window to force sequence gap
+        config.parallel_processing = 1; // Use sequential processing for deterministic behavior
 
         let processor = ChunkProcessor::new(config, codec, output_queue.clone());
 
         // Create chunks with a large sequence gap
         let chunks = vec![
-            create_test_chunk("test_stream", 0, ChunkType::VideoIFrame), // First chunk
-            create_test_chunk("test_stream", 5, ChunkType::VideoPFrame), // Large gap
+            create_test_chunk("sequence_gap_test_stream", 0, ChunkType::VideoIFrame), // First chunk
+            create_test_chunk("sequence_gap_test_stream", 5, ChunkType::VideoPFrame), // Large gap
         ];
 
         let chunk_stream = from_iter(chunks);

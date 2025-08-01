@@ -2,6 +2,7 @@ use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::state::{CustomKeyExtractor, StateConfig, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use rs2_stream::from_iter_rs2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Transaction {
@@ -61,7 +62,7 @@ async fn main() {
     println!("1. Simple Transaction Aggregation:");
     let custom_config = StateConfig::default();
 
-    let aggregation_stream = rs2_stream::rs2::from_iter_rs2(transactions.clone()).stateful_reduce_rs2(
+    let aggregation_stream = from_iter_rs2(transactions.clone()).stateful_reduce_rs2(
         custom_config,
         CustomKeyExtractor::new(|tx: &Transaction| tx.user_id.clone()),
         Some(UserAggregation {
@@ -122,7 +123,7 @@ async fn main() {
     println!("\n2. Real-time Analytics with Session Config:");
     let session_config = StateConfig::default();
 
-    let analytics_stream = rs2_stream::rs2::from_iter_rs2(transactions.clone()).stateful_reduce_rs2(
+    let analytics_stream = from_iter_rs2(transactions.clone()).stateful_reduce_rs2(
         session_config,
         CustomKeyExtractor::new(|tx: &Transaction| "global_analytics".to_string()),
         Some(HashMap::<String, f64>::new()),

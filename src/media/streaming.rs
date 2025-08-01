@@ -123,6 +123,14 @@ impl MediaStreamingService {
                         let config = stream_config.clone();
                         async move {
                             let chunk = create_live_chunk_static(&config, sequence);
+                            
+                            // Update metrics when chunk is created
+                            {
+                                let mut m = metrics.lock().await;
+                                m.items_processed += 1;
+                                m.bytes_processed += chunk.data.len() as u64;
+                            }
+                            
                             if let Err(_) = queue.try_enqueue(chunk.clone()).await {
                                 let mut m = metrics.lock().await;
                                 m.errors += 1;
@@ -227,7 +235,13 @@ impl MediaStreamingService {
     }
 
     pub fn get_metrics_stream(&self) -> impl Stream<Item = StreamMetrics> + Send + 'static {
-        crate::stream::constructors::empty()
+        let metrics = Arc::clone(&self.metrics);
+        rs2::tick(Duration::from_millis(100), ()).par_eval_map_rs2(1, move |_| {
+            let metrics = Arc::clone(&metrics);
+            async move {
+                metrics.lock().await.clone()
+            }
+        })
     }
 
     pub async fn shutdown(&self) {

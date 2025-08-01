@@ -627,6 +627,7 @@ pub trait SpecializedStreamExt: Stream + Sized {
             step,
             buffer: Vec::new(),
             done: false,
+            position: 0, // Initialize position
         }
     }
 }
@@ -644,6 +645,7 @@ pin_project! {
         pub(crate) step: usize,
         pub(crate) buffer: Vec<S::Item>,
         pub(crate) done: bool,
+        pub(crate) position: usize, // Track current position in stream
     }
 }
 
@@ -659,7 +661,8 @@ where
         if *this.done {
             return Poll::Ready(None);
         }
-        // Fill buffer until we have enough items
+        
+        // Fill buffer until we have enough items for a window
         while this.buffer.len() < *this.size {
             match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
@@ -679,16 +682,33 @@ where
                 Poll::Pending => return Poll::Pending,
             }
         }
+        
         // We have a full window, emit it
         let window = this.buffer.clone();
-        // Remove items based on step
+        
+        // For non-overlapping windows, we need to skip step items from the stream
+        // For overlapping windows, we remove step items from the buffer
         if *this.step >= *this.size {
-            // Non-overlapping or gap windows: remove all items
+            // Non-overlapping: clear buffer and skip step - size items from stream
             this.buffer.clear();
+            let skip_count = *this.step - *this.size;
+            for _ in 0..skip_count {
+                match this.stream.as_mut().poll_next(cx) {
+                    Poll::Ready(Some(_)) => {
+                        // Skip this item
+                    }
+                    Poll::Ready(None) => {
+                        *this.done = true;
+                        return Poll::Ready(Some(window));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
         } else {
-            // Overlapping windows: remove step items from the beginning
+            // Overlapping: remove step items from buffer
             this.buffer.drain(0..*this.step);
         }
+        
         Poll::Ready(Some(window))
     }
 } 
