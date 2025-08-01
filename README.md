@@ -54,21 +54,40 @@ cargo run --example real_time_analytics_pipeline
 
 # RS2 Performance Benchmarks
 
-*Based on Criterion.rs benchmarks on test hardware*
+*Based on Criterion.rs benchmarks on test hardware - Updated with actual measured performance*
 
 ## Basic Operations Performance
 
 | **Operation** | **1K Items** | **10K Items** | **100K Items** | **1M Items** | **Throughput (1K)** |
 |---------------|--------------|---------------|----------------|--------------|-------------------|
-| **Map/Filter** | 4.05-4.15 µs | 38.73-38.75 µs | 393.94-394.84 µs | 4.04-4.07 ms | ~247K items/sec |
-| **Fold** | 2.69-2.70 µs | 26.81-26.90 µs | 269.63-270.28 µs | 2.68-2.69 ms | ~357K items/sec |
-| **Chunk Process** | 4.21-4.97 µs | 34.44-34.55 µs | 345.44-345.64 µs | 3.60-3.96 ms | ~260K items/sec |
+| **Map/Filter** | 1.42-1.44 µs | 12.56-12.68 µs | 128.13-129.98 µs | 1.335-1.351 ms | ~714K items/sec |
+| **Fold** | 3.67-3.72 µs | 35.49-35.52 µs | 358.07-365.89 µs | 3.726-3.793 ms | ~273K items/sec |
+| **Chunk Process** | 2.82-2.88 µs | 27.57-27.73 µs | 271.05-273.48 µs | 2.687-2.726 ms | ~357K items/sec |
+| **Take/Skip** | 1.10-1.12 µs | 9.26-9.37 µs | 100.54-101.72 µs | - | ~909K items/sec |
+| **Flat Map** | 1.97-1.99 µs | 18.13-18.36 µs | 201.03-204.24 µs | - | ~508K items/sec |
 
 ## Async Operations Performance
 
 | **Operation** | **1K Items** | **10K Items** | **50K Items** | **Throughput (1K)** |
 |---------------|--------------|---------------|---------------|-------------------|
-| **Eval Map** | 20.08-20.13 µs | 201.35-201.94 µs | 1.01-1.02 ms | ~50K items/sec |
+| **Eval Map** | 15.07-15.14 µs | 147.94-148.94 µs | 748.33-750.44 µs | ~66K items/sec |
+| **Filter Map Async** | 29.89-30.31 µs | 294.91-296.13 µs | 1.502-1.506 ms | ~33K items/sec |
+
+## Aggregation Operations Performance
+
+| **Operation** | **1K Items** | **10K Items** | **100K Items** | **Throughput (1K)** |
+|---------------|--------------|---------------|----------------|-------------------|
+| **Count** | 1.17-1.18 µs | 9.54-9.75 µs | 101.55-109.27 µs | ~857K items/sec |
+| **Reduce** | 3.64-3.66 µs | 35.44-35.64 µs | 366.34-369.57 µs | ~274K items/sec |
+| **Find** | 2.06-2.11 µs | 19.39-19.51 µs | - | ~485K items/sec |
+| **Any/All** | 4.29-4.33 µs | 39.95-40.08 µs | - | ~233K items/sec |
+
+## Composition Operations Performance
+
+| **Operation** | **1K Items** | **10K Items** | **50K Items** | **Throughput (1K)** |
+|---------------|--------------|---------------|---------------|-------------------|
+| **Zip** | 2.23-2.25 µs | 20.28-20.35 µs | 110.78-112.46 µs | ~444K items/sec |
+| **Merge** | 2.06-2.08 µs | 18.63-18.77 µs | - | ~485K items/sec |
 
 ## Parallel Processing Performance
 
