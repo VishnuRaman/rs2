@@ -1,6 +1,7 @@
 //! Extension traits for streams
 
 use crate::rs2::{self, BackpressureConfig};
+use crate::stream::constructors::from_iter;
 use crate::stream::constructors::ConstructorStreamExt;
 use crate::stream::{
     AdvancedStreamExt, SelectStreamExt, SpecializedStreamExt, Stream, StreamExt, UtilityStreamExt,
@@ -375,12 +376,18 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         f: F,
     ) -> impl Stream<Item = U> + Send + 'static
     where
-        F: Fn(Self::Item) -> Fut + Send + 'static + Unpin,
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
         Fut: Future<Output = U> + Send + 'static,
         U: Send + 'static + Unpin,
-        Self::Item: Send + 'static,
+        Self::Item: Send + 'static + Unpin,
+        Self: Send + 'static,
     {
-        rs2::par_eval_map(self, concurrency, f)
+        use crate::stream::parallel::ParallelStreamExt;
+        let boxed_f = move |item: Self::Item| {
+            let fut = f(item);
+            Box::pin(fut) as std::pin::Pin<Box<dyn std::future::Future<Output = U> + Send + 'static>>
+        };
+        ParallelStreamExt::par_eval_map(self, concurrency, boxed_f)
     }
 
     /// Apply backpressure with default configuration
@@ -572,12 +579,18 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         f: F,
     ) -> impl Stream<Item = U> + Send + 'static
     where
-        F: Fn(Self::Item) -> Fut + Send + 'static + Unpin,
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
         Fut: Future<Output = U> + Send + 'static,
         U: Send + 'static + Unpin,
-        Self::Item: Send + 'static,
+        Self::Item: Send + 'static + Unpin,
+        Self: Send + 'static,
     {
-        rs2::par_eval_map_unordered(self, concurrency, f)
+        use crate::stream::parallel::ParallelStreamExt;
+        let boxed_f = move |item: Self::Item| {
+            let fut = f(item);
+            Box::pin(fut) as std::pin::Pin<Box<dyn std::future::Future<Output = U> + Send + 'static>>
+        };
+        ParallelStreamExt::par_eval_map_unordered(self, concurrency, boxed_f)
     }
 
     /// Join parallel streams with concurrency control
@@ -586,10 +599,17 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         concurrency: usize,
     ) -> impl Stream<Item = <Self::Item as Stream>::Item> + Send + 'static
     where
-        Self::Item: Stream + Send + 'static,
+        Self::Item: Stream + Send + 'static + Unpin,
         <Self::Item as Stream>::Item: Send + 'static + Unpin,
+        Self: Send + 'static,
     {
-        rs2::par_join(self, concurrency)
+        // Use par_eval_map_rs2 to process streams with the given concurrency
+        self.par_eval_map_rs2(concurrency, |stream| async move {
+            // Collect all items from the stream
+            let items: Vec<_> = stream.collect().await;
+            items
+        })
+        .flat_map_rs2(|items| from_iter(items))
     }
 
     /// Apply backpressure with drop oldest strategy
@@ -759,7 +779,7 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     {
         use crate::stream::parallel::ParallelStreamExt;
         let concurrency = num_cpus::get();
-        self.par_eval_map(concurrency, move |x| {
+        self.par_eval_map_rs2(concurrency, move |x| {
             let f = f.clone();
             async move { f(x) }
         })
@@ -777,7 +797,7 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         O: Send + 'static + Unpin,
     {
         use crate::stream::parallel::ParallelStreamExt;
-        self.par_eval_map(concurrency, move |x| {
+        self.par_eval_map_rs2(concurrency, move |x| {
             let f = f.clone();
             async move { f(x) }
         })

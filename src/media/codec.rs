@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
 use std::sync::Arc;
-use crate::rs2::{self, par_eval_map, auto_backpressure_block};
+use crate::rs2::{self, auto_backpressure_block};
 use crate::rs2_stream_ext::RS2StreamExt;
 use crate::media::types::MediaChunk;
 
@@ -134,7 +134,7 @@ impl MediaCodec {
             high_watermark: Some(80),
             low_watermark: Some(20),
         };
-        par_eval_map(raw_data_stream, 4, move |raw_data| {
+                  eval_map(raw_data_stream, move |raw_data| {
             let codec = self_clone.clone();
             // Try to extract stream_id from metadata, else fallback
             let stream_id = raw_data

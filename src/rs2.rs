@@ -744,17 +744,17 @@ where
 }
 
 /// Parallel map with concurrency control - Preserves order
-pub fn par_eval_map<S, I, O, Fut, F>(s: S, concurrency: usize, f: F) -> impl Stream<Item = O> + Send + 'static
-where
-    S: Stream<Item = I> + Send + 'static,
-    F: FnMut(I) -> Fut + Send + 'static + Unpin,
-    Fut: Future<Output = O> + Send + 'static,
-    O: Send + 'static + Unpin,
-    I: Send + 'static,
-{
-    use crate::stream::parallel::ParallelStreamExt;
-    s.par_eval_map(concurrency, f)
-}
+// pub fn par_eval_map<S, I, O, Fut, F>(s: S, concurrency: usize, f: F) -> impl Stream<Item = O> + Send + 'static
+// where
+//     S: Stream<Item = I> + Send + 'static,
+//     F: FnMut(I) -> Fut + Send + 'static + Unpin,
+//     Fut: Future<Output = O> + Send + 'static,
+//     O: Send + 'static + Unpin,
+//     I: Send + 'static,
+// {
+//     use crate::stream::parallel::ParallelStreamExt;
+//     s.par_eval_map_rs2(concurrency, f)
+// }
 
 pub fn bracket<A, O, St, FAcq, FUse, FRel, R>(
     acquire: FAcq,
@@ -931,30 +931,30 @@ impl<T> CollectExt for T where T: Stream + Send + 'static {}
 // ================================
 
 /// Parallel map with concurrency control, unordered output
-pub fn par_eval_map_unordered<S, I, O, Fut, F>(s: S, concurrency: usize, f: F) -> impl Stream<Item = O> + Send + 'static
-where
-    S: Stream<Item = I> + Send + 'static,
-    F: FnMut(I) -> Fut + Send + 'static + Unpin,
-    Fut: Future<Output = O> + Send + 'static,
-    O: Send + 'static + Unpin,
-    I: Send + 'static,
-{
-    use crate::stream::parallel::ParallelStreamExt;
-    s.par_eval_map_unordered(concurrency, f)
-}
+// pub fn par_eval_map_unordered<S, I, O, Fut, F>(s: S, concurrency: usize, f: F) -> impl Stream<Item = O> + Send + 'static
+// where
+//     S: Stream<Item = I> + Send + 'static,
+//     F: FnMut(I) -> Fut + Send + 'static + Unpin,
+//     Fut: Future<Output = O> + Send + 'static,
+//     O: Send + 'static + Unpin,
+//     I: Send + 'static,
+// {
+//     use crate::stream::parallel::ParallelStreamExt;
+//     s.par_eval_map_unordered_rs2(concurrency, f)
+// }
 
 /// Parallel join - Process multiple streams concurrently
-pub fn par_join<O, S>(
-    streams: impl Stream<Item = S> + Send + 'static,
-    concurrency: usize,
-) -> impl Stream<Item = O> + Send + 'static
-where
-    S: Stream<Item = O> + Send + 'static,
-    O: Send + 'static + Unpin,
-{
-    use crate::stream::parallel::ParallelStreamExt;
-    streams.par_join(concurrency)
-}
+// pub fn par_join<O, S>(
+//     streams: impl Stream<Item = S> + Send + 'static,
+//     concurrency: usize,
+// ) -> impl Stream<Item = O> + Send + 'static
+// where
+//     S: Stream<Item = O> + Send + 'static,
+//     O: Send + 'static + Unpin,
+// {
+//     use crate::stream::parallel::ParallelStreamExt;
+//     streams.par_join_rs2(concurrency)
+// }
 
 /// Prefetch items for better performance - Using existing stream primitives
 pub fn prefetch<S, O>(s: S, prefetch_count: usize) -> impl Stream<Item = O> + Send + 'static

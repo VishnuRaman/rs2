@@ -1,20 +1,20 @@
 # RS2: Rust Streaming Library
 
-**RS2** is a high-performance, async streaming library for Rust that combines the ergonomics of reactive streams with reliability features. Built for applications that demand both developer productivity and operational excellence.
+**RS2** is a streaming library for Rust that provides async stream processing with built-in state management, backpressure control, and parallel processing capabilities. It's designed for applications that need reliable stream processing with minimal external dependencies.
 
-**RS2 is also a stateful streaming library** with built-in state management capabilities, enabling complex stateful operations like session tracking, deduplication, windowing, and real-time analytics without external dependencies.
+**RS2 includes stateful streaming capabilities** with integrated state management for operations like session tracking, deduplication, windowing, and real-time analytics. The state management is handled internally with configurable storage backends.
 
-## 🚀 Why RS2?
+## Why RS2?
 
-**Scaling Performance**: While RS2 has modest sequential overhead (1.6x vs futures-rs, comparable to tokio-stream), it delivers parallel performance with **near-linear scaling up to 16+ cores** and **7.8-8.5x speedup** for I/O-bound workloads.
+**Parallel Processing**: RS2 provides parallel stream processing with near-linear scaling up to 16+ cores. For I/O-bound workloads, it achieves 7.8-8.5x speedup compared to sequential processing.
 
-**Reliability**: Unlike basic streaming libraries, RS2 includes built-in **automatic backpressure**, **retry policies with exponential backoff**, **circuit breakers**, **timeout handling**, and **resource management** - eliminating the need to manually implement these critical patterns.
+**Built-in Reliability Features**: RS2 includes automatic backpressure, retry policies with exponential backoff, circuit breakers, timeout handling, and resource management. These features eliminate the need to manually implement these patterns.
 
-**Stateful Stream Processing**: RS2 provides **built-in state management** with support for stateful operations like deduplication, windowing, session tracking, and real-time analytics. No external state stores required - everything is handled internally with configurable storage backends.
+**Stateful Stream Processing**: RS2 provides integrated state management for stateful operations like deduplication, windowing, session tracking, and real-time analytics. No external state stores required - everything is handled internally with configurable storage backends.
 
-**Effortless Parallelization**: Transform any sequential stream into parallel processing with a single method call. RS2's `par_eval_map_rs2()` automatically handles concurrency, ordering, and error propagation.
+**Parallelization**: Transform sequential streams into parallel processing with a single method call. RS2's `par_eval_map_rs2()` handles concurrency, ordering, and error propagation automatically.
 
-**External streaming frameworks Integration**: First-class connector system for Kafka, and custom systems with health checks, metrics, and automatic retry logic built-in.
+**External System Integration**: Connector system for Kafka and custom systems with health checks, metrics, and automatic retry logic built-in.
 
 ## 🎯 Quick Start Examples
 
@@ -52,7 +52,350 @@ cargo run --example real_time_analytics_pipeline
 
 **These examples demonstrate RS2's capabilities - from basic parallel processing to complex stateful analytics pipelines. Understanding how to build streaming applications!**
 
-# RS2 Performance Benchmarks
+## 📚 API Reference
+
+### Core Stream Constructors (`rs2` module)
+
+#### Basic Constructors
+- `emit(item)` - Emit a single element
+- `empty_rs2()` - Create an empty stream
+- `from_iter_rs2(iter)` - Create stream from iterator
+- `eval(fut)` - Evaluate a Future and emit its output
+- `repeat_rs2(item)` - Repeat an item infinitely
+- `emit_after(item, duration)` - Emit item after delay
+- `unfold_rs2(init, f)` - Create stream from state and function
+- `once_stream(item)` - Emit single item
+- `repeat_stream(item)` - Repeat item infinitely
+- `from_iter_stream(iter)` - Create from iterator
+- `pending_stream()` - Never emits items
+- `repeat_with_stream(f)` - Repeat using function
+- `once_with_stream(f)` - Emit once using function
+- `unfold_stream(init, f)` - Unfold with async function
+
+#### Advanced Constructors
+- `group_adjacent_by(stream, key_fn)` - Group adjacent items by key
+- `take(stream, n)` - Take first n items
+- `drop(stream, n)` - Drop first n items
+- `chunk(stream, size)` - Chunk items into vectors
+- `timeout(stream, duration)` - Apply timeout to stream
+- `scan(stream, init, f)` - Scan with state
+- `fold(stream, init, f)` - Fold stream into single value
+- `reduce(stream, f)` - Reduce stream with function
+- `filter_map(stream, f)` - Filter and map
+- `take_while(stream, predicate)` - Take while predicate is true
+- `drop_while(stream, predicate)` - Drop while predicate is true
+- `group_by(stream, key_fn)` - Group by key function
+- `sliding_window(stream, size)` - Create sliding windows
+- `batch_process(stream, batch_size, processor)` - Process in batches
+
+#### Backpressure Constructors
+- `auto_backpressure(stream, config)` - Apply backpressure with config
+- `auto_backpressure_block(stream, config)` - Block strategy
+- `auto_backpressure_drop_oldest(stream, config)` - Drop oldest strategy
+- `auto_backpressure_drop_newest(stream, config)` - Drop newest strategy
+- `auto_backpressure_error(stream, config)` - Error strategy
+
+#### Parallel Processing
+- `eval_map(stream, f)` - Map with async function
+- `par_eval_map(stream, concurrency, f)` - Parallel map
+- `par_eval_map_unordered(stream, concurrency, f)` - Unordered parallel map
+- `par_join(streams, concurrency)` - Join parallel streams
+
+#### Composition
+- `concat(first, second)` - Concatenate streams
+- `zip_with(s1, s2, f)` - Zip with function
+- `either(s1, s2)` - Take from either stream
+- `merge(s1, s2)` - Merge streams
+- `interleave(s1, s2)` - Interleave streams
+
+#### Rate Control
+- `debounce(stream, duration)` - Debounce stream
+- `distinct_until_changed(stream)` - Remove consecutive duplicates
+- `sample(stream, interval)` - Sample at intervals
+- `sample_finite(stream, interval)` - Sample finite stream
+- `sample_every_nth(stream, n)` - Sample every nth item
+- `sample_first(stream, n)` - Sample first n items
+- `sample_auto(stream, interval)` - Auto sample
+- `throttle(stream, duration)` - Throttle stream
+- `tick(period, item)` - Emit at regular intervals
+
+#### Resource Management
+- `bracket(acquire, use_fn, release)` - Resource management
+- `bracket_case(acquire, use_fn, release)` - Resource management with error handling
+
+#### Metrics and Monitoring
+- `with_metrics(stream, name, thresholds)` - Add metrics
+- `with_metrics_config(stream, name, thresholds, config)` - Add metrics with config
+- `with_metrics_simple(stream, name, thresholds)` - Simple metrics
+
+#### Utility Functions
+- `prefetch(stream, count)` - Prefetch items
+- `distinct_until_changed_by(stream, eq)` - Custom duplicate removal
+- `rate_limit_backpressure(stream, capacity)` - Rate limiting with backpressure
+- `interrupt_when(stream, signal)` - Interrupt on signal
+
+### Stream Extension Methods (`RS2StreamExt` trait)
+
+#### Basic Transformations
+- `map_rs2(f)` - Map over stream items
+- `filter_rs2(f)` - Filter stream items
+- `take_rs2(n)` - Take n items
+- `skip_rs2(n)` - Skip n items
+- `drop_rs2(n)` - Drop n items (alias for skip)
+- `chain_rs2(other)` - Chain with another stream
+- `zip_rs2(other)` - Zip with another stream
+- `merge_rs2(other)` - Merge with another stream
+
+#### Collection and Aggregation
+- `collect_rs2()` - Collect into vector
+- `collect_with_config_rs2(config)` - Collect with buffer config
+- `fold_rs2(init, f)` - Fold stream
+- `reduce_rs2(f)` - Reduce stream
+- `count_rs2()` - Count items
+- `first_rs2()` - Get first item
+- `last_rs2()` - Get last item
+- `find_rs2(predicate)` - Find item matching predicate
+- `any_rs2(predicate)` - Check if any item matches
+- `all_rs2(predicate)` - Check if all items match
+- `nth_rs2(n)` - Get nth item
+- `position_rs2(predicate)` - Get position of matching item
+
+#### Chunking and Windowing
+- `chunks_rs2(size)` - Chunk items into vectors
+- `sliding_window_with_step_rs2(size, step)` - Sliding window with step
+- `chunk_rs2(size)` - Chunk items
+- `sliding_window_rs2(size)` - Sliding window
+
+#### Inspection and Debugging
+- `enumerate_rs2()` - Enumerate items
+- `inspect_rs2(f)` - Inspect items without modifying
+- `peekable_rs2()` - Make stream peekable
+
+#### Conditional Processing
+- `skip_while_rs2(predicate)` - Skip while predicate is true
+- `drop_while_rs2(predicate)` - Drop while predicate is true
+- `take_while_rs2(predicate)` - Take while predicate is true
+
+#### Advanced Transformations
+- `scan_rs2(init, f)` - Scan with state
+- `flat_map_rs2(f)` - Flat map over stream
+- `eval_map_rs2(f)` - Map with async function
+- `flatten_rs2()` - Flatten nested streams
+- `filter_map_rs2(f)` - Filter and map
+- `filter_map_async_rs2(f)` - Filter and map with async function
+
+#### Parallel Processing
+- `par_eval_map_rs2(concurrency, f)` - Parallel map
+- `par_eval_map_unordered_rs2(concurrency, f)` - Unordered parallel map
+- `par_join_rs2(concurrency)` - Join parallel streams
+- `map_parallel_rs2(f)` - CPU-bound parallel map
+- `map_parallel_with_concurrency_rs2(concurrency, f)` - Parallel map with concurrency
+
+#### Backpressure Control
+- `auto_backpressure_rs2()` - Apply backpressure with default config
+- `auto_backpressure_with_rs2(config)` - Apply backpressure with custom config
+- `auto_backpressure_drop_oldest_rs2(config)` - Drop oldest strategy
+- `auto_backpressure_drop_newest_rs2(config)` - Drop newest strategy
+- `auto_backpressure_error_rs2(config)` - Error strategy
+
+#### Rate Control
+- `throttle_rs2(duration)` - Throttle stream
+- `debounce_rs2(duration)` - Debounce stream
+- `sample_rs2(interval)` - Sample at intervals
+- `sample_every_nth_rs2(n)` - Sample every nth item
+
+#### Composition
+- `zip_with_rs2(other, f)` - Zip with function
+- `group_by_rs2(key_fn)` - Group by key function
+- `group_adjacent_by_rs2(key_fn)` - Group adjacent items
+- `concat_rs2(other)` - Concatenate streams
+- `either_rs2(other)` - Take from either stream
+- `interleave_rs2(streams)` - Interleave multiple streams
+
+#### Deduplication
+- `distinct_until_changed_rs2()` - Remove consecutive duplicates
+- `distinct_until_changed_by_rs2(eq)` - Custom duplicate removal
+
+#### Utility
+- `tick_rs2(period)` - Emit at regular intervals
+- `prefetch_rs2(count)` - Prefetch items
+- `timeout_rs2(duration)` - Apply timeout
+- `rate_limit_backpressure_rs2(capacity)` - Rate limiting
+- `interrupt_when_rs2(signal)` - Interrupt on signal
+- `batch_process_rs2(batch_size, processor)` - Process in batches
+
+#### Metrics and Validation
+- `with_metrics_rs2(name, thresholds)` - Add metrics
+- `with_metrics_config_rs2(name, thresholds, config)` - Add metrics with config
+- `with_metrics_simple_rs2()` - Simple metrics
+- `with_schema_validation_rs2(validator)` - Schema validation
+- `bracket_rs2(acquire, use_fn, release)` - Resource management
+
+### Result Stream Methods (`RS2ResultStreamExt` trait)
+
+#### Basic Transformations
+- `map_ok(f)` - Map over successful values
+- `map_err(f)` - Map over error values
+- `ok_values()` - Filter out errors, keep successes
+- `err_values()` - Filter out successes, keep errors
+
+#### Collection Methods
+- `collect_ok()` - Collect successful values
+- `collect_err()` - Collect error values
+- `partition_results()` - Partition successes and errors
+- `count_results()` - Count successes and errors
+
+#### Error Handling
+- `retry()` - Retry failed operations (default 3 retries)
+- `retry_with_delay(max_retries, delay)` - Retry with delay
+- `retry_with_policy(policy)` - Retry with custom policy
+- `retry_with_policy_rs2(policy, factory)` - Retry with policy and factory
+- `handle_errors(handler)` - Handle errors with function
+- `log_errors()` - Log errors and continue
+- `ignore_errors()` - Ignore errors and continue
+- `map_err_into()` - Transform error types
+- `bimap(success_fn, error_fn)` - Map both success and error cases
+- `unwrap_results()` - Unwrap results with default on error
+- `unwrap_or_default()` - Unwrap with default on error
+- `unwrap_or_else(fallback)` - Unwrap with fallback on error
+
+#### Recovery Methods
+- `recover_rs2(f)` - Recover from errors with async function
+- `on_error_resume_next_rs2(f)` - Switch to alternative stream on error
+- `or_else_rs2(f)` - Use fallback value on error
+
+#### Aggregation Methods
+- `all_ok()` - Check if all values are successful
+- `any_ok()` - Check if any values are successful
+- `find_ok(predicate)` - Find first successful value
+- `find_err(predicate)` - Find first error value
+- `reduce_ok(f)` - Reduce successful values
+- `fold_ok(init, f)` - Fold successful values
+- `sum_ok()` - Sum successful values
+- `product_ok()` - Product of successful values
+- `max_ok()` - Maximum successful value
+- `min_ok()` - Minimum successful value
+- `max_by_key_ok(f)` - Maximum by key function
+- `min_by_key_ok(f)` - Minimum by key function
+
+### Configuration Types
+
+#### BackpressureConfig
+```rust
+pub struct BackpressureConfig {
+    pub strategy: BackpressureStrategy,
+    pub buffer_size: usize,
+    pub low_watermark: Option<usize>,  // Resume at this level
+    pub high_watermark: Option<usize>, // Pause at this level
+}
+```
+
+#### BackpressureStrategy
+```rust
+pub enum BackpressureStrategy {
+    DropOldest,    // Drop oldest items when buffer is full
+    DropNewest,    // Drop newest items when buffer is full
+    Block,         // Block producer until consumer catches up
+    Error,         // Fail fast when buffer is full
+}
+```
+
+#### HealthThresholds
+```rust
+pub struct HealthThresholds {
+    pub max_latency: Duration,
+    pub max_error_rate: f64,
+    pub min_throughput: f64,
+}
+```
+
+#### MetricsConfig
+```rust
+pub struct MetricsConfig {
+    pub enabled: bool,
+    pub sample_rate: f64,
+    pub collection_interval: Duration,
+}
+```
+
+#### BufferConfig
+```rust
+pub struct BufferConfig {
+    pub initial_capacity: usize,
+    pub max_capacity: Option<usize>,
+    pub growth_strategy: GrowthStrategy,
+}
+```
+
+## 📖 Examples
+
+### Basic Stream Operations
+- [Basic Usage](examples/basic_usage.rs) - Simple stream creation and transformation
+- [Stream Creation](examples/stream_creation_basic.rs) - Different ways to create streams
+- [Async Stream Creation](examples/stream_creation_async.rs) - Creating async streams
+- [Infinite Streams](examples/stream_creation_infinite.rs) - Working with infinite streams
+
+### Transformations
+- [Basic Transformations](examples/transformations_basic.rs) - Map, filter, take, skip
+- [Async Transformations](examples/transformations_async.rs) - Async map and filter
+- [Combining Streams](examples/transformations_combining.rs) - Zip, merge, concat
+- [Grouping Operations](examples/transformations_grouping.rs) - Group by operations
+- [Slicing Operations](examples/transformations_slicing.rs) - Take while, skip while
+- [Accumulating Values](examples/accumulating_values.rs) - Fold, reduce, scan
+
+### Advanced Features
+- [Parallel Processing](examples/parallel_processing_comprehensive.rs) - Parallel stream processing
+- [State Management](examples/state_management_example.rs) - Stateful stream operations
+- [Real-Time Analytics](examples/real_time_analytics_pipeline.rs) - Complex analytics pipeline
+- [Resource Management](examples/resource_management_example.rs) - Resource cleanup patterns
+- [Custom Storage](examples/custom_storage_example.rs) - Custom state storage backends
+
+### Error Handling
+- [Error Handling](examples/error_handling_example.rs) - Result stream operations
+- [Retry Logic](examples/retry_example.rs) - Retry policies and error recovery
+
+### Performance and Monitoring
+- [Metrics Collection](examples/with_metrics_example.rs) - Performance monitoring
+- [Backpressure](examples/custom_backpressure.rs) - Custom backpressure strategies
+- [Rate Limiting](examples/rate_limit_backpressure_example.rs) - Rate limiting with backpressure
+
+### Connectors and Integration
+- [Kafka Connector](examples/connector_kafka.rs) - Kafka integration
+- [Custom Connector](examples/connector_custom.rs) - Building custom connectors
+- [Queue Operations](examples/queue_basic_usage.rs) - Queue-based processing
+
+### Specialized Operations
+- [Sliding Windows](examples/sliding_window_example.rs) - Time-based windowing
+- [Chunk Processing](examples/chunk_rs2_example.rs) - Chunk-based processing
+- [Schema Validation](examples/schema_validation_example.rs) - Data validation
+- [Custom Codecs](examples/custom_codec.rs) - Custom encoding/decoding
+
+### Stateful Operations
+- [Stateful Map](examples/stateful_map_example.rs) - Stateful mapping
+- [Stateful Filter](examples/stateful_filter_example.rs) - Stateful filtering
+- [Stateful Reduce](examples/stateful_reduce_example.rs) - Stateful reduction
+- [Stateful Deduplicate](examples/stateful_deduplicate_example.rs) - Stateful deduplication
+- [Stateful Group By](examples/stateful_group_by_example.rs) - Stateful grouping
+- [Stateful Session](examples/stateful_session_example.rs) - Session management
+- [Stateful Pattern](examples/stateful_pattern_example.rs) - Pattern detection
+- [Stateful Throttle](examples/stateful_throttle_example.rs) - Stateful rate limiting
+
+### Media Streaming
+- [Media Streaming](examples/live_streaming.rs) - Live media streaming
+- [File Streaming](examples/basic_file_streaming.rs) - File-based streaming
+- [Media Events](examples/stream_events.rs) - Media event processing
+
+### Advanced Patterns
+- [Pipe Composition](examples/pipe_composing.rs) - Composing processing pipelines
+- [User Data Processing](examples/pipe_user_data_processing.rs) - User data pipelines
+- [Batch Processing](examples/batch_process_example.rs) - Batch processing patterns
+- [Advanced Analytics](examples/advanced_analytics_example.rs) - Complex analytics
+
+### Testing and Debugging
+- [Custom Stream Test](examples/custom_stream_test.rs) - Testing custom streams
+- [Processing Elements](examples/processing_elements.rs) - Element processing patterns
+
+## 🚀 Performance Benchmarks
 
 *Based on Criterion.rs benchmarks on test hardware - Updated with actual measured performance*
 
@@ -233,50 +576,6 @@ cargo run --example real_time_analytics_pipeline
 | **Par Eval Map** | 21.59ms | 0.93x |
 | **Par Eval Map (unordered)** | 21.46ms | 0.93x |
 
-## Performance Characteristics
-
-### **Optimized Operations**
-- **Deduplication**: Fastest at ~4.7M items/sec
-- **Windowing**: High performance at ~7.6M items/sec
-- **Group By**: Efficient at ~3.1M items/sec
-
-### **Core Operations**
-- **Stateful Map/Filter**: ~1.53-1.56M items/sec
-- **Stateful Fold**: ~1.59M items/sec
-- **Join operations**: ~658K items/sec
-
-### **Resource Management**
-- **Core operations**: Optimized by removing resource tracking overhead
-- **Stateful operations**: Selective resource tracking maintains safety
-- **Storage operations**: In-memory storage optimized, custom storage maintains performance
-- **High cardinality**: Controlled degradation (22x slowdown) vs system failure
-
-### **Performance Trade-offs**
-- **Sequential operations**: Maximum performance (no resource overhead)
-- **Stateful operations**: Resource-safe where needed
-- **Overall**: Balanced performance and safety across use cases
-
-## Benchmark Methodology
-
-- **Hardware**: Test hardware specifications
-- **Tool**: Criterion.rs with 100 samples per benchmark
-- **Warmup**: 3 seconds warmup period
-- **Outliers**: Outliers detected and reported (typically 1-27% of samples)
-- **Statistical significance**: p < 0.05 for all reported improvements
-- **Resource Management**: Selective resource tracking (disabled on core operations for performance)
-
-## Performance Notes
-
-- **Resource optimization**: Core operations optimized by removing resource tracking overhead
-- **Stateful operations**: Maintain resource safety where needed with minimal performance impact
-- **Deduplication**: Most improved operation
-- **Windowing/Joins**: Resource management requirements maintained
-- **Storage**: In-memory storage optimized, custom storage maintains performance
-- **High cardinality**: Graceful degradation (22x slowdown) vs system failure
-- **Overall**: Balanced improvements across operations with controlled trade-offs where safety is needed
-
-*These benchmarks represent actual performance on the test hardware. Results may vary based on system configuration and workload characteristics.*
-
 # RS2 Stateful Operations Performance
 
 *Based on Criterion.rs benchmarks on test hardware*
@@ -320,7 +619,7 @@ cargo run --example real_time_analytics_pipeline
 
 ### **Efficient Operations**
 - **Windowing**: Fastest at ~8.4M items/sec
-- **Group By**: Efficient at ~3.2M items/sec  
+- **Group By**: Efficient at ~3.2M items/sec
 - **Deduplication**: High throughput at ~4.7M items/sec
 
 ### **Standard Operations**
@@ -342,426 +641,6 @@ cargo run --example real_time_analytics_pipeline
 - **Runs**: 100 iterations per benchmark for statistical accuracy
 - **Environment**: Standard development hardware
 
-## Performance Variability Notes
-
-Performance can vary by ±0.5-2.5% between runs, as shown in the benchmark change percentages. All measurements represent statistically significant results with outlier detection.
-
-*Benchmark results last updated: 2025-01-21 (after resource management optimizations)*
-
-RS2 is optimized for the 95% of use cases where **developer productivity**, **operational reliability**, and **parallel performance** matter more than raw sequential speed. Suitable for microservices, data pipelines, API gateways, and any application requiring stream processing.
-
-## High Cardinality Protection - Already Built-In ✅
-
-The benchmark results demonstrate that RS2 handles high cardinality gracefully:
-
-| **Cardinality Type** | **1K Items** | **10K Items** | **Actual Impact** |
-|---------------------|-------------|--------------|-------------------|
-| **Low Cardinality** | 658.31 µs | 6.49 ms | Baseline performance |
-| **High Cardinality** | 612.29 µs | 143.36 ms | **Controlled degradation** |
-
-### What This Actually Means:
-
-**✅ High Cardinality Protection Works:**
-- At **1K items**: High cardinality is actually **7% faster** (612µs vs 658µs)
-- At **10K items**: Performance degrades **predictably** rather than crashing
-- The 22x slowdown is **controlled** - the system doesn't fail or run out of memory
-
-**✅ Built-in Safeguards:**
-- **Memory bounds**: The system handles 10K unique keys without failure
-- **Graceful degradation**: Performance reduces predictably, doesn't crash
-- **No memory leaks**: System completes processing even with high cardinality
-
-### The Real Story:
-
-RS2's state management **already includes** the protection mechanisms needed:
-- **Bounded memory usage** prevents OOM
-- **Cleanup strategies** handle large key sets
-- **Predictable performance** even under stress
-
-So the benchmark actually **validates** that RS2's high cardinality protection works as designed - it gracefully handles the load while maintaining system stability.
-
-## Features
-
-- **Functional API**: Chain operations together in a fluent, functional style
-- **Backpressure Handling**: Built-in support for handling backpressure with configurable strategies
-- **Resource Management**: Safe resource acquisition and release with bracket patterns
-- **Error Handling**: Error handling with retry policies
-- **Parallel Processing**: Process stream elements in parallel with bounded concurrency
-- **Time-based Operations**: Throttling, debouncing, sampling, and timeouts
-- **Transformations**: Stream transformation operations
-- **Stateful Operations**: Built-in state management for deduplication, windowing, session tracking, and real-time analytics
-- **Media Streaming**: Media streaming with codec, chunk processing, and priority-based delivery ([documentation](MEDIA_STREAMING.md))
-
-### Stateful Stream Processing
-
-RS2 provides stateful stream processing capabilities:
-
-- **Stateful Deduplication**: Remove duplicate events based on configurable keys with automatic cleanup
-- **Sliding Windows**: Time-based and count-based windowing for real-time analytics
-- **Session Management**: Track user sessions with configurable timeouts and state persistence
-- **Stateful Group By**: Group events by key with automatic state management and cleanup
-- **Stateful Joins**: Join multiple streams with correlation state management
-- **Stateful Throttling**: Rate limiting with per-key state tracking
-- **Configurable Storage**: In-memory and custom storage backends with TTL support
-- **High Cardinality Protection**: Built-in safeguards for handling large numbers of unique keys
-
-### State Configuration
-
-RS2 provides flexible state configuration with predefined presets and custom options:
-
-```rust
-use rs2::state::{StateConfigs, StateConfigBuilder};
-
-// Predefined configurations
-let session_config = StateConfigs::session();        // 30min TTL, 5min cleanup
-let high_perf_config = StateConfigs::high_performance(); // 1hr TTL, 1min cleanup
-let short_lived_config = StateConfigs::short_lived();    // 5min TTL, 30s cleanup
-let long_lived_config = StateConfigs::long_lived();      // 7day TTL, 1hr cleanup
-
-// Custom configuration
-let custom_config = StateConfigBuilder::new()
-    .ttl(Duration::from_secs(3600))
-    .cleanup_interval(Duration::from_secs(300))
-    .max_size(50000)
-    .custom_storage(my_custom_storage)
-    .build()
-    .unwrap();
-```
-
-For comprehensive state management documentation, see [docs/state_management.md](docs/state_management.md).
-
-### Advanced Analytics
-
-RS2 provides advanced analytics capabilities for real-time data processing:
-
-- **Time-based Windowed Aggregations**: Process events in configurable time windows with watermark semantics
-- **Stream Joins with Time Windows**: Join multiple streams using time-based correlation windows
-- **Custom Time Semantics**: Configurable watermark delays and allowed lateness for out-of-order events
-- **Resource-aware Processing**: Automatic memory tracking and cleanup for large window operations
-
-#### Available Methods
-
-- `window_by_time_rs2(config, timestamp_fn)` - Create time-based windows from timestamped events
-- `join_with_time_window_rs2(other, config, timestamp_fn1, timestamp_fn2, join_fn, key_selector)` - Join streams with time windows
-
-#### Example: Advanced Analytics
-
-For examples of advanced analytics, see [examples/advanced_analytics_example.rs](examples/advanced_analytics_example.rs). This example demonstrates:
-
-- **Time-based windowed aggregations** for user behavior analysis
-- **Stream joins with time windows** for enriching events with profile data
-- **System monitoring** with real-time metrics aggregation
-- **Custom window configurations** with watermark and lateness handling
-
-```rust
-// This example demonstrates:
-// - Time-based windowed aggregations with custom time semantics
-// - Stream joins with time windows for event enrichment
-// - Real-world user behavior analysis scenarios
-// - System monitoring with time-based metrics
-// See the full code at examples/advanced_analytics_example.rs
-```
-
-## Resource Management
-
-RS2 provides **resource management** for all streaming operations. This includes:
-
-- **Memory usage tracking**: All stateful and queue operations automatically track memory allocation and deallocation, giving you accurate metrics for monitoring and alerting.
-- **Circuit breaking**: If memory usage or buffer overflows exceed configurable thresholds, RS2 can trip a circuit breaker to prevent system overload.
-- **Automatic cleanup**: Periodic and emergency cleanup routines help prevent memory leaks and keep your application healthy.
-- **Global resource manager**: Access the global resource manager via `get_global_resource_manager()` for custom tracking or metrics.
-
-### How It Works
-
-- **Stateful operations** (e.g., group by, window, join, deduplication) and **queue operations** automatically call the resource manager to track memory allocation and deallocation as items are added or removed.
-- **Backpressure and buffer overflow** events are tracked and can trigger circuit breaking if thresholds are exceeded.
-- **Custom resource management** is available for advanced use cases.
-
-#### Example: Custom Resource Tracking
-
-```rust
-use rs2_stream::resource_manager::get_global_resource_manager;
-
-let resource_manager = get_global_resource_manager();
-
-// Track allocation of a custom resource (e.g., 4096 bytes)
-resource_manager.track_memory_allocation(4096).await?;
-
-// ... use the resource ...
-
-// Track deallocation when done
-resource_manager.track_memory_deallocation(4096).await;
-```
-
-#### Configuration
-
-You can customize resource management thresholds and behavior via `ResourceConfig`:
-
-```rust
-use rs2_stream::resource_manager::ResourceConfig;
-
-let config = ResourceConfig {
-    max_memory_bytes: 512 * 1024 * 1024, // 512MB
-    max_keys: 50_000,
-    memory_threshold_percent: 75,
-    buffer_overflow_threshold: 5_000,
-    cleanup_interval: std::time::Duration::from_secs(60),
-    emergency_cleanup_threshold: 90,
-};
-```
-
-For most users, the default configuration is sufficient.
-
-#### Resource Management Examples
-
-For examples of resource management, see [examples/resource_management_example.rs](examples/resource_management_example.rs). This example demonstrates:
-
-- **Basic resource tracking** with memory usage monitoring
-- **Circuit breaking** with configurable resource limits
-- **Custom resource configuration** for different use cases
-- **Resource cleanup and monitoring** with metrics collection
-- **Global resource manager usage** across multiple operations
-
-```rust
-// This example demonstrates:
-// - Memory tracking and circuit breaking
-// - Custom resource configurations
-// - Monitoring and cleanup strategies
-// - Global resource manager patterns
-// See the full code at examples/resource_management_example.rs
-```
-
-## Installation
-
-Add RS2 to your `Cargo.toml`:
-
-```toml
-[dependencies]
-rs2-stream = "0.4.0"
-```
-
-## Basic Usage
-
-For basic usage examples, see [examples/basic_usage.rs](examples/basic_usage.rs).
-
-```rust
-// This example demonstrates basic stream creation and transformation
-// See the full code at examples/basic_usage.rs
-```
-
-## Real-World Example: Processing a Stream of Users
-
-For a more complex example that processes a stream of users, demonstrating several RS2 features, see [examples/processing_stream_of_users.rs](examples/processing_stream_of_users.rs).
-
-```rust
-// This example demonstrates:
-// - Creating streams from async functions
-// - Applying backpressure
-// - Filtering and transforming streams
-// - Grouping elements by key
-// - Parallel processing with bounded concurrency
-// - Timeout handling
-// See the full code at examples/processing_stream_of_users.rs
-```
-
-This example demonstrates:
-- Creating a stream of users
-- Applying backpressure to avoid overwhelming downstream systems
-- Filtering for active users only
-- Grouping users by role
-- Processing users in parallel with bounded concurrency
-- Adding timeouts to operations
-- Collecting results
-
-## API Overview
-
-### Stream Creation
-
-- `emit(item)` - Create a stream that emits a single element
-- `empty()` - Create an empty stream
-- `from_iter(iter)` - Create a stream from an iterator
-- `eval(future)` - Evaluate a Future and emit its output
-- `repeat(item)` - Create a stream that repeats a value
-- `emit_after(item, duration)` - Create a stream that emits a value after a delay
-- `unfold(init, f)` - Create a stream by repeatedly applying a function
-
-#### Examples
-
-##### Stream Creation with `emit`, `empty`, and `from_iter`
-
-For examples of basic stream creation, see [examples/stream_creation_basic.rs](examples/stream_creation_basic.rs).
-
-```rust
-// This example demonstrates:
-// - Creating a stream with a single element using emit()
-// - Creating an empty stream using empty()
-// - Creating a stream from an iterator using from_iter()
-// See the full code at examples/stream_creation_basic.rs
-```
-
-##### Async Stream Creation with `eval` and `emit_after`
-
-For examples of async stream creation, see [examples/stream_creation_async.rs](examples/stream_creation_async.rs).
-
-```rust
-// This example demonstrates:
-// - Creating a stream by evaluating a future using eval()
-// - Creating a stream that emits a value after a delay using emit_after()
-// See the full code at examples/stream_creation_async.rs
-```
-
-##### Infinite Stream Creation with `repeat` and `unfold`
-
-For examples of creating infinite streams, see [examples/stream_creation_infinite.rs](examples/stream_creation_infinite.rs).
-
-```rust
-// This example demonstrates:
-// - Creating an infinite stream that repeats a value using repeat()
-// - Creating an infinite stream by repeatedly applying a function using unfold()
-// See the full code at examples/stream_creation_infinite.rs
-```
-
-### Transformations
-
-- `map_rs2(f)` - Apply a function to each element
-- `filter_rs2(predicate)` - Keep only elements that satisfy the predicate
-- `flat_map_rs2(f)` - Apply a function that returns a stream to each element and flatten the results
-- `eval_map_rs2(f)` - Map elements with an async function
-- `chunk_rs2(size)` - Collect elements into chunks of the specified size
-- `take_rs2(n)` - Take the first n elements
-- `skip_rs2(n)` - Skip the first n elements
-- `distinct_rs2()` - Remove duplicate elements
-- `distinct_until_changed_rs2()` - Remove consecutive duplicate elements
-- `distinct_by_rs2(f)` - Remove duplicate elements based on a key function
-- `distinct_until_changed_by_rs2(f)` - Remove consecutive duplicate elements based on a key function
-
-#### Examples
-
-##### Basic Transformations
-
-For examples of basic transformations, see [examples/transformations_basic.rs](examples/transformations_basic.rs).
-
-```rust
-// This example demonstrates:
-// - Mapping elements using map_rs2()
-// - Filtering elements using filter_rs2()
-// - Flattening nested streams using flat_map_rs2()
-// See the full code at examples/transformations_basic.rs
-```
-
-##### Async Transformations
-
-For examples of async transformations, see [examples/transformations_async.rs](examples/transformations_async.rs).
-
-```rust
-// This example demonstrates:
-// - Mapping elements with async functions using eval_map_rs2()
-// - Filtering elements with async predicates using eval_filter_rs2()
-// See the full code at examples/transformations_async.rs
-```
-
-##### Combining Streams
-
-For examples of combining streams, see [examples/transformations_combining.rs](examples/transformations_combining.rs).
-
-```rust
-// This example demonstrates:
-// - Concatenating streams using concat_rs2()
-// - Merging streams using merge_rs2()
-// - Zipping streams using zip_rs2()
-// See the full code at examples/transformations_combining.rs
-```
-
-##### Interleaving Streams
-
-For examples of interleaving streams, see [examples/interleave_example.rs](examples/interleave_example.rs).
-
-```rust
-// This example demonstrates:
-// - Interleaving multiple streams in round-robin fashion using interleave_rs2()
-// - Interleaving streams with different lengths
-// - Interleaving streams that emit items at different rates
-// - Using interleaving for multiplexing data sources
-// See the full code at examples/interleave_example.rs
-```
-
-##### Grouping Elements
-
-For examples of grouping elements, see [examples/transformations_grouping.rs](examples/transformations_grouping.rs) and [examples/chunk_rs2_example.rs](examples/chunk_rs2_example.rs).
-
-```rust
-// This example demonstrates:
-// - Grouping elements by key using group_by_rs2()
-// - Grouping elements into chunks using chunks_rs2()
-// - Collecting elements into chunks of specified size using chunk_rs2()
-// See the full code at examples/transformations_grouping.rs and examples/chunk_rs2_example.rs
-```
-
-##### Slicing and Windowing
-
-For examples of slicing operations, see [examples/transformations_slicing.rs](examples/transformations_slicing.rs).
-
-```rust
-// This example demonstrates:
-// - Taking elements using take_rs2()
-// - Skipping elements using skip_rs2()
-// See the full code at examples/transformations_slicing.rs
-```
-
-##### Sliding Windows
-
-For examples of sliding windows, see [examples/sliding_window_example.rs](examples/sliding_window_example.rs).
-
-```rust
-// This example demonstrates:
-// - Creating sliding windows of elements using sliding_window_rs2()
-// - Using sliding windows for time series analysis
-// - Creating phrases from sliding windows of words
-// See the full code at examples/sliding_window_example.rs
-```
-
-##### Batch Processing
-
-For examples of batch processing, see [examples/batch_process_example.rs](examples/batch_process_example.rs).
-
-```rust
-// This example demonstrates:
-// - Processing elements in batches using batch_process_rs2()
-// - Transforming batches of elements
-// - Using batch processing for database operations
-// - Combining batch processing with async operations
-// See the full code at examples/batch_process_example.rs
-```
-
-### Accumulation
-
-- `fold_rs2(init, f)` - Accumulate a value over a stream
-- `scan_rs2(init, f)` - Apply a function to each element and emit intermediate accumulated values
-- `for_each_rs2(f)` - Apply a function to each element without accumulating a result
-- `collect_rs2::<B>()` - Collect all items into a collection
-
-#### Examples
-
-##### Accumulating Values with `fold_rs2` and `scan_rs2`
-
-For examples of accumulating values, see [examples/accumulating_values.rs](examples/accumulating_values.rs).
-
-```rust
-// This example demonstrates:
-// - Accumulating values using fold_rs2()
-// - Emitting intermediate accumulated values using scan_rs2()
-// - Applying a function to each element using for_each_rs2()
-// - Collecting elements into different collections using collect_rs2()
-// See the full code at examples/accumulating_values.rs
-```
-
-### Parallel Processing
-
-- `map_parallel_rs2(f)` - Transform elements in parallel using all available CPU cores (automatic concurrency)
-- `map_parallel_with_concurrency_rs2(concurrency, f)` - Transform elements in parallel with custom concurrency control
-- `par_eval_map_rs2(concurrency, f)` - Process elements in parallel with bounded concurrency, preserving order
-- `par_eval_map_unordered_rs2(concurrency, f)` - Process elements in parallel without preserving order
-- `par_join_rs2(concurrency)` - Run multiple streams concurrently and combine their outputs
 #### When to Use Each Parallel Processing Method
 
 | Method | Best For | When to Use | Avoid When |
@@ -799,519 +678,3 @@ For examples of accumulating values, see [examples/accumulating_values.rs](examp
 - **I/O-bound**: Use higher concurrency (10-100x CPU cores) to maximize throughput
 - **Database**: Match your connection pool size (typically 10-50)
 - **Network**: Balance between throughput and rate limits (typically 20-200)
-
-### Time-based Operations
-
-- `throttle_rs2(duration)` - Emit at most one element per duration
-- `debounce_rs2(duration)` - Emit an element after a quiet period
-- `sample_rs2(interval)` - Sample at regular intervals
-- `timeout_rs2(duration)` - Add timeout to operations
-- `tick_rs(period, item)` - Create a stream that emits a value at a fixed rate
-
-#### Examples
-
-##### Time-based Operations
-
-For examples of time-based operations, see [examples/timeout_operations.rs](examples/timeout_operations.rs) and [examples/tick_rs_example.rs](examples/tick_rs_example.rs).
-
-```rust
-// This example demonstrates:
-// - Adding timeouts to operations using timeout_rs2()
-// - Throttling a stream using throttle_rs2()
-// - Debouncing a stream using debounce_rs2()
-// - Sampling a stream at regular intervals using sample_rs2()
-// - Creating a delayed stream using emit_after()
-// - Creating a stream that emits values at a fixed rate using tick_rs()
-// See the full code at examples/timeout_operations.rs and examples/tick_rs_example.rs
-```
-
-##### Processing Elements in Parallel
-
-For examples of processing elements in parallel, see [examples/processing_elements.rs](examples/processing_elements.rs), and [examples/parallel_mapping.rs](examples/parallel_mapping.rs).
-
-```rust
-// This example demonstrates:
-// - Processing elements in parallel with bounded concurrency using par_eval_map_rs2()
-// - Processing elements in parallel without preserving order using par_eval_map_unordered_rs2()
-// - Running multiple streams concurrently using par_join_rs2()
-// - Transforming elements in parallel using all available CPU cores with map_parallel_rs2()
-// - Transforming elements in parallel with custom concurrency using map_parallel_with_concurrency_rs2()
-// See the full code at examples/processing_elements.rs and examples/parallel_mapping.rs
-```
-
-### Error Handling
-
-- `recover_rs2(f)` - Recover from errors by applying a function
-- `retry_with_policy_rs2(policy, f)` - Retry failed operations with a retry policy
-- `on_error_resume_next_rs2()` - Continue processing after errors
-
-### Resource Management
-
-- `bracket_rs2(acquire, use_fn, release)` - Safely acquire and release resources
-- `bracket_case(acquire, use_fn, release)` - Safely acquire and release resources with exit case semantics for streams of Result
-
-#### Examples
-
-##### Resource Management with `bracket_rs2` and `bracket_case`
-
-For examples of resource management, see [examples/resource_management_bracket.rs](examples/resource_management_bracket.rs), [examples/bracket_rs_example.rs](examples/bracket_rs_example.rs), and [examples/bracket_case_example.rs](examples/bracket_case_example.rs).
-
-```rust
-// This example demonstrates:
-// - Safely acquiring and releasing resources using bracket() function
-// - Safely acquiring and releasing resources using bracket_rs() extension method
-// - Safely acquiring and releasing resources with exit case semantics using bracket_case() extension method
-// - Ensuring resources are released even if an error occurs
-// See the full code at examples/resource_management_bracket.rs, examples/bracket_rs_example.rs, and examples/bracket_case_example.rs
-```
-
-### Backpressure
-
-- `auto_backpressure_rs2()` - Apply automatic backpressure
-- `auto_backpressure_with_rs2(config)` - Apply automatic backpressure with custom configuration
-- `rate_limit_backpressure_rs2(rate)` - Apply rate-limited backpressure
-- `rate_limit_backpressure(capacity)` - Apply back-pressure-aware rate limiting via bounded channel for streams of Result
-
-#### BackpressureConfig
-
-The `BackpressureConfig` struct allows you to customize how backpressure is handled in your streams:
-
-```rust
-pub struct BackpressureConfig {
-    pub strategy: BackpressureStrategy,
-    pub buffer_size: usize,
-    pub low_watermark: Option<usize>,  // Resume at this level
-    pub high_watermark: Option<usize>, // Pause at this level
-}
-```
-
-##### Parameters
-
-- **strategy**: Defines the behavior when the buffer reaches capacity:
-  - `BackpressureStrategy::DropOldest` - Discards the oldest items in the buffer when it's full
-  - `BackpressureStrategy::DropNewest` - Discards the newest incoming items when the buffer is full
-  - `BackpressureStrategy::Block` - Blocks the producer until the consumer catches up (default strategy)
-  - `BackpressureStrategy::Error` - Fails immediately when the buffer is full
-
-- **buffer_size**: The maximum number of items that can be held in the buffer. Default is 100 items.
-
-- **low_watermark**: The buffer level at which to resume processing after being paused. When the buffer level drops below this threshold, a paused producer can resume sending data. Optional, with a default value of 25 (25% of the default buffer size).
-
-- **high_watermark**: The buffer level at which to pause processing. When the buffer level exceeds this threshold, the producer may be paused to allow the consumer to catch up. Optional, with a default value of 75 (75% of the default buffer size).
-
-##### Default Configuration
-
-The default configuration uses:
-- `Block` strategy
-- Buffer size of 100 items
-- Low watermark of 25 items
-- High watermark of 75 items
-
-This creates a system that blocks producers when the buffer is full, pauses when it reaches 75% capacity, and resumes when it drops to 25% capacity.
-
-#### Examples
-
-##### Custom Backpressure
-
-For examples of custom backpressure, see [examples/custom_backpressure.rs](examples/custom_backpressure.rs) and [examples/rate_limit_backpressure_example.rs](examples/rate_limit_backpressure_example.rs).
-
-```rust
-// This example demonstrates:
-// - Applying automatic backpressure using auto_backpressure_rs2()
-// - Configuring custom backpressure strategies using auto_backpressure_with_rs2()
-// - Applying rate-limited backpressure using rate_limit_backpressure_rs2()
-// - Applying back-pressure-aware rate limiting to streams of Result using rate_limit_backpressure()
-// See the full code at examples/custom_backpressure.rs and examples/rate_limit_backpressure_example.rs
-```
-
-### Metrics and Monitoring
-
-RS2 provides built-in support for collecting metrics while processing streams, allowing you to monitor throughput, processing time, and other performance metrics.
-
-- `with_metrics_rs2(name)` - Collect metrics while processing the stream
-
-#### Available Metrics
-
-RS2 collects a comprehensive set of metrics to help you monitor and optimize your stream processing:
-
-| **Metric** | **Description** | **Use Case** |
-|------------|-----------------|--------------|
-| `name` | Identifier for the stream metrics | Distinguish between multiple streams |
-| `items_processed` | Total number of items processed by the stream | Track overall throughput |
-| `bytes_processed` | Total bytes processed by the stream | Monitor data volume |
-| `processing_time` | Total time spent processing items | Measure processing efficiency |
-| `errors` | Number of errors encountered during processing | Track error rates |
-| `retries` | Number of retry attempts | Monitor retry behavior |
-| `items_per_second` | Throughput in items per second (wall-clock time) | Compare stream performance |
-| `bytes_per_second` | Throughput in bytes per second (wall-clock time) | Measure data throughput |
-| `average_item_size` | Average size of processed items in bytes | Understand data characteristics |
-| `peak_processing_time` | Maximum processing time for any item | Identify processing bottlenecks |
-| `consecutive_errors` | Number of errors without successful processing in between | Detect error patterns |
-| `error_rate` | Ratio of errors to total operations | Monitor stream health |
-| `backpressure_events` | Number of backpressure events | Track backpressure occurrences |
-| `queue_depth` | Current depth of the processing queue | Monitor buffer utilization |
-| `health_thresholds` | Configurable thresholds for determining stream health | Set health monitoring parameters |
-
-#### Utility Methods
-
-The `StreamMetrics` struct provides several utility methods for working with metrics:
-
-- `record_item(size_bytes)` - Record a processed item with its size
-- `record_error()` - Record an error occurrence
-- `record_retry()` - Record a retry attempt
-- `record_processing_time(duration)` - Record time spent processing
-- `record_backpressure()` - Record a backpressure event
-- `update_queue_depth(depth)` - Update the current queue depth
-- `is_healthy()` - Check if the stream is healthy (low error rate)
-- `throughput_items_per_sec()` - Calculate items processed per second
-- `throughput_bytes_per_sec()` - Calculate bytes processed per second
-- `throughput_summary()` - Get a formatted summary of throughput metrics
-- `with_name(name)` - Set a name for the metrics (builder pattern)
-- `set_name(name)` - Set a name for the metrics
-- `with_health_thresholds(thresholds)` - Set health thresholds (builder pattern)
-- `set_health_thresholds(thresholds)` - Set health thresholds
-
-#### Health Monitoring
-
-RS2 provides built-in health monitoring for streams through the `HealthThresholds` configuration:
-
-- `max_error_rate` - Maximum acceptable error rate (default: 0.1 or 10%)
-- `max_consecutive_errors` - Maximum number of consecutive errors allowed (default: 5)
-
-The `is_healthy()` method uses these thresholds to determine if a stream is healthy. You can customize these thresholds using:
-
-- `HealthThresholds::default()` - Default thresholds (10% error rate, 5 consecutive errors)
-- `HealthThresholds::strict()` - Strict thresholds for critical systems (1% error rate, 2 consecutive errors)
-- `HealthThresholds::relaxed()` - Relaxed thresholds for high-throughput systems (20% error rate, 20 consecutive errors)
-- `HealthThresholds::custom(max_error_rate, max_consecutive_errors)` - Custom thresholds
-
-Example:
-```rust
-// Create metrics with strict health thresholds
-let metrics = StreamMetrics::new()
-    .with_name("critical_stream".to_string())
-    .with_health_thresholds(HealthThresholds::strict());
-
-// Or update thresholds on existing metrics
-metrics.set_health_thresholds(HealthThresholds::custom(0.05, 3));
-
-// Check if the stream is healthy
-if !metrics.is_healthy() {
-    println!("Stream health check failed: error rate = {}, consecutive errors = {}", 
-             metrics.error_rate, metrics.consecutive_errors);
-}
-```
-
-#### Examples
-
-##### Stream Metrics Collection
-
-For examples of collecting metrics from streams, see [examples/with_metrics_example.rs](examples/with_metrics_example.rs).
-
-```rust
-// This example demonstrates:
-// - Collecting metrics from streams using with_metrics_rs2()
-// - Monitoring throughput and processing time
-// - Comparing metrics for different stream transformations
-// - Collecting metrics for async operations
-// See the full code at examples/with_metrics_example.rs
-```
-Here's what your stream metrics output could look like (in examples) :
-
-<img src="docs/images/new_metrics.png" alt="Example output" width="35%">
-
-### Media Streaming
-
-RS2 includes a comprehensive media streaming system with support for file and live streaming, codec operations, chunk processing, and priority-based delivery.
-
-- **MediaStreamingService**: High-level API for media streaming
-- **MediaCodec**: Encoding and decoding of media data
-- **ChunkProcessor**: Processing pipeline for media chunks
-- **MediaPriorityQueue**: Priority-based delivery of media chunks
-
-#### Examples
-
-##### Basic File Streaming
-
-For examples of streaming media from a file, see [examples/media_streaming/basic_file_streaming.rs](examples/media_streaming/basic_file_streaming.rs).
-
-```rust
-// This example demonstrates:
-// - Creating a MediaStreamingService
-// - Configuring a media stream
-// - Starting streaming from a file
-// - Processing and displaying the media chunks
-// See the full code at examples/media_streaming/basic_file_streaming.rs
-```
-
-##### Live Streaming
-
-For examples of setting up a live stream, see [examples/media_streaming/live_streaming.rs](examples/media_streaming/live_streaming.rs).
-
-```rust
-// This example demonstrates:
-// - Creating a MediaStreamingService for live streaming
-// - Configuring a live media stream
-// - Starting a live stream
-// - Processing and displaying the media chunks
-// - Monitoring stream metrics in real-time
-// See the full code at examples/media_streaming/live_streaming.rs
-```
-
-##### Custom Codec Configuration
-
-For examples of configuring a custom codec, see [examples/media_streaming/custom_codec.rs](examples/media_streaming/custom_codec.rs).
-
-```rust
-// This example demonstrates:
-// - Creating a custom codec configuration
-// - Creating a MediaCodec with the custom configuration
-// - Using the codec to encode and decode media data
-// - Monitoring codec performance
-// See the full code at examples/media_streaming/custom_codec.rs
-```
-
-##### Handling Stream Events
-
-For examples of handling media stream events, see [examples/media_streaming/stream_events.rs](examples/media_streaming/stream_events.rs).
-
-```rust
-// This example demonstrates:
-// - Creating and handling MediaStreamEvent objects
-// - Converting events to UserActivity for analytics
-// - Processing events in a stream
-// - Implementing a simple event handler
-// See the full code at examples/media_streaming/stream_events.rs
-```
-
-For comprehensive documentation on the media streaming components, see the [Media Streaming README](docs/media_streaming_readme.md).
-
-## Connectors: External System Integration
-
-RS2 provides connectors for integrating with external systems like Kafka, databases, and more. Connectors implement the `StreamConnector` trait:
-
-```rust
-#[async_trait]
-pub trait StreamConnector<T>: Send + Sync
-where
-    T: Send + 'static,
-{
-    type Config: Send + Sync;
-    type Error: std::error::Error + Send + Sync + 'static;
-    type Metadata: Send + Sync;
-
-    async fn from_source(&self, config: Self::Config) -> Result<RS2Stream<T>, Self::Error>;
-    async fn to_sink(&self, stream: RS2Stream<T>, config: Self::Config) -> Result<Self::Metadata, Self::Error>;
-    async fn health_check(&self) -> Result<bool, Self::Error>;
-    async fn metadata(&self) -> Result<Self::Metadata, Self::Error>;
-    fn name(&self) -> &'static str;
-    fn version(&self) -> &'static str;
-}
-```
-
-#### Kafka Connector Example
-
-RS2 includes a Kafka connector that allows you to create streams from Kafka topics and send streams to Kafka topics:
-
-```rust
-// This example demonstrates how to use the Kafka connector to:
-// - Create a stream from a Kafka topic
-// - Process the stream with RS2 transformations
-// - Send the processed stream back to a different Kafka topic
-// See the full code at examples/connector_kafka.rs
-```
-
-For the complete example, see [examples/connector_kafka.rs](examples/connector_kafka.rs).
-
-#### Kafka Data Streaming Pipeline Example
-
-For a more complex example that demonstrates a complete data streaming pipeline using Kafka and rs2, see [examples/kafka_data_pipeline.rs](examples/kafka_data_pipeline.rs).
-
-```rust
-// This example demonstrates a complex data streaming pipeline using Kafka and rs2:
-// - Data Production: Generate sample user activity data and send it to a Kafka topic
-// - Data Consumption: Consume the data from Kafka using rs2 streams
-// - Data Processing: Process the data using various rs2 transformations
-//   - Parsing and validation
-//   - Enrichment with additional data
-//   - Aggregation and analytics
-//   - Filtering and transformation
-// - Result Publishing: Send the processed results back to different Kafka topics
-// - Parallel Processing: Using par_eval_map_rs2 for efficient processing
-// - Backpressure Handling: Automatic backpressure to handle fast producers
-// - Error Recovery: Fallback mechanisms for when Kafka is not available
-// See the full code at examples/kafka_data_pipeline.rs
-```
-
-### Creating Custom Connectors
-
-You can create your own connectors by implementing the `StreamConnector` trait. For a complete example of creating a custom connector, see [examples/connector_custom.rs](examples/connector_custom.rs).
-
-```rust
-// This example demonstrates how to:
-// - Create a custom connector for a hypothetical message queue
-// - Implement the StreamConnector trait
-// - Create a stream from the connector
-// - Process the stream with RS2 transformations
-// - Send the processed stream back to the connector
-// See the full code at examples/connector_custom.rs
-```
-
-## Pipelines and Schema Validation
-
-RS2 makes it easy to build robust, streaming pipelines with ergonomic composition and strong data validation guarantees.
-
-### Pipeline Builder
-
-The pipeline builder lets you compose sources, transforms, and sinks in a clear, modular way:
-
-```rust
-let pipeline = Pipeline::new()
-    .source(my_source)
-    .transform(my_transform)
-    .sink(my_sink)
-    .build();
-```
-
-You can branch, window, aggregate, and combine streams with ergonomic combinators. See [examples/kafka_data_pipeline.rs](examples/kafka_data_pipeline.rs) for a real-world, multi-branch pipeline.
-
-### Schema Validation
-
-**Schema validation** is built in. RS2 provides:
-- The `SchemaValidator` trait for pluggable validation (JSON Schema, Avro, Protobuf, custom)
-- A `JsonSchemaValidator` for validating JSON data using [JSON Schema](https://json-schema.org/)
-- The `.with_schema_validation_rs2(validator)` combinator to filter out invalid items and log errors
-- Clear error types: `SchemaError::ValidationFailed`, `SchemaError::ParseError`, etc.
-
-#### Example: Validating JSON in a Pipeline
-
-```rust
-use rs2::schema_validation::JsonSchemaValidator;
-use serde_json::json;
-
-let schema = json!({
-    "type": "object",
-    "properties": {
-        "id": {"type": "string"},
-        "value": {"type": "integer"}
-    },
-    "required": ["id", "value"]
-});
-let validator = JsonSchemaValidator::new("my-schema", schema);
-
-let validated_stream = raw_stream
-    .with_schema_validation_rs2(validator)
-    .filter_map(|json| async move { serde_json::from_str::<MyType>(&json).ok() })
-    .boxed();
-```
-
-See [examples/kafka_data_pipeline.rs](examples/kafka_data_pipeline.rs) for a full pipeline with schema validation, branching, analytics, and error handling.
-
-For comprehensive examples of JSON schema validation, see [examples/schema_validation_example.rs](examples/schema_validation_example.rs). This example demonstrates:
-- Creating JSON schemas for different data types (user events, orders, sensor data)
-- Setting up validators with various validation rules (patterns, enums, ranges)
-- Validating data and handling validation errors gracefully
-- Multi-validator logic for different data types
-- Error recovery and detailed error reporting
-
-**Extensibility:** You can implement your own `SchemaValidator` for Avro, Protobuf, or custom formats. The system is async-friendly and ready for integration with schema registries.
-
-## Pipe: Stream Transformation Functions
-
-A Pipe represents a stream transformation from one type to another. It's a function from Stream[I] to Stream[O] that can be composed with other pipes to create complex stream processing pipelines.
-
-### Pipe Methods
-
-- `Pipe::new(f)` - Create a new pipe from a function
-- `apply(input)` - Apply this pipe to a stream
-- `compose(other)` - Compose this pipe with another pipe
-
-### Utility Functions
-
-- `map(f)` - Create a pipe that applies the given function to each element
-- `filter(predicate)` - Create a pipe that filters elements based on the predicate
-- `compose(p1, p2)` - Compose two pipes together
-- `identity()` - Identity pipe that doesn't transform the stream
-
-### Examples
-
-#### Basic Pipe Usage
-
-For examples of basic pipe usage, see [examples/pipe_basic_usage.rs](examples/pipe_basic_usage.rs).
-
-```rust
-// This example demonstrates:
-// - Creating a pipe that doubles each number
-// - Applying the pipe to a stream
-// See the full code at examples/pipe_basic_usage.rs
-```
-
-#### Composing Pipes
-
-For examples of composing pipes, see [examples/pipe_composing.rs](examples/pipe_composing.rs).
-
-```rust
-// This example demonstrates:
-// - Creating pipes for different transformations
-// - Composing pipes using the compose function
-// - Composing pipes using the compose method
-// See the full code at examples/pipe_composing.rs
-```
-
-#### Real-World Example: User Data Processing Pipeline
-
-For a more complex example of using pipes to process user data, see [examples/pipe_user_data_processing.rs](examples/pipe_user_data_processing.rs).
-
-```rust
-// This example demonstrates:
-// - Creating pipes for filtering active users
-// - Creating pipes for transforming User to UserStats
-// - Composing pipes to create a processing pipeline
-// - Grouping users by login frequency
-// See the full code at examples/pipe_user_data_processing.rs
-```
-
-## Queue: Concurrent Queue with Stream Interface
-
-A Queue represents a concurrent queue with a Stream interface for dequeuing and async methods for enqueuing. It supports both bounded and unbounded queues.
-
-### Queue Types
-
-- `Queue::bounded(capacity)` - Create a new bounded queue with the given capacity
-- `Queue::unbounded()` - Create a new unbounded queue
-
-### Queue Methods
-
-- `enqueue(item)` - Enqueue an item into the queue
-- `try_enqueue(item)` - Try to enqueue an item without blocking
-- `dequeue()` - Get a stream for dequeuing items
-- `close()` - Close the queue, preventing further enqueues
-- `capacity()` - Get the capacity of the queue (None for unbounded)
-- `is_empty()` - Check if the queue is empty
-- `len()` - Get the current number of items in the queue
-
-### Examples
-
-#### Basic Queue Usage
-
-For examples of basic queue usage, see [examples/queue_basic_usage.rs](examples/queue_basic_usage.rs).
-
-```rust
-// This example demonstrates:
-// - Creating a bounded queue
-// - Enqueuing items
-// - Dequeuing items as a stream
-// See the full code at examples/queue_basic_usage.rs
-```
-
-#### Producer-Consumer Pattern
-
-For examples of using queues in a producer-consumer pattern, see [examples/queue_producer_consumer.rs](examples/queue_producer_consumer.rs).
-
-```rust
-// This example demonstrates:
-// - Creating a shared queue
-// - Spawning producer and consumer tasks
-// - Handling backpressure with bounded queues
-// See the full code at examples/queue_producer_consumer.rs
-```

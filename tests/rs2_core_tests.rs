@@ -1,4 +1,5 @@
 use rs2_stream::rs2::*;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::stream_performance_metrics::HealthThresholds;
 use rs2_stream::stream_configuration::*;
 use rs2_stream::stream::{
@@ -489,8 +490,8 @@ async fn test_tick() {
 #[tokio::test]
 async fn test_par_eval_map() {
     let stream = from_iter_rs2(vec![1, 2, 3, 4]);
-    let mapped = par_eval_map(stream, 2, |x| async move { x * 2 });
-    let result: Vec<_> = mapped.collect().await;
+    let mapped = stream.par_eval_map_rs2(2, |x| async move { x * 2 });
+    let result: Vec<_> = mapped.collect_rs2().await;
     assert_eq!(result, vec![2, 4, 6, 8]);
 }
 
@@ -526,8 +527,8 @@ async fn test_collect_ext() {
 #[tokio::test]
 async fn test_par_eval_map_unordered() {
     let stream = from_iter_rs2(vec![1, 2, 3, 4]);
-    let mapped = par_eval_map_unordered(stream, 2, |x| async move { x * 2 });
-    let result: Vec<_> = mapped.collect().await;
+    let mapped = stream.par_eval_map_unordered_rs2(2, |x| async move { x * 2 });
+    let result: Vec<_> = mapped.collect_rs2().await;
     assert_eq!(result, vec![2, 4, 6, 8]);
 }
 
@@ -537,8 +538,8 @@ async fn test_par_join() {
         from_iter_rs2(vec![1, 2]),
         from_iter_rs2(vec![3, 4])
     ]);
-    let joined = par_join(streams, 2);
-    let result: Vec<_> = joined.collect().await;
+    let joined = streams.par_join_rs2(2);
+    let result: Vec<_> = joined.collect_rs2().await;
     assert_eq!(result.len(), 4);
 }
 

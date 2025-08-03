@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting live stream with ID: {}", stream_config.id);
 
     // Start the live stream
-    let chunk_stream = streaming_service.start_live_stream(stream_config).await;
+    let mut chunk_stream = streaming_service.start_live_stream(stream_config).await;
 
     // Create a simple metrics monitor using a generated stream
     let base_metrics = StreamMetrics::new().with_name("live-stream-monitor".to_string());
@@ -54,8 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     tokio::spawn(monitor_metrics(metrics_stream));
 
-    // Process the chunks - pin the stream to the stack
-    let mut chunk_stream = std::pin::pin!(chunk_stream);
+    // Process the chunks
     let mut chunk_count = 0;
 
     // Process chunks for 10 seconds

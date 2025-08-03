@@ -1233,6 +1233,7 @@ fn test_long_running_no_memory_leak() {
         // Process chunks in batches to simulate long-running operation
         let batch_size = 100;
         let mut processed_count = 0;
+        let mut total_drained_count = 0;
 
         for batch_start in (0..num_chunks).step_by(batch_size) {
             let batch_end = (batch_start + batch_size).min(num_chunks);
@@ -1254,18 +1255,32 @@ fn test_long_running_no_memory_leak() {
                 }
             }
 
+            // Drain the output queue and count how many items were successfully drained
+            let dequeue_stream = output_queue.stream();
+            let drained_chunks: Vec<_> = tokio::time::timeout(
+                Duration::from_millis(100),
+                dequeue_stream.take(batch_size).collect::<Vec<_>>(),
+            )
+                .await
+                .unwrap_or_default();
+            total_drained_count += drained_chunks.len();
+
             // Small delay between batches to simulate real-world conditions
             tokio::time::sleep(Duration::from_millis(10)).await;
-
-            // Check stats periodically to ensure they're being updated
-            if batch_start % 1000 == 0 {
-                let stats = processor.get_stats().await;
-                assert!(
-                    stats.chunks_processed > 0,
-                    "Stats should be updated during processing"
-                );
-            }
         }
+
+        // FINAL DRAIN: After the loop, drain any remaining chunks from the queue.
+        // Use a shorter timeout and take a reasonable number of chunks to avoid hanging
+        let dequeue_stream = output_queue.stream();
+        let remaining_chunks: Vec<_> = tokio::time::timeout(
+            Duration::from_secs(1), // Shorter timeout
+            dequeue_stream.take(1000).collect::<Vec<_>>(), // Take up to 1000 chunks max
+        )
+            .await
+            .unwrap_or_default(); // Don't fail if timeout, just use empty vec
+        total_drained_count += remaining_chunks.len();
+
+        println!("Final drain: found {} remaining chunks", remaining_chunks.len());
 
         // Verify that most chunks were processed successfully
         let success_rate = processed_count as f64 / num_chunks as f64;
@@ -1286,25 +1301,17 @@ fn test_long_running_no_memory_leak() {
             "Should have recorded processing time"
         );
 
-        // Verify output queue has processed chunks
-        let dequeue_stream = output_queue.stream();
-        let output_chunks: Vec<_> = tokio::time::timeout(
-            Duration::from_secs(5),
-            dequeue_stream.take(100).collect::<Vec<_>>(),
-        )
-        .await
-        .expect("Timeout waiting for output queue");
-
-        assert!(
-            !output_chunks.is_empty(),
-            "Output queue should contain processed chunks"
+        // Verify that every chunk that was processed was also drained from the output queue.
+        assert_eq!(
+            processed_count, total_drained_count,
+            "The number of processed chunks should match the number of chunks drained from the output queue"
         );
 
         // Memory usage verification: if we get here without OOM, the test passes
-        // In a real scenario, you might want to use a memory profiler or check system memory
         println!(
-            "Successfully processed {} chunks without memory issues",
-            processed_count
+            "Successfully processed {} chunks and drained {} from the queue without memory issues",
+            processed_count,
+            total_drained_count
         );
     });
 }

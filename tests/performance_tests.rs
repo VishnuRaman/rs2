@@ -87,8 +87,8 @@ fn test_par_eval_map() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
         let concurrency = 2;
 
-        let result = par_eval_map(stream, concurrency, |n| async move { n * 2 })
-            .collect::<Vec<_>>()
+        let result = stream.par_eval_map_rs2(concurrency, |n| async move { n * 2 })
+            .collect_rs2()
             .await;
 
         // Sort the result since parallel execution might change the order
@@ -106,8 +106,8 @@ fn test_par_eval_map_unordered() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
         let concurrency = 2;
 
-        let result = par_eval_map_unordered(stream, concurrency, |n| async move { n * 2 })
-            .collect::<Vec<_>>()
+        let result = stream.par_eval_map_unordered_rs2(concurrency, |n| async move { n * 2 })
+            .collect_rs2()
             .await;
 
         // Sort the result since unordered execution will change the order
@@ -134,11 +134,11 @@ fn test_par_eval_map_with_delays() {
         let concurrency = 3;
 
         let start = Instant::now();
-        let result = par_eval_map(stream, concurrency, |(n, delay_ms)| async move {
+                  let result = stream.par_eval_map_rs2(concurrency, |(n, delay_ms)| async move {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             n * 2
         })
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await;
         let elapsed = start.elapsed();
 
@@ -297,8 +297,8 @@ fn test_par_join() {
         let concurrency = 2;
 
         // Apply par_join
-        let result = par_join(stream_of_streams, concurrency)
-            .collect::<Vec<_>>()
+        let result = stream_of_streams.par_join_rs2(concurrency)
+            .collect_rs2()
             .await;
 
         // Sort the result since parallel execution might change order
@@ -325,8 +325,8 @@ fn test_par_join_with_different_sizes() {
         let concurrency = 2;
 
         // Apply par_join
-        let result = par_join(stream_of_streams, concurrency)
-            .collect::<Vec<_>>()
+        let result = stream_of_streams.par_join_rs2(concurrency)
+            .collect_rs2()
             .await;
 
         // Sort the result since parallel execution might change order
@@ -354,8 +354,8 @@ fn test_par_join_with_delays() {
 
         // Measure the time it takes to process all streams
         let start = Instant::now();
-        let result = par_join(stream_of_streams, concurrency)
-            .collect::<Vec<_>>()
+        let result = stream_of_streams.par_join_rs2(concurrency)
+            .collect_rs2()
             .await;
         let elapsed = start.elapsed();
 

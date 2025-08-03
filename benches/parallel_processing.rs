@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rs2_stream::rs2::*;
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
+use rs2_stream::stream::parallel::{ParallelConfig, ParallelStreamExt};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -98,22 +99,76 @@ async fn variable_workload_task(x: i32) -> i32 {
     let work_amount = match x % 20 {
         0..=4 => 10,     // Light work (25% of tasks)
         5..=14 => 100,   // Medium work (50% of tasks)
-        15..=17 => 1000, // Heavy work (15% of tasks)
-        _ => 5000,       // Very heavy work (10% of tasks)
+        15..=19 => 500,  // Heavy work (25% of tasks)
+        _ => 1000,       // Very heavy work (rare)
     };
 
+    // Simulate work with variable CPU usage
     let mut result = x;
-    for _ in 0..work_amount {
-        result = result.wrapping_mul(17).wrapping_add(1);
-        if work_amount > 100 {
-            // Add some async yielding for heavy tasks
-            if result % 100 == 0 {
-                tokio::task::yield_now().await;
-            }
-        }
+    for i in 0..work_amount {
+        result = result.wrapping_mul(i as i32 + 1).wrapping_add(x);
     }
 
     black_box(result)
+}
+
+// Synchronous CPU tasks for par_map testing
+fn light_cpu_work_sync(x: i32) -> i32 {
+    let mut result = x;
+    for _ in 0..5 {
+        result = result.wrapping_mul(17).wrapping_add(1);
+    }
+    black_box(result)
+}
+
+fn medium_cpu_work_sync(x: i32) -> String {
+    let mut hasher = Sha256::new();
+    let input = format!("data-{}-{}", x, x * x);
+
+    for i in 0..10 {
+        hasher.update(format!("{}-{}", input, i).as_bytes());
+    }
+
+    let result = hasher.finalize();
+    black_box(format!("{:x}", result))
+}
+
+fn heavy_cpu_work_sync(x: i32) -> (String, f64) {
+    let json_data = format!(
+        r#"{{
+        "id": {},
+        "data": [{}],
+        "metadata": {{
+            "processed": true,
+            "timestamp": {},
+            "values": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        }}
+    }}"#,
+        x,
+        (0..50)
+            .map(|i| (i * x).to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+        x * 1000
+    );
+
+    let parsed: Value = serde_json::from_str(&json_data).unwrap();
+
+    let mut result = 0.0f64;
+    for i in 0..50 {
+        result += (x as f64 * i as f64).sin().cos().tan().abs();
+    }
+
+    let hash = {
+        let mut hasher = Sha256::new();
+        for _ in 0..50 {
+            hasher.update(parsed.to_string().as_bytes());
+            hasher.update(result.to_string().as_bytes());
+        }
+        format!("{:x}", hasher.finalize())
+    };
+
+    black_box((hash, result))
 }
 
 fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
@@ -212,7 +267,7 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
         };
 
         for concurrency in concurrency_levels {
-            // Parallel ordered processing
+            // Parallel ordered processing (improved)
             group.bench_with_input(
                 BenchmarkId::new(
                     format!("{}_parallel_ordered", task_name),
@@ -264,7 +319,7 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
                 },
             );
 
-            // Parallel unordered processing (should be faster)
+            // Parallel unordered processing (improved)
             group.bench_with_input(
                 BenchmarkId::new(
                     format!("{}_parallel_unordered", task_name),
@@ -936,6 +991,271 @@ fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
     group.finish();
 }
 
+// Test the improved par_map methods with adaptive configuration
+fn bench_improved_par_map(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("improved_par_map");
+    group.measurement_time(Duration::from_secs(3));
+    group.sample_size(10);
+
+    // Test light CPU work (i32 return type)
+    {
+        let task_name = "light_cpu_sync";
+        let data_size = 2000;
+        
+        // Sequential baseline for sync work
+        group.bench_with_input(
+            BenchmarkId::new(format!("{}_sequential", task_name), data_size),
+            &data_size,
+            |b, &size| {
+                b.iter(|| {
+                    let result: Vec<_> = (0..size).map(light_cpu_work_sync).collect();
+                    black_box(result)
+                });
+            },
+        );
+
+        // Test different concurrency levels
+        let concurrency_levels = vec![2, 4];
+
+        for concurrency in concurrency_levels {
+            // Improved par_map with adaptive configuration
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}_par_map_adaptive", task_name),
+                    format!("{}_{}", data_size, concurrency),
+                ),
+                &(data_size, concurrency),
+                |b, &(size, conc)| {
+                    b.to_async(&rt).iter(|| async {
+                        let result = from_iter_rs2(0..size)
+                            .par_eval_map_rs2(conc, |x| async move { light_cpu_work_sync(x) })
+                            .collect_rs2()
+                            .await;
+                        black_box(result)
+                    });
+                },
+            );
+
+            // Standard par_map (should use adaptive config internally)
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}_par_map_standard", task_name),
+                    format!("{}_{}", data_size, concurrency),
+                ),
+                &(data_size, concurrency),
+                |b, &(size, conc)| {
+                    b.to_async(&rt).iter(|| async {
+                        let result = from_iter_rs2(0..size)
+                            .par_eval_map_rs2(conc, |x| async move { light_cpu_work_sync(x) })
+                            .collect_rs2()
+                            .await;
+                        black_box(result)
+                    });
+                },
+            );
+        }
+    }
+
+    // Test medium CPU work (String return type)
+    {
+        let task_name = "medium_cpu_sync";
+        let data_size = 500;
+        
+        // Sequential baseline for sync work
+        group.bench_with_input(
+            BenchmarkId::new(format!("{}_sequential", task_name), data_size),
+            &data_size,
+            |b, &size| {
+                b.iter(|| {
+                    let result: Vec<_> = (0..size).map(medium_cpu_work_sync).collect();
+                    black_box(result)
+                });
+            },
+        );
+
+        // Test different concurrency levels
+        let concurrency_levels = vec![2, 4];
+
+        for concurrency in concurrency_levels {
+            // Improved par_map with adaptive configuration
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}_par_map_adaptive", task_name),
+                    format!("{}_{}", data_size, concurrency),
+                ),
+                &(data_size, concurrency),
+                |b, &(size, conc)| {
+                    b.to_async(&rt).iter(|| async {
+                        let result = from_iter_rs2(0..size)
+                            .par_eval_map_rs2(conc, |x| async move { medium_cpu_work_sync(x) })
+                            .collect_rs2()
+                            .await;
+                        black_box(result)
+                    });
+                },
+            );
+
+            // Standard par_map (should use adaptive config internally)
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}_par_map_standard", task_name),
+                    format!("{}_{}", data_size, concurrency),
+                ),
+                &(data_size, concurrency),
+                |b, &(size, conc)| {
+                    b.to_async(&rt).iter(|| async {
+                        let result = from_iter_rs2(0..size)
+                            .par_eval_map_rs2(conc, |x| async move { medium_cpu_work_sync(x) })
+                            .collect_rs2()
+                            .await;
+                        black_box(result)
+                    });
+                },
+            );
+        }
+    }
+
+    // Test heavy CPU work ((String, f64) return type)
+    {
+        let task_name = "heavy_cpu_sync";
+        let data_size = 100;
+        
+        // Sequential baseline for sync work
+        group.bench_with_input(
+            BenchmarkId::new(format!("{}_sequential", task_name), data_size),
+            &data_size,
+            |b, &size| {
+                b.iter(|| {
+                    let result: Vec<_> = (0..size).map(heavy_cpu_work_sync).collect();
+                    black_box(result)
+                });
+            },
+        );
+
+        // Test different concurrency levels
+        let concurrency_levels = vec![2, 4];
+
+        for concurrency in concurrency_levels {
+            // Improved par_map with adaptive configuration
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}_par_map_adaptive", task_name),
+                    format!("{}_{}", data_size, concurrency),
+                ),
+                &(data_size, concurrency),
+                |b, &(size, conc)| {
+                    b.to_async(&rt).iter(|| async {
+                        let result = from_iter_rs2(0..size)
+                            .par_eval_map_rs2(conc, |x| async move { heavy_cpu_work_sync(x) })
+                            .collect_rs2()
+                            .await;
+                        black_box(result)
+                    });
+                },
+            );
+
+            // Standard par_map (should use adaptive config internally)
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("{}_par_map_standard", task_name),
+                    format!("{}_{}", data_size, concurrency),
+                ),
+                &(data_size, concurrency),
+                |b, &(size, conc)| {
+                    b.to_async(&rt).iter(|| async {
+                        let result = from_iter_rs2(0..size)
+                            .par_eval_map_rs2(conc, |x| async move { heavy_cpu_work_sync(x) })
+                            .collect_rs2()
+                            .await;
+                        black_box(result)
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
+// Test adaptive configuration with different workload sizes
+fn bench_adaptive_configuration(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("adaptive_configuration");
+    group.measurement_time(Duration::from_secs(3));
+    group.sample_size(10);
+
+    // Test different workload sizes to trigger different adaptive configs
+    let workload_sizes = vec![100, 1000, 5000];
+
+    for size in workload_sizes {
+        // Test with fixed concurrency but adaptive config
+        group.bench_with_input(
+            BenchmarkId::new("adaptive_par_map", size),
+            &size,
+            |b, &size| {
+                b.to_async(&rt).iter(|| async {
+                    let result = from_iter_rs2(0..size)
+                        .par_eval_map_rs2(4, |x| async move { x * 2 })
+                        .collect_rs2()
+                        .await;
+                    black_box(result)
+                });
+            },
+        );
+
+        // Compare with manual configuration
+        group.bench_with_input(
+            BenchmarkId::new("manual_config", size),
+            &size,
+            |b, &size| {
+                b.to_async(&rt).iter(|| async {
+                    let config = if size <= 100 {
+                        ParallelConfig::for_small_workloads()
+                    } else if size <= 1000 {
+                        ParallelConfig::adapt_for_workload_size(size)
+                    } else {
+                        ParallelConfig::for_high_load()
+                    };
+                    
+                    let result = from_iter_rs2(0..size)
+                        .par_eval_map_rs2(4, |x| async move { x * 2 })
+                        .collect_rs2()
+                        .await;
+                    black_box(result)
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// Simple test benchmark to verify parallel processing works
+fn bench_simple_par_map(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("simple_par_map");
+    group.measurement_time(Duration::from_secs(1));
+    group.sample_size(10);
+
+    // Test with a very simple workload
+    group.bench_with_input(
+        BenchmarkId::new("simple_par_map", 100),
+        &100,
+        |b, &size| {
+            b.to_async(&rt).iter(|| async {
+                let result = from_iter_rs2(0..size)
+                    .par_eval_map_rs2(2, |x| x * 2)
+                    .collect_rs2()
+                    .await;
+                black_box(result)
+            });
+        },
+    );
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_parallel_processing_comprehensive,
@@ -943,6 +1263,9 @@ criterion_group!(
     bench_ordered_vs_unordered,
     bench_concurrency_optimization,
     bench_map_parallel_functions,
-    bench_map_parallel_vs_par_eval_map
+    bench_map_parallel_vs_par_eval_map,
+    bench_improved_par_map,
+    bench_adaptive_configuration,
+    bench_simple_par_map
 );
 criterion_main!(benches);

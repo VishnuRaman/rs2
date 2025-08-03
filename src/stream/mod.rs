@@ -68,7 +68,7 @@ pub use specialized::{
 
 // Re-export parallel combinators
 pub use parallel::{
-    ParEvalMap, ParEvalMapUnordered, ParallelStreamExt
+    ParallelConfig, ParallelStreamExt, ParMap, ParEvalMap, ParEvalMapUnordered,
 };
 
 // Re-export metrics stream
