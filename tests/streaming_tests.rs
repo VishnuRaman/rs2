@@ -95,7 +95,7 @@ fn test_streaming_service_metrics_stream() {
         // Get metrics stream
         let mut metrics_stream = service.get_metrics_stream();
 
-        // Get first metrics update
+        // Get first metrics update (should emit immediately now)
         let metrics = metrics_stream.next().await.unwrap();
 
         // Basic verification

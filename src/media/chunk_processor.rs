@@ -251,7 +251,7 @@ impl ChunkProcessor {
     /// Process a stream of incoming chunks
     pub fn process_chunks(
         &self,
-        chunk_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt,
+        chunk_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt + Unpin,
     ) -> impl Stream<Item = Result<MediaChunk, ChunkProcessingError>> + Send + 'static {
         let processor = Arc::new(self.clone());
         

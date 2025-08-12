@@ -279,7 +279,8 @@ where
 pub fn moving_average(
     stream: impl Stream<Item = f64> + Send + 'static + RS2StreamExt,
     window_size: usize,
-) -> impl Stream<Item = f64> + Send + 'static {
+) -> impl Stream<Item = f64> + Send + 'static
+{
     sliding_window_aggregate(stream, window_size, |values| {
         if values.is_empty() {
             0.0

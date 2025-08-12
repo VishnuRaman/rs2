@@ -7,8 +7,6 @@ use std::time::{Duration, Instant};
 use tokio;
 use rs2_stream::stream::constructors::from_iter;
 
-// Remove: use futures::stream::Stream;
-// Use our custom stream trait instead
 use rs2_stream::stream::Stream;
 use std::collections::HashMap;
 use std::pin::Pin;

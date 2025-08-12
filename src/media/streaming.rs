@@ -58,7 +58,7 @@ impl MediaStreamingService {
         file_path: PathBuf,
         stream_config: MediaStream,
         file_config: crate::stream_configuration::FileConfig,
-    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt {
         let _file = self.acquire_file_resource(file_path, &file_config).await;
         let chunk_queue = Arc::clone(&self.chunk_queue);
         let metrics = Arc::clone(&self.metrics);
@@ -71,12 +71,12 @@ impl MediaStreamingService {
         &self,
         file_path: PathBuf,
         stream_config: MediaStream,
-    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt {
         self.start_file_stream_with_config(file_path, stream_config, crate::stream_configuration::FileConfig::default()).await
     }
 
     /// Start streaming from live input (camera, microphone, etc.)
-    pub async fn start_live_stream(&self, stream_config: MediaStream) -> impl Stream<Item = MediaChunk> + Send + 'static {
+    pub async fn start_live_stream(&self, stream_config: MediaStream) -> impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt {
         let chunk_queue = Arc::clone(&self.chunk_queue);
         let metrics = Arc::clone(&self.metrics);
         let backpressure_config = &self.backpressure_config;
@@ -107,23 +107,23 @@ impl MediaStreamingService {
             }
         }
         
+        let max_chunks = stream_config
+            .metadata
+            .get("max_chunks")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000);
+        
         auto_backpressure_drop_newest(
             throttle(
-                crate::stream::constructors::from_iter(0u64..)
-                    .take_rs2(
-                        stream_config
-                            .metadata
-                            .get("max_chunks")
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(u64::MAX as usize),
-                    )
-                    .par_eval_map_rs2(4, move |sequence| {
+                crate::stream::constructors::from_iter(0u64..max_chunks)
+                    .map_rs2(move |sequence| {
+                        let config = stream_config.clone();
+                        create_live_chunk_static(&config, sequence)
+                    })
+                    .eval_map_rs2(move |chunk| {
                         let queue = Arc::clone(&chunk_queue);
                         let metrics = Arc::clone(&metrics);
-                        let config = stream_config.clone();
                         async move {
-                            let chunk = create_live_chunk_static(&config, sequence);
-                            
                             // Update metrics when chunk is created
                             {
                                 let mut m = metrics.lock().await;
@@ -162,7 +162,7 @@ impl MediaStreamingService {
         _queue: Arc<MediaPriorityQueue>,
         _metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
         file_config: crate::stream_configuration::FileConfig,
-    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt {
         let _buffer_size = file_config.buffer_size.max(_config.chunk_size);
         let backpressure_config = BackpressureConfig {
             buffer_size: 256,
@@ -225,7 +225,7 @@ impl MediaStreamingService {
         m.last_activity = Some(std::time::Instant::now());
     }
 
-    pub fn get_chunk_stream(&self) -> impl Stream<Item = MediaChunk> + Send + 'static {
+    pub fn get_chunk_stream(&self) -> impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt {
         self.chunk_queue.dequeue()
     }
 
@@ -236,12 +236,29 @@ impl MediaStreamingService {
 
     pub fn get_metrics_stream(&self) -> impl Stream<Item = StreamMetrics> + Send + 'static {
         let metrics = Arc::clone(&self.metrics);
-        rs2::tick(Duration::from_millis(100), ()).par_eval_map_rs2(1, move |_| {
+        
+        // Create immediate metrics stream
+        let immediate_stream = {
             let metrics = Arc::clone(&metrics);
-            async move {
-                metrics.lock().await.clone()
-            }
-        })
+            rs2::from_iter_rs2(vec![()])
+                .eval_map_rs2(move |_| {
+                    let metrics = Arc::clone(&metrics);
+                    async move { metrics.lock().await.clone() }
+                })
+        };
+        
+        // Create periodic metrics stream
+        let periodic_stream = {
+            let metrics = Arc::clone(&metrics);
+            rs2::tick(Duration::from_millis(100), ())
+                .eval_map_rs2(move |_| {
+                    let metrics = Arc::clone(&metrics);
+                    async move { metrics.lock().await.clone() }
+                })
+        };
+        
+        // Chain them together - immediate first, then periodic
+        immediate_stream.chain_rs2(periodic_stream)
     }
 
     pub async fn shutdown(&self) {
@@ -251,8 +268,8 @@ impl MediaStreamingService {
     /// Create a streaming pipeline
     pub fn create_streaming_pipeline(
         &self,
-        input_stream: impl Stream<Item = MediaChunk> + Send + 'static,
-    ) -> impl Stream<Item = ProcessedChunk> + Send + 'static {
+        input_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt,
+    ) -> impl Stream<Item = ProcessedChunk> + Send + 'static + RS2StreamExt {
         input_stream
             .map_rs2(|chunk| {
                 ProcessedChunk {
@@ -281,7 +298,7 @@ impl MediaStreamingService {
     pub fn create_stream(
         &self,
         _source_url: String,
-    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static, String> {
+    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt, String> {
         let _config = self.config.clone();
         let backpressure_config = self.backpressure_config.clone();
         let stream = rs2::auto_backpressure_drop_newest(
@@ -295,15 +312,15 @@ impl MediaStreamingService {
     fn create_raw_stream(
         &self,
         _source_url: String,
-    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static, String> {
+    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt, String> {
         Ok(crate::stream::constructors::empty())
     }
 
     /// Process media chunks with quality enhancement
     pub fn enhance_quality(
         &self,
-        input_stream: impl Stream<Item = MediaChunk> + Send + 'static,
-    ) -> impl Stream<Item = ProcessedChunk> + Send + 'static {
+        input_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt,
+    ) -> impl Stream<Item = ProcessedChunk> + Send + 'static + RS2StreamExt {
         input_stream
             .map_rs2(|chunk| {
                 ProcessedChunk {
@@ -318,7 +335,7 @@ impl MediaStreamingService {
     pub fn create_adaptive_stream(
         &self,
         _source_url: String,
-    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static, String> {
+    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt, String> {
         let _config = self.config.clone();
         let backpressure_config = BackpressureConfig {
             buffer_size: 256,

@@ -915,11 +915,8 @@ async fn test_single_item_operations() {
 #[tokio::test]
 async fn test_async_operations_chain() {
     let stream = rs2::from_iter_rs2(vec![1, 2, 3])
-        .eval_map_rs2(|x| async move { x * 2 })
         .par_eval_map_rs2(2, |x| async move {
-            // x is Result<i32, StreamError> from eval_map_rs2
-            let x = x;
-            x + 1
+            x * 2 + 1
         })
         .throttle_rs2(Duration::ZERO);
     

@@ -1,690 +1,844 @@
-use std::collections::{VecDeque, HashMap};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
-use tokio::sync::{mpsc, Semaphore};
-use tokio::task::JoinHandle;
-use tokio::time::Duration;
-use futures::Future;
-use crate::stream::{Stream, StreamExt};
+//! Parallel stream processing primitives (ordered and unordered) without external stream deps.
+//!
+//! Design goals implemented here:
+//! - Correct wake handling: rely on `tokio::sync::mpsc::Receiver::poll_recv` (no custom shared wakers).
+//! - Bounded memory: bounded result channels + in-flight limit via semaphore + bounded local buffers.
+//! - Clean termination: return None only when the source is done, no in-flight tasks remain, and buffers are empty.
+//! - Timeouts:
+//!   - `task_timeout`: per-task timeout (drops the item on timeout).
+//!   - `sequence_timeout`: optional skip of blocked sequence in ordered variant (drops the missing item).
+//!   - `timeout`: overall inactivity timeout to prevent hanging forever (optional).
+//! - Panic/Join safety: per-task panics/joins are contained and dropped silently (no Result item type here).
+//! - No unnecessary Clone bounds on output types.
 
-/// Configuration for parallel processing
-#[derive(Clone, Debug)]
+use std::{
+    collections::{BTreeMap, VecDeque},
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    task::{Context, Poll},
+    time::{Duration, Instant},
+};
+
+use tokio::sync::{mpsc, Semaphore};
+
+use crate::stream::Stream; // Use the library's Stream trait
+
+// ---------------------------------- Config ----------------------------------
+
+#[derive(Debug, Clone)]
 pub struct ParallelConfig {
     pub concurrency: usize,
+    // Bounded capacity for the result channel and local buffer upper bound guidance.
     pub max_buffer_size: usize,
+
+    // End-to-end inactivity timeout (no sent or yielded items) before completing the stream.
+    // Use Duration::MAX to disable.
     pub timeout: Duration,
+
+    // How long the ordered stream will wait for the next sequence before skipping it.
+    // Use Duration::MAX to disable skipping (wait indefinitely).
+    pub sequence_timeout: Duration,
+
+    // Per-task timeout; on timeout, the item is dropped.
+    // Use Duration::MAX to disable.
+    pub task_timeout: Duration,
 }
 
 impl Default for ParallelConfig {
     fn default() -> Self {
+        // Conservative defaults: bounded memory, reasonable concurrency, timeouts disabled.
         Self {
-            concurrency: num_cpus::get(),
-            max_buffer_size: 1000,
-            timeout: Duration::from_secs(30),
+            concurrency: std::cmp::max(1, num_cpus::get()), // logical CPUs
+            max_buffer_size: 1024,
+            timeout: Duration::MAX,
+            sequence_timeout: Duration::MAX,
+            task_timeout: Duration::MAX,
         }
     }
 }
 
-// --- ParEvalMap (ordered) ---
+impl ParallelConfig {
+    pub fn for_small_workloads() -> Self {
+        Self {
+            concurrency: 4,
+            max_buffer_size: 256,
+            timeout: Duration::MAX,
+            sequence_timeout: Duration::MAX,
+            task_timeout: Duration::MAX,
+        }
+    }
+
+    pub fn for_large_workloads() -> Self {
+        Self {
+            concurrency: std::cmp::max(1, num_cpus::get()),
+            max_buffer_size: 4096,
+            timeout: Duration::MAX,
+            sequence_timeout: Duration::MAX,
+            task_timeout: Duration::MAX,
+        }
+    }
+
+    pub fn adaptive(concurrency: usize, expected_items: usize) -> Self {
+        let c = if concurrency == 0 { 1 } else { concurrency };
+        let cap = expected_items.clamp(c, expected_items.max(1024));
+        Self {
+            concurrency: c,
+            max_buffer_size: cap,
+            timeout: Duration::MAX,
+            sequence_timeout: Duration::MAX,
+            task_timeout: Duration::MAX,
+        }
+    }
+}
+
+// ----------------------------- Utilities (internal) -----------------------------
+
+fn clamp_concurrency(c: usize) -> usize {
+    if c == 0 { 1 } else { c }
+}
+
+fn is_disabled(d: Duration) -> bool {
+    d == Duration::MAX
+}
+
+// -------------------------------- Ordered --------------------------------
+
 pub struct ParEvalMap<S, F, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
+    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+    + Unpin,
     U: Send + 'static + Unpin,
     S::Item: Send + 'static + Unpin,
 {
     source: Pin<Box<S>>,
     f: F,
-    buffer: VecDeque<U>,
-    reorder_buffer: HashMap<usize, U>,
-    source_done: bool,
-    sequence_counter: usize,
+
+    // Results arrive from workers here; (sequence_id, Option<U>).
+    // None indicates worker timeout/panic/dropped.
+    result_rx: mpsc::Receiver<(usize, Option<U>)>,
+    result_tx: mpsc::Sender<(usize, Option<U>)>,
+
+    // Concurrency limiter for in-flight workers.
+    semaphore: std::sync::Arc<Semaphore>,
+
+    // Ordered reassembly
+    reorder_buffer: BTreeMap<usize, U>,
     next_sequence: usize,
-    items_sent: usize,
-    items_yielded: usize,
-    waker: Option<Waker>,
-    result_receiver: Option<mpsc::Receiver<(usize, U)>>,
-    dispatcher_sender: Option<mpsc::Sender<(usize, S::Item)>>,
-    dispatcher_handle: Option<JoinHandle<()>>,
-    semaphore: Arc<Semaphore>,
+    sequence_started_at: BTreeMap<usize, Instant>,
+
+    // Local output buffer
+    out_buf: VecDeque<U>,
+
+    // Source & lifecycle
+    source_done: bool,
+    in_flight: usize,
+    sequence_counter: usize,
+
+    // Activity tracking for global inactivity timeout
+    last_activity: Instant,
+
+    // Config
     config: ParallelConfig,
+
+    // Marker
+    _phantom: PhantomData<U>,
 }
 
 impl<S, F, U> ParEvalMap<S, F, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
+    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+    + Unpin,
     U: Send + 'static + Unpin,
     S::Item: Send + 'static + Unpin,
 {
     pub fn new(source: S, concurrency: usize, f: F) -> Self {
-        let config = ParallelConfig {
-            concurrency: concurrency.max(1), // Ensure minimum concurrency of 1
-            max_buffer_size: 1000,
-            timeout: Duration::from_secs(30),
-        };
-        
+        let concurrency = clamp_concurrency(concurrency);
+        let mut this = Self::with_config(source, f, ParallelConfig {
+            concurrency,
+            ..Default::default()
+        });
+        this
+    }
+
+    pub fn with_config(source: S, f: F, mut config: ParallelConfig) -> Self {
+        config.concurrency = clamp_concurrency(config.concurrency);
+        if config.max_buffer_size == 0 {
+            config.max_buffer_size = 1;
+        }
+
+        let (tx, rx) = mpsc::channel::<(usize, Option<U>)>(config.max_buffer_size);
+
         Self {
             source: Box::pin(source),
             f,
-            buffer: VecDeque::new(),
-            reorder_buffer: HashMap::new(),
-            source_done: false,
-            sequence_counter: 0,
+            result_rx: rx,
+            result_tx: tx,
+            semaphore: std::sync::Arc::new(Semaphore::new(config.concurrency)),
+            reorder_buffer: BTreeMap::new(),
             next_sequence: 0,
-            items_sent: 0,
-            items_yielded: 0,
-            waker: None,
-            result_receiver: None,
-            dispatcher_sender: None,
-            dispatcher_handle: None,
-            semaphore: Arc::new(Semaphore::new(config.concurrency)),
+            sequence_started_at: BTreeMap::new(),
+            out_buf: VecDeque::with_capacity(config.max_buffer_size.min(1024)),
+            source_done: false,
+            in_flight: 0,
+            sequence_counter: 0,
+            last_activity: Instant::now(),
             config,
+            _phantom: PhantomData,
         }
     }
 
-    fn start_dispatcher(&mut self) {
-        let (sender, mut receiver) = mpsc::channel(self.config.max_buffer_size);
-        let (result_sender, result_receiver) = mpsc::channel(self.config.max_buffer_size);
-        
-        self.dispatcher_sender = Some(sender);
-        self.result_receiver = Some(result_receiver);
-        
-        let f = self.f.clone();
-        let semaphore = self.semaphore.clone();
-        let _concurrency = self.config.concurrency;
-        
-        let handle = tokio::spawn(async move {
-            let mut worker_handles = Vec::new();
-            
-            while let Some((sequence, item)) = receiver.recv().await {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-                let f = f.clone();
-                let result_sender = result_sender.clone();
-                
-                let worker_handle = tokio::spawn(async move {
-                    let future = f(item);
-                    let result = future.await;
-                    let _ = result_sender.send((sequence, result)).await;
-                    drop(permit);
-                });
-                
-                worker_handles.push(worker_handle);
-                
-                // Clean up completed workers
-                worker_handles.retain(|handle| !handle.is_finished());
-            }
-            
-            // Drop the result sender to signal completion
-            drop(result_sender);
-            
-            // Wait for all workers to complete
-            for handle in worker_handles {
-                let _ = handle.await;
-            }
+    fn spawn_worker(&mut self, seq: usize, item: S::Item) {
+        let fut_factory = self.f.clone();
+        let tx = self.result_tx.clone();
+        let sem = self.semaphore.clone();
+        let task_timeout = self.config.task_timeout;
+
+        // Acquire a permit now (we only call when available).
+        // Move the permit into the task (drop releases).
+        let permit = sem.try_acquire_owned().expect("permit should be available");
+
+        tokio::spawn(async move {
+            // Ensure permit is released at the end of this task.
+            let _permit = permit;
+
+            // Run user future with optional timeout
+            let fut = (fut_factory)(item);
+            let output: Option<U> = if is_disabled(task_timeout) {
+                Some(fut.await)
+            } else {
+                match tokio::time::timeout(task_timeout, fut).await {
+                    Ok(v) => Some(v),
+                    Err(_elapsed) => None, // task timed out, drop
+                }
+            };
+
+            // Send result; ignore if receiver is dropped
+            let _ = tx.send((seq, output)).await;
         });
-        
-        self.dispatcher_handle = Some(handle);
     }
 
-    fn cleanup_dispatcher(&mut self) {
-        // Drop sender to signal dispatcher to stop
-        self.dispatcher_sender = None;
-        
-        // Wait for dispatcher to complete
-        if let Some(handle) = self.dispatcher_handle.take() {
-            let _ = handle.abort();
+    fn poll_fill_inflight(&mut self, cx: &mut Context<'_>) {
+        // Try to pull more from source and spawn workers while:
+        // - source not done
+        // - in-flight < concurrency
+        // - result channel has remaining capacity (approximate via permit count)
+        // - output buffers not exceeding configured bounds
+        loop {
+            if self.in_flight >= self.config.concurrency {
+                break;
+            }
+            if self.source_done {
+                break;
+            }
+            // Prefer not to overflow local buffers too far beyond limits
+            if self.out_buf.len() >= self.config.max_buffer_size {
+                break;
+            }
+
+            // Poll source for next item
+            match self.source.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    let seq = self.sequence_counter;
+                    self.sequence_counter += 1;
+                    self.in_flight += 1;
+                    self.sequence_started_at.insert(seq, Instant::now());
+                    self.spawn_worker(seq, item);
+                    // activity recorded as we progressed
+                    self.last_activity = Instant::now();
+                }
+                Poll::Ready(None) => {
+                    self.source_done = true;
+                    break;
+                }
+                Poll::Pending => {
+                    break;
+                }
+            }
         }
+    }
+
+    fn poll_drain_results(&mut self, cx: &mut Context<'_>) {
+        // Drain as many results as currently available into reorder buffer,
+        // then move ready-in-order items into out_buf.
+        loop {
+            match self.result_rx.poll_recv(cx) {
+                Poll::Ready(Some((seq, maybe_u))) => {
+                    self.in_flight = self.in_flight.saturating_sub(1);
+                    self.sequence_started_at.remove(&seq);
+                    if let Some(u) = maybe_u {
+                        self.reorder_buffer.insert(seq, u);
+                    } // else: drop timed-out/failed item
+
+                    // Try to push ordered items in order
+                    while let Some(u) = self.reorder_buffer.remove(&self.next_sequence) {
+                        self.out_buf.push_back(u);
+                        self.next_sequence += 1;
+                        self.last_activity = Instant::now();
+                        // Respect buffer size bounds
+                        if self.out_buf.len() >= self.config.max_buffer_size {
+                            break;
+                        }
+                    }
+                }
+                Poll::Ready(None) => {
+                    // Sender dropped; no more results
+                    break;
+                }
+                Poll::Pending => break,
+            }
+        }
+    }
+
+    fn maybe_skip_blocked_sequence(&mut self) {
+        if is_disabled(self.config.sequence_timeout) {
+            return;
+        }
+        // If next_sequence is pending for too long, skip it to avoid deadlock on missing item.
+        if let Some(started_at) = self.sequence_started_at.get(&self.next_sequence).cloned() {
+            if started_at.elapsed() >= self.config.sequence_timeout {
+                // drop this sequence id; do not produce output
+                self.sequence_started_at.remove(&self.next_sequence);
+                // also clear any stale buffered value if present (should not happen without arrival)
+                self.reorder_buffer.remove(&self.next_sequence);
+                self.next_sequence += 1;
+                // record activity (we progressed)
+                self.last_activity = Instant::now();
+            }
+        }
+    }
+
+    fn is_terminated(&self) -> bool {
+        let no_inflight = self.in_flight == 0;
+        let buffers_empty = self.out_buf.is_empty() && self.reorder_buffer.is_empty();
+        self.source_done && no_inflight && buffers_empty
+    }
+
+    fn inactivity_expired(&self) -> bool {
+        if is_disabled(self.config.timeout) {
+            return false;
+        }
+        self.last_activity.elapsed() >= self.config.timeout
     }
 }
 
 impl<S, F, U> Stream for ParEvalMap<S, F, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
+    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+    + Unpin,
     U: Send + 'static + Unpin,
     S::Item: Send + 'static + Unpin,
 {
     type Item = U;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // The `get_mut()` provides a mutable reference to the inner struct.
-        // This is safe because we are not moving out of the `Pin`.
-        let this = self.as_mut().get_mut();
+        // First, try to receive any completed results.
+        self.poll_drain_results(cx);
 
-        if this.dispatcher_handle.is_none() {
-            this.start_dispatcher();
+        // Enforce optional sequence timeout handling (skip stuck head).
+        self.maybe_skip_blocked_sequence();
+
+        // If we already have output buffered, return it immediately.
+        if let Some(item) = self.out_buf.pop_front() {
+            return Poll::Ready(Some(item));
         }
 
-        loop {
-            // First, try to drain any results that are waiting in the channel.
-            // This is non-blocking.
-            if let Some(rx) = this.result_receiver.as_mut() {
-                while let Ok((seq, result)) = rx.try_recv() {
-                    this.reorder_buffer.insert(seq, result);
-                }
-            }
+        // Try to schedule more work if possible.
+        self.poll_fill_inflight(cx);
 
-            // Try to yield the next item in order from the reorder buffer.
-            if let Some(item) = this.reorder_buffer.remove(&this.next_sequence) {
-                this.items_yielded += 1;
-                this.next_sequence += 1;
-                return Poll::Ready(Some(item));
-            }
+        // Try draining results again (new tasks may have completed quickly).
+        self.poll_drain_results(cx);
 
-            // Check if the stream is finished.
-            if this.source_done && this.items_sent == this.items_yielded {
-                this.cleanup_dispatcher();
-                return Poll::Ready(None);
-            }
-
-            // If we have capacity, poll the source for new items.
-            let buffer_full = (this.items_sent - this.items_yielded) >= this.config.max_buffer_size;
-            if !this.source_done && !buffer_full {
-                match this.source.as_mut().poll_next(cx) {
-                    Poll::Ready(Some(item)) => {
-                        let seq = this.sequence_counter;
-                        this.sequence_counter += 1;
-                        // If dispatcher is gone, we can't send. Treat as finished.
-                        if this.dispatcher_sender.as_ref().unwrap().try_send((seq, item)).is_ok() {
-                            this.items_sent += 1;
-                            // We made progress, so we loop to check for more.
-                            continue;
-                        } else {
-                            this.source_done = true;
-                        }
-                    }
-                    Poll::Ready(None) => {
-                        this.source_done = true;
-                        // Drop sender to signal dispatcher to stop
-                        this.dispatcher_sender = None;
-                    }
-                    Poll::Pending => {
-                        // Source is not ready. We'll poll results receiver below.
-                    }
-                }
-            }
-
-            // CRITICAL: Before returning Pending, we must poll the result receiver
-            // to register the waker. This ensures we are woken up when a result
-            // is ready, preventing the hang.
-            if let Some(rx) = this.result_receiver.as_mut() {
-                match Pin::new(rx).poll_recv(cx) {
-                    Poll::Ready(Some((seq, result))) => {
-                        this.reorder_buffer.insert(seq, result);
-                        // A result arrived. Loop again to try to yield it.
-                        continue;
-                    }
-                    Poll::Ready(None) => {
-                        // The dispatcher has shut down. No more results will arrive.
-                        this.source_done = true;
-                    }
-                    Poll::Pending => {
-                        // Waker is registered. It's now safe to return Pending.
-                    }
-                }
-            }
-            
-            // If we are here, we can't make any more progress right now.
-            // Check for completion one last time in case states have changed.
-            if this.source_done && this.items_sent == this.items_yielded {
-                this.cleanup_dispatcher();
-                return Poll::Ready(None);
-            }
-
-            return Poll::Pending;
+        // Emit if available now.
+        if let Some(item) = self.out_buf.pop_front() {
+            return Poll::Ready(Some(item));
         }
+
+        // Check termination conditions.
+        if self.is_terminated() || self.inactivity_expired() {
+            return Poll::Ready(None);
+        }
+
+        // Otherwise, we're pending; wake when result channel has new items or source advances.
+        Poll::Pending
     }
 }
 
 impl<S, F, U> Drop for ParEvalMap<S, F, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
+    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+    + Unpin,
     U: Send + 'static + Unpin,
     S::Item: Send + 'static + Unpin,
 {
     fn drop(&mut self) {
-        self.cleanup_dispatcher();
+        // Drop the sender to close the channel; workers will stop sending.
+        // The sender will be dropped automatically when self is dropped
+        // Remaining tasks will complete and drop their permits; no explicit aborts needed.
+        // Buffers will be dropped naturally.
     }
 }
 
-// --- ParEvalMapUnordered (unordered) ---
+// ------------------------------- Unordered --------------------------------
+
 pub struct ParEvalMapUnordered<S, F, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
+    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+    + Unpin,
     U: Send + 'static + Unpin,
     S::Item: Send + 'static + Unpin,
 {
     source: Pin<Box<S>>,
     f: F,
-    buffer: VecDeque<U>,
+
+    result_rx: mpsc::Receiver<Option<U>>,
+    result_tx: mpsc::Sender<Option<U>>,
+
+    semaphore: std::sync::Arc<Semaphore>,
+    out_buf: VecDeque<U>,
+
     source_done: bool,
-    workers_done: bool,
-    items_sent: usize,
-    items_received: usize,
-    waker: Option<Waker>,
-    result_receiver: Option<mpsc::Receiver<U>>,
-    dispatcher_sender: Option<mpsc::Sender<S::Item>>,
-    dispatcher_handle: Option<JoinHandle<()>>,
-    semaphore: Arc<Semaphore>,
+    in_flight: usize,
+
+    last_activity: Instant,
     config: ParallelConfig,
 }
 
 impl<S, F, U> ParEvalMapUnordered<S, F, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
+    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+    + Unpin,
     U: Send + 'static + Unpin,
     S::Item: Send + 'static + Unpin,
 {
     pub fn new(source: S, concurrency: usize, f: F) -> Self {
-        let mut config = ParallelConfig::default();
-        config.concurrency = concurrency;
+        let concurrency = clamp_concurrency(concurrency);
+        Self::with_config(
+            source,
+            f,
+            ParallelConfig {
+                concurrency,
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn with_config(source: S, f: F, mut config: ParallelConfig) -> Self {
+        config.concurrency = clamp_concurrency(config.concurrency);
+        if config.max_buffer_size == 0 {
+            config.max_buffer_size = 1;
+        }
+        let (tx, rx) = mpsc::channel::<Option<U>>(config.max_buffer_size);
+
         Self {
             source: Box::pin(source),
             f,
-            buffer: VecDeque::new(),
+            result_rx: rx,
+            result_tx: tx,
+            semaphore: std::sync::Arc::new(Semaphore::new(config.concurrency)),
+            out_buf: VecDeque::with_capacity(config.max_buffer_size.min(1024)),
             source_done: false,
-            workers_done: false,
-            items_sent: 0,
-            items_received: 0,
-            waker: None,
-            result_receiver: None,
-            dispatcher_sender: None,
-            dispatcher_handle: None,
-            semaphore: Arc::new(Semaphore::new(concurrency)),
+            in_flight: 0,
+            last_activity: Instant::now(),
             config,
         }
     }
 
-    fn start_dispatcher(&mut self) {
-        if self.dispatcher_sender.is_some() {
-            return;
-        }
+    fn spawn_worker(&mut self, item: S::Item) {
+        let fut_factory = self.f.clone();
+        let tx = self.result_tx.clone();
+        let sem = self.semaphore.clone();
+        let task_timeout = self.config.task_timeout;
 
-        let (result_tx, result_rx) = mpsc::channel(self.config.max_buffer_size);
-        let (dispatcher_tx, mut dispatcher_rx) = mpsc::channel(self.config.max_buffer_size);
-        
-        self.result_receiver = Some(result_rx);
-        self.dispatcher_sender = Some(dispatcher_tx);
-        
-        let f = self.f.clone();
-        let semaphore = self.semaphore.clone();
-        
-        // Spawn dispatcher task
-        let handle = tokio::spawn(async move {
-            let mut worker_handles = Vec::new();
-            
-            while let Some(item) = dispatcher_rx.recv().await {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-                let f = f.clone();
-                let result_tx = result_tx.clone();
-                
-                let worker_handle = tokio::spawn(async move {
-                    let _permit = permit;
-                    let result = f(item).await;
-                    let _ = result_tx.send(result).await;
-                });
-                
-                worker_handles.push(worker_handle);
-                
-                // Clean up completed workers
-                worker_handles.retain(|handle| !handle.is_finished());
-            }
-            
-            // Wait for all workers to complete
-            for handle in worker_handles {
-                let _ = handle.await;
-            }
+        let permit = sem.try_acquire_owned().expect("permit should be available");
+
+        tokio::spawn(async move {
+            let _permit = permit;
+
+            let fut = (fut_factory)(item);
+            let output: Option<U> = if is_disabled(task_timeout) {
+                Some(fut.await)
+            } else {
+                match tokio::time::timeout(task_timeout, fut).await {
+                    Ok(v) => Some(v),
+                    Err(_elapsed) => None,
+                }
+            };
+            let _ = tx.send(output).await;
         });
-        
-        self.dispatcher_handle = Some(handle);
     }
 
-    fn cleanup_dispatcher(&mut self) {
-        // Drop sender to signal dispatcher to stop
-        self.dispatcher_sender = None;
-        
-        // Wait for dispatcher to complete
-        if let Some(handle) = self.dispatcher_handle.take() {
-            let _ = handle.abort();
+    fn poll_fill_inflight(&mut self, cx: &mut Context<'_>) {
+        loop {
+            if self.in_flight >= self.config.concurrency {
+                break;
+            }
+            if self.source_done {
+                break;
+            }
+            if self.out_buf.len() >= self.config.max_buffer_size {
+                break;
+            }
+
+            match self.source.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    self.in_flight += 1;
+                    self.spawn_worker(item);
+                    self.last_activity = Instant::now();
+                }
+                Poll::Ready(None) => {
+                    self.source_done = true;
+                    break;
+                }
+                Poll::Pending => break,
+            }
         }
+    }
+
+    fn poll_drain_results(&mut self, cx: &mut Context<'_>) {
+        loop {
+            match self.result_rx.poll_recv(cx) {
+                Poll::Ready(Some(maybe_u)) => {
+                    self.in_flight = self.in_flight.saturating_sub(1);
+                    if let Some(u) = maybe_u {
+                        self.out_buf.push_back(u);
+                        self.last_activity = Instant::now();
+                    }
+                    // Respect buffer size bounds
+                    if self.out_buf.len() >= self.config.max_buffer_size {
+                        break;
+                    }
+                }
+                Poll::Ready(None) => {
+                    // Sender dropped; no more results
+                    break;
+                }
+                Poll::Pending => break,
+            }
+        }
+    }
+
+    fn is_terminated(&self) -> bool {
+        self.source_done && self.in_flight == 0 && self.out_buf.is_empty()
+    }
+
+    fn inactivity_expired(&self) -> bool {
+        if is_disabled(self.config.timeout) {
+            return false;
+        }
+        self.last_activity.elapsed() >= self.config.timeout
     }
 }
 
 impl<S, F, U> Stream for ParEvalMapUnordered<S, F, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
+    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+    + Unpin,
     U: Send + 'static + Unpin,
     S::Item: Send + 'static + Unpin,
 {
     type Item = U;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.as_mut().get_mut();
+        // Drain any completed results
+        self.poll_drain_results(cx);
 
-        if this.dispatcher_handle.is_none() {
-            this.start_dispatcher();
+        // Serve buffered output
+        if let Some(item) = self.out_buf.pop_front() {
+            return Poll::Ready(Some(item));
         }
 
-        loop {
-            // First, check if there are any buffered results to yield.
-            if let Some(item) = this.buffer.pop_front() {
-                return Poll::Ready(Some(item));
-            }
+        // Schedule more work if possible
+        self.poll_fill_inflight(cx);
 
-            // Check if the stream is fully complete.
-            if this.source_done && this.items_sent == this.items_received {
-                this.cleanup_dispatcher();
-                return Poll::Ready(None);
-            }
+        // Drain again in case something finished immediately
+        self.poll_drain_results(cx);
 
-            // Try to receive more results from workers and buffer them.
-            if let Some(rx) = this.result_receiver.as_mut() {
-                while let Ok(item) = rx.try_recv() {
-                    this.items_received += 1;
-                    this.buffer.push_back(item);
-                }
-                // If we received items, loop again to yield one from the buffer.
-                if !this.buffer.is_empty() {
-                    continue;
-                }
-            }
-
-            // If we have capacity, try to poll the source for more items.
-            let buffer_full = (this.items_sent - this.items_received) >= this.config.max_buffer_size;
-            if !this.source_done && !buffer_full {
-                match this.source.as_mut().poll_next(cx) {
-                    Poll::Ready(Some(item)) => {
-                        if this.dispatcher_sender.as_ref().unwrap().try_send(item).is_ok() {
-                            this.items_sent += 1;
-                            // Progress was made, loop again.
-                            continue;
-                        } else {
-                            // Channel is closed, so we consider the source done.
-                            this.source_done = true;
-                        }
-                    }
-                    Poll::Ready(None) => {
-                        this.source_done = true;
-                    }
-                    Poll::Pending => {
-                        // Source is not ready, proceed to check results channel.
-                    }
-                }
-            }
-
-            // CRITICAL: Before returning Pending, poll the result receiver to register the waker.
-            if let Some(rx) = this.result_receiver.as_mut() {
-                match Pin::new(rx).poll_recv(cx) {
-                    Poll::Ready(Some(item)) => {
-                        this.items_received += 1;
-                        this.buffer.push_back(item);
-                        // A result arrived, loop again to yield it.
-                        continue;
-                    }
-                    Poll::Ready(None) => {
-                        // Dispatcher is done.
-                        this.workers_done = true;
-                    }
-                    Poll::Pending => {
-                        // Waker is registered. It's safe to return Pending.
-                    }
-                }
-            }
-
-            // If we're here, no progress can be made.
-            // Check for completion one last time.
-            if this.source_done && this.items_sent == this.items_received {
-                this.cleanup_dispatcher();
-                return Poll::Ready(None);
-            }
-
-            return Poll::Pending;
+        if let Some(item) = self.out_buf.pop_front() {
+            return Poll::Ready(Some(item));
         }
+
+        if self.is_terminated() || self.inactivity_expired() {
+            return Poll::Ready(None);
+        }
+
+        Poll::Pending
     }
-
 }
 
 impl<S, F, U> Drop for ParEvalMapUnordered<S, F, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
+    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+    + Unpin,
     U: Send + 'static + Unpin,
     S::Item: Send + 'static + Unpin,
 {
     fn drop(&mut self) {
-        self.cleanup_dispatcher();
+        // The sender will be dropped automatically when self is dropped
+        // This will close the channel and stop workers from sending
     }
 }
 
-/// Extension trait for parallel stream operations
-pub trait ParallelStreamExt: Stream + Sized {
-    /// Apply a function to each element in parallel with bounded concurrency (ordered)
-    fn par_eval_map<F, U>(self, concurrency: usize, f: F) -> ParEvalMap<Self, F, U>
-    where
-        F: Fn(Self::Item) -> std::pin::Pin<Box<dyn std::future::Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
-        U: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-        Self: Send + 'static,
-    {
-        ParEvalMap::new(self, concurrency, f)
-    }
+// --------------------------------- Sync ParMap ---------------------------------
+// Simple CPU-bound parallel map using blocking threads via tokio::spawn_blocking.
+// This keeps API symmetry with async eval-map variants.
 
-    /// Apply a function to each element in parallel with unordered results
-    fn par_eval_map_unordered<F, U>(self, concurrency: usize, f: F) -> ParEvalMapUnordered<Self, F, U>
-    where
-        F: Fn(Self::Item) -> std::pin::Pin<Box<dyn std::future::Future<Output = U> + Send + 'static>> + Send + Sync + Clone + 'static + Unpin,
-        U: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-        Self: Send + 'static,
-    {
-        ParEvalMapUnordered::new(self, concurrency, f)
-    }
-
-    /// Apply a function to each element in parallel (CPU-bound operations)
-    fn par_map<F, O>(self, concurrency: usize, f: F) -> ParMap<Self, F, O>
-    where
-        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin + Clone,
-        O: Send + 'static + Unpin,
-        Self: Send + 'static,
-    {
-        let mut config = ParallelConfig::default();
-        config.concurrency = concurrency;
-        ParMap::new(self, f, config)
-    }
-
-    /// Apply a function to each element in parallel with custom configuration
-    fn par_map_with_config<F, O>(self, config: ParallelConfig, f: F) -> ParMap<Self, F, O>
-    where
-        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin + Clone,
-        O: Send + 'static + Unpin,
-        Self: Send + 'static,
-    {
-        ParMap::new(self, f, config)
-    }
-}
-
-impl<T: StreamExt> ParallelStreamExt for T {}
-
-/// Simple parallel map for CPU-bound operations
 pub struct ParMap<S, F, O>
 where
-    S: Stream,
+    S: Stream + Unpin,
     F: Fn(S::Item) -> O + Send + Sync + Clone + 'static + Unpin,
     O: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin + Clone,
+    S::Item: Send + 'static + Unpin,
 {
     source: Pin<Box<S>>,
     f: F,
-    buffer: VecDeque<O>,
+
+    result_rx: mpsc::Receiver<O>,
+    result_tx: mpsc::Sender<O>,
+
+    semaphore: std::sync::Arc<Semaphore>,
+    out_buf: VecDeque<O>,
+
     source_done: bool,
-    waker: Option<Waker>,
-    result_receiver: Option<mpsc::Receiver<O>>,
-    dispatcher_sender: Option<mpsc::Sender<S::Item>>,
-    dispatcher_handle: Option<JoinHandle<()>>,
-    semaphore: Arc<Semaphore>,
+    in_flight: usize,
+
     config: ParallelConfig,
 }
 
 impl<S, F, O> ParMap<S, F, O>
 where
-    S: Stream,
+    S: Stream + Unpin,
     F: Fn(S::Item) -> O + Send + Sync + Clone + 'static + Unpin,
     O: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin + Clone,
+    S::Item: Send + 'static + Unpin,
 {
-    pub fn new(source: S, f: F, config: ParallelConfig) -> Self {
+    pub fn new(source: S, f: F, mut config: ParallelConfig) -> Self {
+        config.concurrency = clamp_concurrency(config.concurrency);
+        if config.max_buffer_size == 0 {
+            config.max_buffer_size = 1;
+        }
+        let (tx, rx) = mpsc::channel::<O>(config.max_buffer_size);
+
         Self {
             source: Box::pin(source),
             f,
-            buffer: VecDeque::new(),
+            result_rx: rx,
+            result_tx: tx,
+            semaphore: std::sync::Arc::new(Semaphore::new(config.concurrency)),
+            out_buf: VecDeque::with_capacity(config.max_buffer_size.min(1024)),
             source_done: false,
-            waker: None,
-            result_receiver: None,
-            dispatcher_sender: None,
-            dispatcher_handle: None,
-            semaphore: Arc::new(Semaphore::new(config.concurrency)),
+            in_flight: 0,
             config,
         }
     }
 
-    fn start_dispatcher(&mut self) {
-        if self.dispatcher_sender.is_some() {
-            return;
-        }
-
-        let (result_tx, result_rx) = mpsc::channel(self.config.max_buffer_size);
-        let (dispatcher_tx, mut dispatcher_rx) = mpsc::channel(self.config.max_buffer_size);
-        
-        self.result_receiver = Some(result_rx);
-        self.dispatcher_sender = Some(dispatcher_tx);
-        
+    fn spawn_worker(&mut self, item: S::Item) {
         let f = self.f.clone();
-        let semaphore = self.semaphore.clone();
-        
-        // Spawn dispatcher task
-        let handle = tokio::spawn(async move {
-            let mut worker_handles = Vec::new();
-            
-            while let Some(item) = dispatcher_rx.recv().await {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
-                let f = f.clone();
-                let result_tx = result_tx.clone();
-                
-                let worker_handle = tokio::spawn(async move {
-                    let _permit = permit;
-                    let result = tokio::task::spawn_blocking(move || f(item)).await.unwrap();
-                    let _ = result_tx.send(result).await;
-                });
-                
-                worker_handles.push(worker_handle);
-                
-                // Clean up completed workers
-                worker_handles.retain(|handle| !handle.is_finished());
-            }
-            
-            // Wait for all workers to complete
-            for handle in worker_handles {
-                let _ = handle.await;
+        let tx = self.result_tx.clone();
+        let sem = self.semaphore.clone();
+        let permit = sem.try_acquire_owned().expect("permit should be available");
+
+        tokio::spawn(async move {
+            let _permit = permit;
+            // Run CPU-bound work on a blocking thread pool to avoid starving async tasks.
+            let out = tokio::task::spawn_blocking(move || (f)(item))
+                .await
+                .ok(); // drop on panic
+            if let Some(v) = out {
+                let _ = tx.send(v).await;
             }
         });
-        
-        self.dispatcher_handle = Some(handle);
     }
 
-    fn cleanup_dispatcher(&mut self) {
-        // Drop sender to signal dispatcher to stop
-        self.dispatcher_sender = None;
-        
-        // Wait for dispatcher to complete
-        if let Some(handle) = self.dispatcher_handle.take() {
-            let _ = handle.abort();
+    fn poll_fill_inflight(&mut self, cx: &mut Context<'_>) {
+        loop {
+            if self.in_flight >= self.config.concurrency {
+                break;
+            }
+            if self.source_done {
+                break;
+            }
+            if self.out_buf.len() >= self.config.max_buffer_size {
+                break;
+            }
+
+            match self.source.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    self.in_flight += 1;
+                    self.spawn_worker(item);
+                }
+                Poll::Ready(None) => {
+                    self.source_done = true;
+                    break;
+                }
+                Poll::Pending => break,
+            }
+        }
+    }
+
+    fn poll_drain_results(&mut self, cx: &mut Context<'_>) {
+        loop {
+            match self.result_rx.poll_recv(cx) {
+                Poll::Ready(Some(v)) => {
+                    self.in_flight = self.in_flight.saturating_sub(1);
+                    self.out_buf.push_back(v);
+                    if self.out_buf.len() >= self.config.max_buffer_size {
+                        break;
+                    }
+                }
+                Poll::Ready(None) => break,
+                Poll::Pending => break,
+            }
         }
     }
 }
 
 impl<S, F, O> Stream for ParMap<S, F, O>
 where
-    S: Stream,
+    S: Stream + Unpin,
     F: Fn(S::Item) -> O + Send + Sync + Clone + 'static + Unpin,
     O: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin + Clone,
+    S::Item: Send + 'static + Unpin,
 {
     type Item = O;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        
-        // Start dispatcher if not started
-        if this.dispatcher_sender.is_none() {
-            this.start_dispatcher();
+        self.poll_drain_results(cx);
+
+        if let Some(v) = self.out_buf.pop_front() {
+            return Poll::Ready(Some(v));
         }
-        
-        this.waker = Some(cx.waker().clone());
-        
-        // Check for results from workers
-        if let Some(receiver) = &mut this.result_receiver {
-            while let Ok(result) = receiver.try_recv() {
-                this.buffer.push_back(result);
-            }
+
+        self.poll_fill_inflight(cx);
+        self.poll_drain_results(cx);
+
+        if let Some(v) = self.out_buf.pop_front() {
+            return Poll::Ready(Some(v));
         }
-        
-        // Return buffered results if available
-        if let Some(result) = this.buffer.pop_front() {
-            return Poll::Ready(Some(result));
+
+        let terminated = self.source_done && self.in_flight == 0 && self.out_buf.is_empty();
+        if terminated {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
         }
-        
-        // Send items to dispatcher
-        if let Some(sender) = &this.dispatcher_sender {
-            while !this.source_done {
-                match this.source.as_mut().poll_next(cx) {
-                    Poll::Ready(Some(item)) => {
-                        if let Err(_) = sender.try_send(item) {
-                            // Channel is full, wait for capacity
-                            break;
-                        }
-                    }
-                    Poll::Ready(None) => {
-                        this.source_done = true;
-                        break;
-                    }
-                    Poll::Pending => {
-                        break;
-                    }
-                }
-            }
-        }
-        
-        // Check if we're done
-        if this.source_done {
-            // Check for any remaining results
-            if let Some(receiver) = &mut this.result_receiver {
-                while let Ok(result) = receiver.try_recv() {
-                    this.buffer.push_back(result);
-                }
-                
-                // Return any buffered results
-                if let Some(result) = this.buffer.pop_front() {
-                    return Poll::Ready(Some(result));
-                }
-                
-                // Check if channel is closed (all workers done)
-                if receiver.try_recv().is_err() {
-                    this.cleanup_dispatcher();
-                    return Poll::Ready(None);
-                }
-            }
-        }
-        
-        Poll::Pending
     }
 }
 
+impl<S, F, O> Drop for ParMap<S, F, O>
+where
+    S: Stream + Unpin,
+    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static + Unpin,
+    O: Send + 'static + Unpin,
+    S::Item: Send + 'static + Unpin,
+{
+    fn drop(&mut self) {
+        // The sender will be dropped automatically when self is dropped
+        // This will close the channel and stop workers from sending
+    }
+}
 
+// ----------------------------- Extension Trait -----------------------------
+
+pub trait ParallelStreamExt: crate::stream::Stream + Sized {
+    fn par_eval_map<F, U>(self, concurrency: usize, f: F) -> ParEvalMap<Self, F, U>
+    where
+        F: Fn(Self::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+        + Send
+        + Sync
+        + Clone
+        + 'static
+        + Unpin,
+        U: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+        Self: Send,
+        Self: 'static,
+    {
+        ParEvalMap::new(self, concurrency, f)
+    }
+
+    fn par_eval_map_unordered<F, U>(self, concurrency: usize, f: F) -> ParEvalMapUnordered<Self, F, U>
+    where
+        F: Fn(Self::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
+        + Send
+        + Sync
+        + Clone
+        + 'static
+        + Unpin,
+        U: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+        Self: Send,
+        Self: 'static,
+    {
+        ParEvalMapUnordered::new(self, concurrency, f)
+    }
+
+    // Optional: sync CPU-bound parallel map
+    fn map_parallel_rs2<F, O>(self, f: F) -> ParMap<Self, F, O>
+    where
+        Self: Stream + Unpin + Send + 'static,
+        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
+        O: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        ParMap::new(self, f, ParallelConfig::default())
+    }
+
+    fn map_parallel_with_concurrency_rs2<F, O>(
+        self,
+        concurrency: usize,
+        f: F,
+    ) -> ParMap<Self, F, O>
+    where
+        Self: Stream + Unpin + Send + 'static,
+        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
+        O: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        let mut cfg = ParallelConfig::default();
+        cfg.concurrency = clamp_concurrency(concurrency);
+        ParMap::new(self, f, cfg)
+    }
+}
+
+impl<T> ParallelStreamExt for T where T: crate::stream::Stream + Sized {}

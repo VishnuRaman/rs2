@@ -60,10 +60,10 @@ fn main() {
         let user_ids = from_iter_rs2(vec![1, 2, 3, 4, 5]);
 
         // Use eval_map_rs2 to asynchronously fetch user details for each ID
-        let users_stream = user_ids.eval_map_rs2(|id| async move { 
+        let users_stream = user_ids.eval_map_rs2(|id| Box::pin(async move { 
             println!("  🔍 Fetching user {}", id);
             fetch_user_details(id).await 
-        });
+        }));
 
         let users: Vec<User> = users_stream.collect_rs2().await;
 
@@ -78,15 +78,15 @@ fn main() {
         let user_ids = from_iter_rs2(vec![1, 2, 3]);
 
         let processed_users: Vec<Result<User, String>> = user_ids
-            .eval_map_rs2(|id| async move {
+            .eval_map_rs2(|id| Box::pin(async move {
                 println!("  🔍 Fetching user {}", id);
                 fetch_user_details(id).await
-            })
-            .eval_map_rs2(|user| async move {
+            }))
+            .eval_map_rs2(|user| Box::pin(async move {
                 println!("  ✅ Validating user {}", user.id);
                 validate_user(user).await
-            })
-            .eval_map_rs2(|result| async move {
+            }))
+            .eval_map_rs2(|result| Box::pin(async move {
                 match result {
                     Ok(user) => {
                         println!("  🔐 Enriching user {} with permissions", user.id);
@@ -94,7 +94,7 @@ fn main() {
                     }
                     Err(e) => Err(e)
                 }
-            })
+            }))
             .collect_rs2()
             .await;
 
@@ -113,10 +113,10 @@ fn main() {
         let start_time = std::time::Instant::now();
         
         // Use par_eval_map_rs2 for parallel processing
-        let parallel_users: Vec<User> = user_ids.par_eval_map_rs2(3, |id| async move {
+        let parallel_users: Vec<User> = user_ids.par_eval_map_rs2(3, |id| Box::pin(async move {
             println!("  🚀 Parallel fetching user {}", id);
             fetch_user_details(id).await
-        })
+        }))
         .collect_rs2()
         .await;
 

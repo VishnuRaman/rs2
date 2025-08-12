@@ -333,6 +333,7 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         Fut: Future<Output = U> + Send + 'static,
         U: Send + 'static,
         Self::Item: Send + 'static,
+        Self: Unpin,
     {
         rs2::eval_map(self, f)
     }
@@ -378,9 +379,9 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     where
         F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
         Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static + Unpin,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
         Self::Item: Send + 'static + Unpin,
-        Self: Send + 'static,
     {
         use crate::stream::parallel::ParallelStreamExt;
         let boxed_f = move |item: Self::Item| {
@@ -573,17 +574,13 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     }
 
     /// Process items in parallel with unordered results
-    fn par_eval_map_unordered_rs2<F, Fut, U>(
-        self,
-        concurrency: usize,
-        f: F,
-    ) -> impl Stream<Item = U> + Send + 'static
+    fn par_eval_map_unordered_rs2<F, Fut, U>(self, concurrency: usize, f: F) -> impl Stream<Item = U> + Send + 'static
     where
         F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
         Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static + Unpin,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
         Self::Item: Send + 'static + Unpin,
-        Self: Send + 'static,
     {
         use crate::stream::parallel::ParallelStreamExt;
         let boxed_f = move |item: Self::Item| {
@@ -600,8 +597,8 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     ) -> impl Stream<Item = <Self::Item as Stream>::Item> + Send + 'static
     where
         Self::Item: Stream + Send + 'static + Unpin,
-        <Self::Item as Stream>::Item: Send + 'static + Unpin,
-        Self: Send + 'static,
+        <Self::Item as Stream>::Item: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
     {
         // Use par_eval_map_rs2 to process streams with the given concurrency
         self.par_eval_map_rs2(concurrency, |stream| async move {
@@ -775,7 +772,8 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     where
         F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
         Self::Item: Send + 'static + Unpin,
-        O: Send + 'static + Unpin,
+        O: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
     {
         use crate::stream::parallel::ParallelStreamExt;
         let concurrency = num_cpus::get();
@@ -794,7 +792,8 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     where
         F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
         Self::Item: Send + 'static + Unpin,
-        O: Send + 'static + Unpin,
+        O: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
     {
         use crate::stream::parallel::ParallelStreamExt;
         self.par_eval_map_rs2(concurrency, move |x| {

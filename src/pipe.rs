@@ -1,4 +1,5 @@
 use crate::stream::Stream;
+use crate::rs2_stream_ext::RS2StreamExt;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -24,7 +25,7 @@ where
     }
 
     /// Apply this pipe to a stream
-    pub fn apply<S>(&self, input: S) -> impl Stream<Item = O> + Send + Unpin + 'static
+    pub fn apply<S>(&self, input: S) -> impl Stream<Item = O> + Send + Unpin + 'static + RS2StreamExt
     where
         S: Stream<Item = I> + Send + Unpin + 'static,
     {

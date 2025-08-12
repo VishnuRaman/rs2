@@ -121,7 +121,7 @@ impl MediaPriorityQueue {
         self.internal_queue.enqueue(item).await
     }
 
-    pub fn dequeue(&self) -> impl Stream<Item = MediaChunk> + Send + 'static {
+    pub fn dequeue(&self) -> impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt {
         PriorityQueueStream {
             priority_buffer: Arc::clone(&self.priority_buffer),
             queue_stream: Box::pin(self.internal_queue.stream()),
@@ -170,7 +170,7 @@ impl MediaPriorityQueue {
     }
 
     /// Get a stream of priority items
-    pub fn get_stream(&self) -> impl Stream<Item = PriorityItem> + Send + 'static {
+    pub fn get_stream(&self) -> impl Stream<Item = PriorityItem> + Send + 'static + RS2StreamExt {
         self.internal_queue.stream()
     }
 }
