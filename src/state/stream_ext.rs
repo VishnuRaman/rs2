@@ -1171,6 +1171,197 @@ where
             .unwrap_or_else(StateConfig::default);
         self.stateful_group_by_rs2(config, key_extractor, None, None, f)
     }
+
+    /// Stateful fold with session-aware configuration
+    fn stateful_fold_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        initial: R,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(R, T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Clone + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_fold_rs2(config, key_extractor, initial, f)
+    }
+
+    /// Stateful reduce with session-aware configuration
+    fn stateful_reduce_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        initial: Option<R>,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(R, T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Clone + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_reduce_rs2(config, key_extractor, initial, f)
+    }
+
+    /// Stateful group by advanced with session-aware configuration
+    fn stateful_group_by_advanced_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        group_timeout: Option<Duration>,
+        max_group_size: Option<usize>,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(String, Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_group_by_advanced_rs2(config, key_extractor, group_timeout, max_group_size, f)
+    }
+
+    /// Stateful deduplicate with session-aware configuration
+    fn stateful_deduplicate_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        ttl: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
+    where
+        F: FnMut(T) -> T + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_deduplicate_rs2(config, key_extractor, ttl, f)
+    }
+
+    /// Stateful throttle with session-aware configuration
+    fn stateful_throttle_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        rate_limit: u32,
+        window_duration: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
+    where
+        F: FnMut(T) -> T + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_throttle_rs2(config, key_extractor, rate_limit, window_duration, f)
+    }
+
+    /// Stateful session with session-aware configuration
+    fn stateful_session_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        session_timeout: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
+    where
+        F: FnMut(T, bool) -> T + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_session_rs2(config, key_extractor, session_timeout, f)
+    }
+
+    /// Stateful pattern with session-aware configuration
+    fn stateful_pattern_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        pattern_size: usize,
+        f: F,
+    ) -> impl Stream<Item = Result<Option<String>, StateError>> + Send + 'static
+    where
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<Option<String>, StateError>> + Send>> + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_pattern_rs2(config, key_extractor, pattern_size, f)
+    }
+
+    /// Stateful join with session-aware configuration
+    fn stateful_join_with_session_rs2<U, F, R>(
+        self,
+        other: impl Stream<Item = U> + Send + Unpin + 'static,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        other_key_extractor: impl KeyExtractor<U> + Send + Sync + 'static,
+        window_duration: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(T, U, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        U: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + 'static,
+        R: Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_join_rs2(other, config, key_extractor, other_key_extractor, window_duration, f)
+    }
+
+    /// Stateful window with session-aware configuration
+    fn stateful_window_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        window_size: usize,
+        f: F,
+        resource_config: ResourceConfig,
+    ) -> StatefulWindow<Self, F, T, R>
+    where
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Unpin + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_window_rs2(config, key_extractor, window_size, f, resource_config)
+    }
+
+    /// Stateful window advanced with session-aware configuration
+    fn stateful_window_advanced_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        window_size: usize,
+        slide_size: Option<usize>,
+        emit_partial: bool,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static + Unpin,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_window_rs2_advanced(config, key_extractor, window_size, slide_size, emit_partial, f)
+    }
+
+    /// Stateful time window with session-aware configuration
+    fn stateful_time_window_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        window_duration: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static + Unpin,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_time_window_rs2(config, key_extractor, window_duration, f)
+    }
 } 
 
 pub struct StateAccess {
