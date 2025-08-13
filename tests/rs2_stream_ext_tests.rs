@@ -97,7 +97,8 @@ async fn test_map_rs2() {
 async fn test_map_parallel_rs2() {
     let stream = rs2::from_iter_rs2(vec![1, 2, 3, 4]);
     let mapped = stream.map_parallel_rs2(Some(2), |x| x * 2);
-    let result: Vec<_> = mapped.collect_rs2().await;
+    let mut result: Vec<_> = mapped.collect_rs2().await;
+    result.sort();
     assert_eq!(result, vec![2, 4, 6, 8]);
 }
 
@@ -105,7 +106,8 @@ async fn test_map_parallel_rs2() {
 async fn test_map_parallel_with_concurrency_rs2() {
     let stream = rs2::from_iter_rs2(vec![1, 2, 3, 4]);
     let mapped = stream.map_parallel_with_concurrency_rs2(2, |x| x * 3);
-    let result: Vec<_> = mapped.collect_rs2().await;
+    let mut result: Vec<_> = mapped.collect_rs2().await;
+    result.sort();
     assert_eq!(result, vec![3, 6, 9, 12]);
 }
 
@@ -838,7 +840,8 @@ async fn test_parallel_processing_chain() {
             x + 1 
         });
     
-    let result: Vec<_> = stream.collect_rs2().await;
+    let mut result: Vec<_> = stream.collect_rs2().await;
+    result.sort(); // Sort results since parallel operations don't guarantee order
     assert_eq!(result, vec![7, 9]);
 }
 

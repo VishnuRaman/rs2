@@ -10,6 +10,7 @@ use crate::stream::Stream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 use tokio::sync::RwLock;
 use crate::stream_performance_metrics::StreamMetrics;
 use crate::rs2;
@@ -65,7 +66,7 @@ impl MediaStreamingService {
         let chunk_queue = Arc::clone(&self.chunk_queue);
         let metrics = Arc::clone(&self.metrics);
 
-        self.create_chunk_stream_with_config(_file, stream_config, chunk_queue, metrics, file_config)
+        self.create_chunk_stream_with_config(_file, stream_config, chunk_queue, metrics, file_config).await
     }
 
     /// Start streaming from a file with default configuration
@@ -157,25 +158,84 @@ impl MediaStreamingService {
         file
     }
 
-    fn create_chunk_stream_with_config(
+        async fn create_chunk_stream_with_config(
         &self,
-        _file: tokio::fs::File,
-        _config: MediaStream,
-        _queue: Arc<MediaPriorityQueue>,
-        _metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
+        file: tokio::fs::File,
+        config: MediaStream,
+        queue: Arc<MediaPriorityQueue>,
+        metrics: Arc<tokio::sync::Mutex<StreamMetrics>>,
         file_config: crate::stream_configuration::FileConfig,
     ) -> impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt {
-        let _buffer_size = file_config.buffer_size.max(_config.chunk_size);
+        let buffer_size = config.chunk_size;
         let backpressure_config = BackpressureConfig {
             buffer_size: 256,
             strategy: crate::rs2::BackpressureStrategy::Block,
             high_watermark: Some(200),
             low_watermark: Some(50),
         };
-        auto_backpressure_block(
-            crate::stream::constructors::empty(),
-            backpressure_config,
-        )
+        
+        // Read the entire file content first (this is a simpler approach for now)
+        let file_content = {
+            use tokio::io::AsyncReadExt;
+            let mut content = Vec::new();
+            let mut file_clone = file.try_clone().await.unwrap();
+            file_clone.read_to_end(&mut content).await.unwrap();
+            content
+        };
+        
+        // Create chunks from the file content
+        let chunks: Vec<Vec<u8>> = file_content
+            .chunks(buffer_size)
+            .map(|chunk| chunk.to_vec())
+            .collect();
+        
+        // Convert to MediaChunks
+        let chunk_stream = crate::stream::constructors::from_iter(chunks)
+            .enumerate_rs2()
+            .map_rs2(move |(sequence, data)| {
+                let config = config.clone();
+                MediaChunk {
+                    stream_id: config.id.clone(),
+                    sequence_number: sequence as u64,
+                    data,
+                    chunk_type: if sequence % 30 == 0 {
+                        ChunkType::VideoIFrame
+                    } else if sequence % 3 == 0 {
+                        ChunkType::VideoBFrame
+                    } else {
+                        ChunkType::VideoPFrame
+                    },
+                    priority: if sequence % 30 == 0 {
+                        MediaPriority::High
+                    } else if sequence % 3 == 0 {
+                        MediaPriority::Low
+                    } else {
+                        MediaPriority::Normal
+                    },
+                    timestamp: std::time::Duration::from_millis(sequence as u64 * 33),
+                    is_final: false,
+                    checksum: None,
+                }
+            })
+        .eval_map_rs2(move |chunk| {
+            let queue = Arc::clone(&queue);
+            let metrics = Arc::clone(&metrics);
+            async move {
+                // Update metrics when chunk is created
+                {
+                    let mut m = metrics.lock().await;
+                    m.record_item(chunk.data.len() as u64);
+                }
+                
+                if let Err(_) = queue.try_enqueue(chunk.clone()).await {
+                    let mut m = metrics.lock().await;
+                    m.record_error();
+                }
+                chunk
+            }
+        });
+        
+        auto_backpressure_block(chunk_stream, backpressure_config)
     }
 
     async fn acquire_file_resource_simple(&self, path: PathBuf) -> tokio::fs::File {
@@ -221,10 +281,7 @@ impl MediaStreamingService {
         chunk: &MediaChunk,
     ) {
         let mut m = metrics.lock().await;
-        m.items_processed += 1;
-        m.bytes_processed += chunk.data.len() as u64;
-        m.average_item_size = m.bytes_processed as f64 / m.items_processed as f64;
-        m.last_activity = Some(std::time::Instant::now());
+        m.record_item(chunk.data.len() as u64);
     }
 
     pub fn get_chunk_stream(&self) -> impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt {
@@ -233,7 +290,9 @@ impl MediaStreamingService {
 
     pub async fn get_metrics(&self) -> StreamMetrics {
         let metrics = Arc::clone(&self.metrics);
-        let x = metrics.lock().await.clone(); x
+        let mut x = metrics.lock().await.clone();
+        x.update_derived_metrics();
+        x
     }
 
     pub fn get_metrics_stream(&self) -> impl Stream<Item = StreamMetrics> + Send + 'static {
@@ -245,7 +304,11 @@ impl MediaStreamingService {
             rs2::from_iter_rs2(vec![()])
                 .eval_map_rs2(move |_| {
                     let metrics = Arc::clone(&metrics);
-                    async move { metrics.lock().await.clone() }
+                    async move { 
+                        let mut m = metrics.lock().await.clone();
+                        m.update_derived_metrics();
+                        m
+                    }
                 })
         };
         
@@ -255,7 +318,11 @@ impl MediaStreamingService {
             rs2::tick(Duration::from_millis(100), ())
                 .eval_map_rs2(move |_| {
                     let metrics = Arc::clone(&metrics);
-                    async move { metrics.lock().await.clone() }
+                    async move { 
+                        let mut m = metrics.lock().await.clone();
+                        m.update_derived_metrics();
+                        m
+                    }
                 })
         };
         

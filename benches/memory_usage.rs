@@ -110,7 +110,7 @@ fn bench_memory_efficiency(c: &mut Criterion) {
                     }).collect();
                     
                     let result = from_iter_rs2(data)
-                        .par_eval_map_rs2(4, |n| async move {
+                        .par_eval_map_rs2(Some(4), |n| async move {
                             // Simulate some async processing
                             tokio::task::yield_now().await;
                             n * n

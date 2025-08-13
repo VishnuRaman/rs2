@@ -279,35 +279,35 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
                         let result = match task_type {
                             "light_cpu" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_rs2(conc, |x| Box::pin(light_cpu_task(x)))
+                                    .par_eval_map_rs2(Some(conc), |x| Box::pin(light_cpu_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
                             }
                             "medium_cpu" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_rs2(conc, |x| Box::pin(medium_cpu_task(x)))
+                                    .par_eval_map_rs2(Some(conc), |x| Box::pin(medium_cpu_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
                             }
                             "heavy_cpu" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_rs2(conc, |x| Box::pin(heavy_cpu_task(x)))
+                                    .par_eval_map_rs2(Some(conc), |x| Box::pin(heavy_cpu_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
                             }
                             "io_simulation" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_rs2(conc, |x| Box::pin(io_simulation_task(x)))
+                                    .par_eval_map_rs2(Some(conc), |x| Box::pin(io_simulation_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
                             }
                             "variable_workload" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_rs2(conc, |x| Box::pin(variable_workload_task(x)))
+                                    .par_eval_map_rs2(Some(conc), |x| Box::pin(variable_workload_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
@@ -331,35 +331,35 @@ fn bench_parallel_processing_comprehensive(c: &mut Criterion) {
                         let result = match task_type {
                             "light_cpu" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_unordered_rs2(conc, |x| Box::pin(light_cpu_task(x)))
+                                    .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(light_cpu_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
                             }
                             "medium_cpu" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_unordered_rs2(conc, |x| Box::pin(medium_cpu_task(x)))
+                                    .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(medium_cpu_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
                             }
                             "heavy_cpu" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_unordered_rs2(conc, |x| Box::pin(heavy_cpu_task(x)))
+                                    .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(heavy_cpu_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
                             }
                             "io_simulation" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_unordered_rs2(conc, |x| Box::pin(io_simulation_task(x)))
+                                    .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(io_simulation_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
                             }
                             "variable_workload" => {
                                 from_iter_rs2(0..size)
-                                    .par_eval_map_unordered_rs2(conc, |x| Box::pin(variable_workload_task(x)))
+                                    .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(variable_workload_task(x)))
                                     .map_rs2(|_| 1)
                                     .collect_rs2()
                                     .await
@@ -408,7 +408,7 @@ fn bench_parallel_scaling(c: &mut Criterion) {
                     } else {
                         // Parallel for concurrency > 1
                         from_iter_rs2(0..data_size)
-                            .par_eval_map_unordered_rs2(conc, |x| Box::pin(heavy_cpu_task(x)))
+                            .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(heavy_cpu_task(x)))
                             .collect_rs2()
                             .await
                     };
@@ -430,7 +430,7 @@ fn bench_parallel_scaling(c: &mut Criterion) {
                             .await
                     } else {
                         from_iter_rs2(0..data_size)
-                            .par_eval_map_unordered_rs2(conc, |x| Box::pin(io_simulation_task(x)))
+                            .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(io_simulation_task(x)))
                             .collect_rs2()
                             .await
                     };
@@ -452,7 +452,7 @@ fn bench_parallel_scaling(c: &mut Criterion) {
                             .await
                     } else {
                         from_iter_rs2(0..data_size)
-                            .par_eval_map_unordered_rs2(conc, |x| Box::pin(variable_workload_task(x)))
+                            .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(variable_workload_task(x)))
                             .collect_rs2()
                             .await
                     };
@@ -494,20 +494,20 @@ fn bench_ordered_vs_unordered(c: &mut Criterion) {
                         let result = match task {
                             "uniform_fast" => {
                                 from_iter_rs2(0..data_size)
-                                    .par_eval_map_rs2(concurrency, |x| Box::pin(light_cpu_task(x)))
+                                    .par_eval_map_rs2(Some(concurrency), |x| Box::pin(light_cpu_task(x)))
                                     .collect_rs2()
                                     .await
                             }
                             "uniform_slow" => {
                                 from_iter_rs2(0..data_size)
-                                    .par_eval_map_rs2(concurrency, |x| Box::pin(medium_cpu_task(x)))
+                                    .par_eval_map_rs2(Some(concurrency), |x| Box::pin(medium_cpu_task(x)))
                                     .map_rs2(|_| 1) // Map to i32 to match other arms
                                     .collect_rs2()
                                     .await
                             }
                             "variable_mixed" => {
                                 from_iter_rs2(0..data_size)
-                                    .par_eval_map_rs2(concurrency, |x| Box::pin(variable_workload_task(x)))
+                                    .par_eval_map_rs2(Some(concurrency), |x| Box::pin(variable_workload_task(x)))
                                     .collect_rs2()
                                     .await
                             }
@@ -530,20 +530,20 @@ fn bench_ordered_vs_unordered(c: &mut Criterion) {
                         let result = match task {
                             "uniform_fast" => {
                                 from_iter_rs2(0..data_size)
-                                    .par_eval_map_unordered_rs2(concurrency, |x| Box::pin(light_cpu_task(x)))
+                                    .par_eval_map_unordered_rs2(Some(concurrency), |x| Box::pin(light_cpu_task(x)))
                                     .collect_rs2()
                                     .await
                             }
                             "uniform_slow" => {
                                 from_iter_rs2(0..data_size)
-                                    .par_eval_map_unordered_rs2(concurrency, |x| Box::pin(medium_cpu_task(x)))
+                                    .par_eval_map_unordered_rs2(Some(concurrency), |x| Box::pin(medium_cpu_task(x)))
                                     .map_rs2(|_| 1) // Map to i32 to match other arms
                                     .collect_rs2()
                                     .await
                             }
                             "variable_mixed" => {
                                 from_iter_rs2(0..data_size)
-                                    .par_eval_map_unordered_rs2(concurrency, |x| Box::pin(variable_workload_task(x)))
+                                    .par_eval_map_unordered_rs2(Some(concurrency), |x| Box::pin(variable_workload_task(x)))
                                     .collect_rs2()
                                     .await
                             }
@@ -588,7 +588,7 @@ fn bench_concurrency_optimization(c: &mut Criterion) {
                             .await
                     } else {
                         from_iter_rs2(0..data_size)
-                            .par_eval_map_unordered_rs2(conc, |x| Box::pin(io_simulation_task(x)))
+                            .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(io_simulation_task(x)))
                             .collect_rs2()
                             .await
                     };
@@ -618,7 +618,7 @@ fn bench_concurrency_optimization(c: &mut Criterion) {
                             .await
                     } else {
                         from_iter_rs2(0..data_size)
-                            .par_eval_map_unordered_rs2(conc, |x| Box::pin(heavy_cpu_task(x)))
+                            .par_eval_map_unordered_rs2(Some(conc), |x| Box::pin(heavy_cpu_task(x)))
                             .collect_rs2()
                             .await
                     };
@@ -779,21 +779,21 @@ fn bench_map_parallel_functions(c: &mut Criterion) {
                     let result = match task_type {
                         "light_cpu" => {
                             from_iter_rs2(0..size)
-                                .map_parallel_rs2(light_cpu_sync)
+                                .map_parallel_rs2(Some(4), light_cpu_sync)
                                 .map_rs2(|_| 1) // Normalize result type
                                 .collect_rs2()
                                 .await
                         }
                         "medium_cpu" => {
                             from_iter_rs2(0..size)
-                                .map_parallel_rs2(medium_cpu_sync)
+                                .map_parallel_rs2(Some(4), medium_cpu_sync)
                                 .map_rs2(|_| 1)
                                 .collect_rs2()
                                 .await
                         }
                         "heavy_cpu" => {
                             from_iter_rs2(0..size)
-                                .map_parallel_rs2(heavy_cpu_sync)
+                                .map_parallel_rs2(Some(4), heavy_cpu_sync)
                                 .map_rs2(|_| 1)
                                 .collect_rs2()
                                 .await
@@ -929,7 +929,7 @@ fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
         |b, &size| {
             b.to_async(&rt).iter(|| async {
                 let result = from_iter_rs2(0..size)
-                    .map_parallel_rs2(heavy_cpu_work)
+                    .map_parallel_rs2(Some(4), heavy_cpu_work)
                     .map_rs2(|_| 1) // Normalize result type
                     .collect_rs2()
                     .await;
@@ -961,7 +961,7 @@ fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
         |b, &size| {
             b.to_async(&rt).iter(|| async {
                 let result = from_iter_rs2(0..size)
-                    .par_eval_map_rs2(concurrency, |x| Box::pin(async move { heavy_cpu_work(x) }))
+                    .par_eval_map_rs2(Some(concurrency), |x| Box::pin(async move { heavy_cpu_work(x) }))
                     .map_rs2(|_| 1) // Normalize result type
                     .collect_rs2()
                     .await;
@@ -977,7 +977,7 @@ fn bench_map_parallel_vs_par_eval_map(c: &mut Criterion) {
         |b, &size| {
             b.to_async(&rt).iter(|| async {
                 let result = from_iter_rs2(0..size)
-                    .par_eval_map_unordered_rs2(concurrency, |x| Box::pin(async move { heavy_cpu_work(x) }))
+                    .par_eval_map_unordered_rs2(Some(concurrency), |x| Box::pin(async move { heavy_cpu_work(x) }))
                     .map_rs2(|_| 1) // Normalize result type
                     .collect_rs2()
                     .await;
@@ -1027,7 +1027,7 @@ fn bench_improved_par_map(c: &mut Criterion) {
                 |b, &(size, conc)| {
                     b.to_async(&rt).iter(|| async {
                         let result = from_iter_rs2(0..size)
-                            .par_eval_map_rs2(conc, |x| Box::pin(async move { light_cpu_work_sync(x) }))
+                            .par_eval_map_rs2(Some(conc), |x| Box::pin(async move { light_cpu_work_sync(x) }))
                             .collect_rs2()
                             .await;
                         black_box(result)
@@ -1045,7 +1045,7 @@ fn bench_improved_par_map(c: &mut Criterion) {
                 |b, &(size, conc)| {
                     b.to_async(&rt).iter(|| async {
                         let result = from_iter_rs2(0..size)
-                            .par_eval_map_rs2(conc, |x| Box::pin(async move { light_cpu_work_sync(x) }))
+                            .par_eval_map_rs2(Some(conc), |x| Box::pin(async move { light_cpu_work_sync(x) }))
                             .collect_rs2()
                             .await;
                         black_box(result)
@@ -1086,7 +1086,7 @@ fn bench_improved_par_map(c: &mut Criterion) {
                 |b, &(size, conc)| {
                     b.to_async(&rt).iter(|| async {
                         let result = from_iter_rs2(0..size)
-                            .par_eval_map_rs2(conc, |x| Box::pin(async move { medium_cpu_work_sync(x) }))
+                            .par_eval_map_rs2(Some(conc), |x| Box::pin(async move { medium_cpu_work_sync(x) }))
                             .collect_rs2()
                             .await;
                         black_box(result)
@@ -1104,7 +1104,7 @@ fn bench_improved_par_map(c: &mut Criterion) {
                 |b, &(size, conc)| {
                     b.to_async(&rt).iter(|| async {
                         let result = from_iter_rs2(0..size)
-                            .par_eval_map_rs2(conc, |x| Box::pin(async move { medium_cpu_work_sync(x) }))
+                            .par_eval_map_rs2(Some(conc), |x| Box::pin(async move { medium_cpu_work_sync(x) }))
                             .collect_rs2()
                             .await;
                         black_box(result)
@@ -1145,7 +1145,7 @@ fn bench_improved_par_map(c: &mut Criterion) {
                 |b, &(size, conc)| {
                     b.to_async(&rt).iter(|| async {
                         let result = from_iter_rs2(0..size)
-                            .par_eval_map_rs2(conc, |x| Box::pin(async move { heavy_cpu_work_sync(x) }))
+                            .par_eval_map_rs2(Some(conc), |x| Box::pin(async move { heavy_cpu_work_sync(x) }))
                             .collect_rs2()
                             .await;
                         black_box(result)
@@ -1163,7 +1163,7 @@ fn bench_improved_par_map(c: &mut Criterion) {
                 |b, &(size, conc)| {
                     b.to_async(&rt).iter(|| async {
                         let result = from_iter_rs2(0..size)
-                            .par_eval_map_rs2(conc, |x| Box::pin(async move { heavy_cpu_work_sync(x) }))
+                            .par_eval_map_rs2(Some(conc), |x| Box::pin(async move { heavy_cpu_work_sync(x) }))
                             .collect_rs2()
                             .await;
                         black_box(result)
@@ -1194,7 +1194,7 @@ fn bench_adaptive_configuration(c: &mut Criterion) {
             |b, &size| {
                 b.to_async(&rt).iter(|| async {
                     let result = from_iter_rs2(0..size)
-                        .par_eval_map_rs2(4, |x| Box::pin(async move { x * 2 }))
+                        .par_eval_map_rs2(Some(4), |x| Box::pin(async move { x * 2 }))
                         .collect_rs2()
                         .await;
                     black_box(result)
@@ -1235,7 +1235,7 @@ fn bench_adaptive_configuration(c: &mut Criterion) {
                     };
                     
                     let result = from_iter_rs2(0..size)
-                        .par_eval_map_rs2(4, |x| Box::pin(async move { x * 2 }))
+                        .par_eval_map_rs2(Some(4), |x| Box::pin(async move { x * 2 }))
                         .collect_rs2()
                         .await;
                     black_box(result)
@@ -1261,7 +1261,7 @@ fn bench_simple_par_map(c: &mut Criterion) {
         |b, &size| {
             b.to_async(&rt).iter(|| async {
                 let result = from_iter_rs2(0..size)
-                    .par_eval_map_rs2(2, |x| Box::pin(async move { x * 2 }))
+                    .par_eval_map_rs2(Some(2), |x| Box::pin(async move { x * 2 }))
                     .collect_rs2()
                     .await;
                 black_box(result)

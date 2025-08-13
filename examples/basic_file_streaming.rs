@@ -10,6 +10,7 @@ use chrono::Utc;
 use rs2_stream::rs2::*;
 use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::media::types::{MediaChunk, MediaStream, MediaType, QualityLevel};
 use rs2_stream::media::StreamingServiceFactory;
 use std::collections::HashMap;
@@ -51,15 +52,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .start_file_stream(file_path, stream_config)
         .await;
 
+    // Process the chunks using collect_rs2
+    let chunks: Vec<MediaChunk> = chunk_stream.collect_rs2().await;
+    
+    println!("Received {} chunks", chunks.len());
+    
     // Process the chunks
     let mut chunk_count = 0;
     let mut _total_bytes = 0;
 
-    // Pin the stream to the stack
-    let mut chunk_stream = std::pin::pin!(chunk_stream);
-
-    // Process up to 100 chunks or until the stream ends
-    while let Some(chunk) = chunk_stream.next().await {
+    for chunk in chunks.iter().take(100) {
         chunk_count += 1;
         _total_bytes += chunk.data.len();
 
@@ -70,11 +72,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             chunk.data.len(),
             chunk.priority
         );
-
-        // Stop after 100 chunks for this example
-        if chunk_count >= 100 {
-            break;
-        }
     }
 
     // Get and display metrics
