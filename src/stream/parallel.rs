@@ -12,7 +12,7 @@
 //! - No unnecessary Clone bounds on output types.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{HashMap, VecDeque},
     future::Future,
     marker::PhantomData,
     pin::Pin,
@@ -104,17 +104,14 @@ fn is_disabled(d: Duration) -> bool {
 
 // -------------------------------- Ordered --------------------------------
 
-pub struct ParEvalMap<S, F, U>
+#[derive(Debug)]
+pub struct ParEvalMap<S, F, Fut, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-    + Send
-    + Sync
-    + Clone
-    + 'static
-    + Unpin,
-    U: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
 {
     source: Pin<Box<S>>,
     f: F,
@@ -122,15 +119,18 @@ where
     // Results arrive from workers here; (sequence_id, Option<U>).
     // None indicates worker timeout/panic/dropped.
     result_rx: mpsc::Receiver<(usize, Option<U>)>,
-    result_tx: mpsc::Sender<(usize, Option<U>)>,
+    result_tx: Option<mpsc::Sender<(usize, Option<U>)>>,
 
     // Concurrency limiter for in-flight workers.
     semaphore: std::sync::Arc<Semaphore>,
 
     // Ordered reassembly
-    reorder_buffer: BTreeMap<usize, U>,
+    reorder_buffer: HashMap<usize, U>, // HashMap for O(1) lookups by sequence
     next_sequence: usize,
-    sequence_started_at: BTreeMap<usize, Instant>,
+    sequence_started_at: HashMap<usize, Instant>, // HashMap for O(1) lookups by sequence
+    
+    // Tombstone tracking for missing results
+    tombstones: std::collections::HashSet<usize>, // HashSet for O(1) tombstone operations
 
     // Local output buffer
     out_buf: VecDeque<U>,
@@ -150,21 +150,27 @@ where
     _phantom: PhantomData<U>,
 }
 
-impl<S, F, U> ParEvalMap<S, F, U>
+// SAFETY: We never move fields that are !Unpin
+impl<S, F, Fut, U> Unpin for ParEvalMap<S, F, Fut, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-    + Send
-    + Sync
-    + Clone
-    + 'static
-    + Unpin,
-    U: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
+{}
+
+impl<S, F, Fut, U> ParEvalMap<S, F, Fut, U>
+where
+    S: Stream + Send + 'static,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
 {
     pub fn new(source: S, concurrency: usize, f: F) -> Self {
         let concurrency = clamp_concurrency(concurrency);
-        let mut this = Self::with_config(source, f, ParallelConfig {
+        let this = Self::with_config(source, f, ParallelConfig {
             concurrency,
             ..Default::default()
         });
@@ -173,6 +179,10 @@ where
 
     pub fn with_config(source: S, f: F, mut config: ParallelConfig) -> Self {
         config.concurrency = clamp_concurrency(config.concurrency);
+        // Enforce max_buffer_size >= concurrency to prevent stalls
+        if config.max_buffer_size < config.concurrency {
+            config.max_buffer_size = config.concurrency;
+        }
         if config.max_buffer_size == 0 {
             config.max_buffer_size = 1;
         }
@@ -183,11 +193,12 @@ where
             source: Box::pin(source),
             f,
             result_rx: rx,
-            result_tx: tx,
+            result_tx: Some(tx),
             semaphore: std::sync::Arc::new(Semaphore::new(config.concurrency)),
-            reorder_buffer: BTreeMap::new(),
+            reorder_buffer: HashMap::new(),
             next_sequence: 0,
-            sequence_started_at: BTreeMap::new(),
+            sequence_started_at: HashMap::new(),
+            tombstones: std::collections::HashSet::new(),
             out_buf: VecDeque::with_capacity(config.max_buffer_size.min(1024)),
             source_done: false,
             in_flight: 0,
@@ -200,23 +211,29 @@ where
 
     fn spawn_worker(&mut self, seq: usize, item: S::Item) {
         let fut_factory = self.f.clone();
-        let tx = self.result_tx.clone();
-        let sem = self.semaphore.clone();
+        let tx = match &self.result_tx {
+            Some(tx) => tx.clone(),
+            None => return, // Channel closed, don't spawn worker
+        };
         let task_timeout = self.config.task_timeout;
+        // Move the permit into the spawned task to keep it alive until completion
+        let _permit = self.semaphore.clone().try_acquire_owned().expect("permit should be available");
 
-        // Acquire a permit now (we only call when available).
-        // Move the permit into the task (drop releases).
-        let permit = sem.try_acquire_owned().expect("permit should be available");
+        // Safety check: ensure we have a valid sequence
+        debug_assert!(seq >= self.next_sequence, 
+            "Spawning worker for sequence {} but next_sequence is {}", seq, self.next_sequence);
 
         tokio::spawn(async move {
-            // Ensure permit is released at the end of this task.
-            let _permit = permit;
-
             // Run user future with optional timeout
-            let fut = (fut_factory)(item);
             let output: Option<U> = if is_disabled(task_timeout) {
+                // For non-timeout case, just await the future
+                // Panics will be caught by the task runtime and the task will terminate
+                // The permit will be dropped, allowing new work to be scheduled
+                let fut = fut_factory(item);
                 Some(fut.await)
             } else {
+                // For timeout case, handle timeout
+                let fut = fut_factory(item);
                 match tokio::time::timeout(task_timeout, fut).await {
                     Ok(v) => Some(v),
                     Err(_elapsed) => None, // task timed out, drop
@@ -225,6 +242,8 @@ where
 
             // Send result; ignore if receiver is dropped
             let _ = tx.send((seq, output)).await;
+            
+            // Permit is automatically dropped here when the task completes
         });
     }
 
@@ -241,7 +260,7 @@ where
             if self.source_done {
                 break;
             }
-            // Prefer not to overflow local buffers too far beyond limits
+            // Don't poll source if output buffer is full
             if self.out_buf.len() >= self.config.max_buffer_size {
                 break;
             }
@@ -256,6 +275,11 @@ where
                     self.spawn_worker(seq, item);
                     // activity recorded as we progressed
                     self.last_activity = Instant::now();
+                    
+                    // Safety check: ensure in_flight doesn't exceed concurrency
+                    debug_assert!(self.in_flight <= self.config.concurrency, 
+                        "in_flight ({}) should not exceed concurrency ({})", 
+                        self.in_flight, self.config.concurrency);
                 }
                 Poll::Ready(None) => {
                     self.source_done = true;
@@ -276,19 +300,26 @@ where
                 Poll::Ready(Some((seq, maybe_u))) => {
                     self.in_flight = self.in_flight.saturating_sub(1);
                     self.sequence_started_at.remove(&seq);
+                    
                     if let Some(u) = maybe_u {
+                        // Safety check: ensure sequence isn't in both reorder buffer and tombstones
+                        debug_assert!(!self.tombstones.contains(&seq), 
+                            "Sequence {} should not be in both reorder buffer and tombstones", seq);
                         self.reorder_buffer.insert(seq, u);
-                    } // else: drop timed-out/failed item
-
-                    // Try to push ordered items in order
-                    while let Some(u) = self.reorder_buffer.remove(&self.next_sequence) {
-                        self.out_buf.push_back(u);
-                        self.next_sequence += 1;
-                        self.last_activity = Instant::now();
-                        // Respect buffer size bounds
-                        if self.out_buf.len() >= self.config.max_buffer_size {
-                            break;
+                    } else {
+                        // Worker timed out/panicked - add tombstone to advance past this sequence
+                        if seq == self.next_sequence {
+                            // If this is the next expected sequence, advance immediately
+                            self.next_sequence += 1;
+                            self.last_activity = Instant::now();
+                        } else {
+                            // Otherwise, mark as tombstone for later processing
+                            self.tombstones.insert(seq);
                         }
+                        
+                        // Safety check: ensure sequence isn't in both reorder buffer and tombstones
+                        debug_assert!(!self.reorder_buffer.contains_key(&seq),
+                            "Sequence {} should not be in both reorder buffer and tombstones", seq);
                     }
                 }
                 Poll::Ready(None) => {
@@ -296,6 +327,48 @@ where
                     break;
                 }
                 Poll::Pending => break,
+            }
+        }
+        
+        // Consolidate after draining results to advance past tombstones and emit ready items
+        self.consolidate_ready();
+    }
+
+    fn consolidate_ready(&mut self) {
+        // First, advance past any tombstones at the head
+        while self.tombstones.contains(&self.next_sequence) {
+            self.tombstones.remove(&self.next_sequence);
+            self.sequence_started_at.remove(&self.next_sequence);
+            self.next_sequence += 1;
+            self.last_activity = Instant::now();
+            
+            // Safety check: ensure we don't have sequences in both states
+            debug_assert!(!self.reorder_buffer.contains_key(&(self.next_sequence - 1)),
+                "Sequence {} should not be in both reorder buffer and tombstones", self.next_sequence - 1);
+        }
+        
+        // Then drain contiguous ready items in order into out_buf
+        while let Some(u) = self.reorder_buffer.remove(&self.next_sequence) {
+            self.out_buf.push_back(u);
+            self.sequence_started_at.remove(&self.next_sequence);
+            self.next_sequence += 1;
+            self.last_activity = Instant::now();
+            
+            // Respect buffer size bounds
+            if self.out_buf.len() >= self.config.max_buffer_size {
+                break;
+            }
+            
+            // Continue advancing past tombstones
+            while self.tombstones.contains(&self.next_sequence) {
+                self.tombstones.remove(&self.next_sequence);
+                self.sequence_started_at.remove(&self.next_sequence);
+                self.next_sequence += 1;
+                self.last_activity = Instant::now();
+                
+                // Safety check: ensure we don't have sequences in both states
+                debug_assert!(!self.reorder_buffer.contains_key(&(self.next_sequence - 1)),
+                    "Sequence {} should not be in both reorder buffer and tombstones", self.next_sequence - 1);
             }
         }
     }
@@ -314,14 +387,22 @@ where
                 self.next_sequence += 1;
                 // record activity (we progressed)
                 self.last_activity = Instant::now();
+                // Call consolidate_ready to cascade any newly available items
+                self.consolidate_ready();
+                
+                // Safety check: ensure we don't have sequences in both states
+                debug_assert!(self.sequence_started_at.keys().all(|&seq| seq >= self.next_sequence),
+                    "All remaining sequences should be >= next_sequence after timeout skip");
             }
         }
     }
 
     fn is_terminated(&self) -> bool {
         let no_inflight = self.in_flight == 0;
-        let buffers_empty = self.out_buf.is_empty() && self.reorder_buffer.is_empty();
-        self.source_done && no_inflight && buffers_empty
+        let buffers_empty = self.out_buf.is_empty() && self.reorder_buffer.is_empty() && self.tombstones.is_empty();
+        let source_done = self.source_done;
+        
+        source_done && no_inflight && buffers_empty
     }
 
     fn inactivity_expired(&self) -> bool {
@@ -332,40 +413,42 @@ where
     }
 }
 
-impl<S, F, U> Stream for ParEvalMap<S, F, U>
+impl<S, F, Fut, U> Stream for ParEvalMap<S, F, Fut, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-    + Send
-    + Sync
-    + Clone
-    + 'static
-    + Unpin,
-    U: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
 {
     type Item = U;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         // First, try to receive any completed results.
-        self.poll_drain_results(cx);
+        self.as_mut().poll_drain_results(cx);
 
         // Enforce optional sequence timeout handling (skip stuck head).
-        self.maybe_skip_blocked_sequence();
+        self.as_mut().maybe_skip_blocked_sequence();
+
+        // Consolidate ready items after timeout handling
+        self.as_mut().consolidate_ready();
 
         // If we already have output buffered, return it immediately.
-        if let Some(item) = self.out_buf.pop_front() {
+        if let Some(item) = self.as_mut().out_buf.pop_front() {
             return Poll::Ready(Some(item));
         }
 
         // Try to schedule more work if possible.
-        self.poll_fill_inflight(cx);
+        self.as_mut().poll_fill_inflight(cx);
 
         // Try draining results again (new tasks may have completed quickly).
-        self.poll_drain_results(cx);
+        self.as_mut().poll_drain_results(cx);
+
+        // Consolidate ready items again after draining
+        self.as_mut().consolidate_ready();
 
         // Emit if available now.
-        if let Some(item) = self.out_buf.pop_front() {
+        if let Some(item) = self.as_mut().out_buf.pop_front() {
             return Poll::Ready(Some(item));
         }
 
@@ -379,21 +462,19 @@ where
     }
 }
 
-impl<S, F, U> Drop for ParEvalMap<S, F, U>
+impl<S, F, Fut, U> Drop for ParEvalMap<S, F, Fut, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-    + Send
-    + Sync
-    + Clone
-    + 'static
-    + Unpin,
-    U: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
 {
     fn drop(&mut self) {
-        // Drop the sender to close the channel; workers will stop sending.
-        // The sender will be dropped automatically when self is dropped
+        // Take the sender to close the channel deterministically
+        if let Some(tx) = self.result_tx.take() {
+            drop(tx); // This closes the channel
+        }
         // Remaining tasks will complete and drop their permits; no explicit aborts needed.
         // Buffers will be dropped naturally.
     }
@@ -401,23 +482,20 @@ where
 
 // ------------------------------- Unordered --------------------------------
 
-pub struct ParEvalMapUnordered<S, F, U>
+#[derive(Debug)]
+pub struct ParEvalMapUnordered<S, F, Fut, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-    + Send
-    + Sync
-    + Clone
-    + 'static
-    + Unpin,
-    U: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
 {
     source: Pin<Box<S>>,
     f: F,
 
     result_rx: mpsc::Receiver<Option<U>>,
-    result_tx: mpsc::Sender<Option<U>>,
+    result_tx: Option<mpsc::Sender<Option<U>>>,
 
     semaphore: std::sync::Arc<Semaphore>,
     out_buf: VecDeque<U>,
@@ -429,17 +507,23 @@ where
     config: ParallelConfig,
 }
 
-impl<S, F, U> ParEvalMapUnordered<S, F, U>
+// SAFETY: We never move fields that are !Unpin
+impl<S, F, Fut, U> Unpin for ParEvalMapUnordered<S, F, Fut, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-    + Send
-    + Sync
-    + Clone
-    + 'static
-    + Unpin,
-    U: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
+{}
+
+impl<S, F, Fut, U> ParEvalMapUnordered<S, F, Fut, U>
+where
+    S: Stream + Send + 'static,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
 {
     pub fn new(source: S, concurrency: usize, f: F) -> Self {
         let concurrency = clamp_concurrency(concurrency);
@@ -455,6 +539,10 @@ where
 
     pub fn with_config(source: S, f: F, mut config: ParallelConfig) -> Self {
         config.concurrency = clamp_concurrency(config.concurrency);
+        // Enforce max_buffer_size >= concurrency to prevent stalls
+        if config.max_buffer_size < config.concurrency {
+            config.max_buffer_size = config.concurrency;
+        }
         if config.max_buffer_size == 0 {
             config.max_buffer_size = 1;
         }
@@ -464,7 +552,7 @@ where
             source: Box::pin(source),
             f,
             result_rx: rx,
-            result_tx: tx,
+            result_tx: Some(tx),
             semaphore: std::sync::Arc::new(Semaphore::new(config.concurrency)),
             out_buf: VecDeque::with_capacity(config.max_buffer_size.min(1024)),
             source_done: false,
@@ -476,15 +564,18 @@ where
 
     fn spawn_worker(&mut self, item: S::Item) {
         let fut_factory = self.f.clone();
-        let tx = self.result_tx.clone();
-        let sem = self.semaphore.clone();
+        let tx = match &self.result_tx {
+            Some(tx) => tx.clone(),
+            None => return, // Channel closed, don't spawn worker
+        };
         let task_timeout = self.config.task_timeout;
 
-        let permit = sem.try_acquire_owned().expect("permit should be available");
+        // Safety check: ensure we're not spawning when buffer is full
+        debug_assert!(self.out_buf.len() < self.config.max_buffer_size,
+            "Spawning worker when output buffer is full ({} >= {})", 
+            self.out_buf.len(), self.config.max_buffer_size);
 
         tokio::spawn(async move {
-            let _permit = permit;
-
             let fut = (fut_factory)(item);
             let output: Option<U> = if is_disabled(task_timeout) {
                 Some(fut.await)
@@ -506,21 +597,30 @@ where
             if self.source_done {
                 break;
             }
+            // Don't poll source if output buffer is full
             if self.out_buf.len() >= self.config.max_buffer_size {
                 break;
             }
 
+            // Poll source for next item
             match self.source.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
                     self.in_flight += 1;
                     self.spawn_worker(item);
                     self.last_activity = Instant::now();
+                    
+                    // Safety check: ensure in_flight doesn't exceed concurrency
+                    debug_assert!(self.in_flight <= self.config.concurrency, 
+                        "in_flight ({}) should not exceed concurrency ({})", 
+                        self.in_flight, self.config.concurrency);
                 }
                 Poll::Ready(None) => {
                     self.source_done = true;
                     break;
                 }
-                Poll::Pending => break,
+                Poll::Pending => {
+                    break;
+                }
             }
         }
     }
@@ -560,36 +660,32 @@ where
     }
 }
 
-impl<S, F, U> Stream for ParEvalMapUnordered<S, F, U>
+impl<S, F, Fut, U> Stream for ParEvalMapUnordered<S, F, Fut, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-    + Send
-    + Sync
-    + Clone
-    + 'static
-    + Unpin,
-    U: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
 {
     type Item = U;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         // Drain any completed results
-        self.poll_drain_results(cx);
+        self.as_mut().poll_drain_results(cx);
 
         // Serve buffered output
-        if let Some(item) = self.out_buf.pop_front() {
+        if let Some(item) = self.as_mut().out_buf.pop_front() {
             return Poll::Ready(Some(item));
         }
 
         // Schedule more work if possible
-        self.poll_fill_inflight(cx);
+        self.as_mut().poll_fill_inflight(cx);
 
         // Drain again in case something finished immediately
-        self.poll_drain_results(cx);
+        self.as_mut().poll_drain_results(cx);
 
-        if let Some(item) = self.out_buf.pop_front() {
+        if let Some(item) = self.as_mut().out_buf.pop_front() {
             return Poll::Ready(Some(item));
         }
 
@@ -601,21 +697,19 @@ where
     }
 }
 
-impl<S, F, U> Drop for ParEvalMapUnordered<S, F, U>
+impl<S, F, Fut, U> Drop for ParEvalMapUnordered<S, F, Fut, U>
 where
     S: Stream + Send + 'static,
-    F: Fn(S::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-    + Send
-    + Sync
-    + Clone
-    + 'static
-    + Unpin,
-    U: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    F: Fn(S::Item) -> Fut + Send + Sync + Clone + 'static,
+    Fut: Future<Output = U> + Send + 'static,
+    U: Send + 'static,
+    S::Item: Send + 'static,
 {
     fn drop(&mut self) {
-        // The sender will be dropped automatically when self is dropped
-        // This will close the channel and stop workers from sending
+        // Take the sender to close the channel deterministically
+        if let Some(tx) = self.result_tx.take() {
+            drop(tx); // This closes the channel
+        }
     }
 }
 
@@ -623,18 +717,19 @@ where
 // Simple CPU-bound parallel map using blocking threads via tokio::spawn_blocking.
 // This keeps API symmetry with async eval-map variants.
 
+#[derive(Debug)]
 pub struct ParMap<S, F, O>
 where
-    S: Stream + Unpin,
-    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static + Unpin,
-    O: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    S: Stream + Send + 'static,
+    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static,
+    O: Send + 'static,
+    S::Item: Send + 'static,
 {
     source: Pin<Box<S>>,
     f: F,
 
     result_rx: mpsc::Receiver<O>,
-    result_tx: mpsc::Sender<O>,
+    result_tx: Option<mpsc::Sender<O>>,
 
     semaphore: std::sync::Arc<Semaphore>,
     out_buf: VecDeque<O>,
@@ -645,15 +740,28 @@ where
     config: ParallelConfig,
 }
 
+// SAFETY: We never move fields that are !Unpin
+impl<S, F, O> Unpin for ParMap<S, F, O>
+where
+    S: Stream + Send + 'static,
+    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static,
+    O: Send + 'static,
+    S::Item: Send + 'static,
+{}
+
 impl<S, F, O> ParMap<S, F, O>
 where
-    S: Stream + Unpin,
-    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static + Unpin,
-    O: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    S: Stream + Send + 'static,
+    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static,
+    O: Send + 'static,
+    S::Item: Send + 'static,
 {
     pub fn new(source: S, f: F, mut config: ParallelConfig) -> Self {
         config.concurrency = clamp_concurrency(config.concurrency);
+        // Enforce max_buffer_size >= concurrency to prevent stalls
+        if config.max_buffer_size < config.concurrency {
+            config.max_buffer_size = config.concurrency;
+        }
         if config.max_buffer_size == 0 {
             config.max_buffer_size = 1;
         }
@@ -663,7 +771,7 @@ where
             source: Box::pin(source),
             f,
             result_rx: rx,
-            result_tx: tx,
+            result_tx: Some(tx),
             semaphore: std::sync::Arc::new(Semaphore::new(config.concurrency)),
             out_buf: VecDeque::with_capacity(config.max_buffer_size.min(1024)),
             source_done: false,
@@ -674,12 +782,19 @@ where
 
     fn spawn_worker(&mut self, item: S::Item) {
         let f = self.f.clone();
-        let tx = self.result_tx.clone();
-        let sem = self.semaphore.clone();
-        let permit = sem.try_acquire_owned().expect("permit should be available");
+        let tx = match &self.result_tx {
+            Some(tx) => tx.clone(),
+            None => return, // Channel closed, don't spawn worker
+        };
+        // Move the permit into the spawned task to keep it alive until completion
+        let _permit = self.semaphore.clone().try_acquire_owned().expect("permit should be available");
+
+        // Safety check: ensure we're not spawning when buffer is full
+        debug_assert!(self.out_buf.len() < self.config.max_buffer_size,
+            "Spawning worker when output buffer is full ({} >= {})", 
+            self.out_buf.len(), self.config.max_buffer_size);
 
         tokio::spawn(async move {
-            let _permit = permit;
             // Run CPU-bound work on a blocking thread pool to avoid starving async tasks.
             let out = tokio::task::spawn_blocking(move || (f)(item))
                 .await
@@ -687,6 +802,8 @@ where
             if let Some(v) = out {
                 let _ = tx.send(v).await;
             }
+            
+            // Permit is automatically dropped here when the task completes
         });
     }
 
@@ -698,20 +815,30 @@ where
             if self.source_done {
                 break;
             }
+            // Don't poll source if output buffer is full
             if self.out_buf.len() >= self.config.max_buffer_size {
                 break;
             }
 
+            // Poll source for next item
             match self.source.as_mut().poll_next(cx) {
                 Poll::Ready(Some(item)) => {
                     self.in_flight += 1;
                     self.spawn_worker(item);
+                    // Permit is moved into the spawned task and will be dropped when task completes
+                    
+                    // Safety check: ensure in_flight doesn't exceed concurrency
+                    debug_assert!(self.in_flight <= self.config.concurrency, 
+                        "in_flight ({}) should not exceed concurrency ({})", 
+                        self.in_flight, self.config.concurrency);
                 }
                 Poll::Ready(None) => {
                     self.source_done = true;
                     break;
                 }
-                Poll::Pending => break,
+                Poll::Pending => {
+                    break;
+                }
             }
         }
     }
@@ -735,10 +862,10 @@ where
 
 impl<S, F, O> Stream for ParMap<S, F, O>
 where
-    S: Stream + Unpin,
-    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static + Unpin,
-    O: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    S: Stream + Send + 'static,
+    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static,
+    O: Send + 'static,
+    S::Item: Send + 'static,
 {
     type Item = O;
 
@@ -757,6 +884,7 @@ where
         }
 
         let terminated = self.source_done && self.in_flight == 0 && self.out_buf.is_empty();
+        
         if terminated {
             Poll::Ready(None)
         } else {
@@ -767,28 +895,26 @@ where
 
 impl<S, F, O> Drop for ParMap<S, F, O>
 where
-    S: Stream + Unpin,
-    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static + Unpin,
-    O: Send + 'static + Unpin,
-    S::Item: Send + 'static + Unpin,
+    S: Stream + Send + 'static,
+    F: Fn(S::Item) -> O + Send + Sync + Clone + 'static,
+    O: Send + 'static,
+    S::Item: Send + 'static,
 {
     fn drop(&mut self) {
-        // The sender will be dropped automatically when self is dropped
-        // This will close the channel and stop workers from sending
+        // Take the sender to close the channel deterministically
+        if let Some(tx) = self.result_tx.take() {
+            drop(tx); // This closes the channel
+        }
     }
 }
 
 // ----------------------------- Extension Trait -----------------------------
 
 pub trait ParallelStreamExt: crate::stream::Stream + Sized {
-    fn par_eval_map<F, U>(self, concurrency: usize, f: F) -> ParEvalMap<Self, F, U>
+    fn par_eval_map<F, Fut, U>(self, concurrency: usize, f: F) -> ParEvalMap<Self, F, Fut, U>
     where
-        F: Fn(Self::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-        + Send
-        + Sync
-        + Clone
-        + 'static
-        + Unpin,
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
         U: Send + 'static + Unpin,
         Self::Item: Send + 'static + Unpin,
         Self: Send,
@@ -797,14 +923,10 @@ pub trait ParallelStreamExt: crate::stream::Stream + Sized {
         ParEvalMap::new(self, concurrency, f)
     }
 
-    fn par_eval_map_unordered<F, U>(self, concurrency: usize, f: F) -> ParEvalMapUnordered<Self, F, U>
+    fn par_eval_map_unordered<F, Fut, U>(self, concurrency: usize, f: F) -> ParEvalMapUnordered<Self, F, Fut, U>
     where
-        F: Fn(Self::Item) -> Pin<Box<dyn Future<Output = U> + Send + 'static>>
-        + Send
-        + Sync
-        + Clone
-        + 'static
-        + Unpin,
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
         U: Send + 'static + Unpin,
         Self::Item: Send + 'static + Unpin,
         Self: Send,
@@ -816,10 +938,10 @@ pub trait ParallelStreamExt: crate::stream::Stream + Sized {
     // Optional: sync CPU-bound parallel map
     fn map_parallel_rs2<F, O>(self, f: F) -> ParMap<Self, F, O>
     where
-        Self: Stream + Unpin + Send + 'static,
-        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
-        O: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
+        Self: Stream + Send + 'static,
+        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static,
+        O: Send + 'static,
+        Self::Item: Send + 'static,
     {
         ParMap::new(self, f, ParallelConfig::default())
     }
@@ -830,10 +952,10 @@ pub trait ParallelStreamExt: crate::stream::Stream + Sized {
         f: F,
     ) -> ParMap<Self, F, O>
     where
-        Self: Stream + Unpin + Send + 'static,
-        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
-        O: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
+        Self: Stream + Send + 'static,
+        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static,
+        O: Send + 'static,
+        Self::Item: Send + 'static,
     {
         let mut cfg = ParallelConfig::default();
         cfg.concurrency = clamp_concurrency(concurrency);

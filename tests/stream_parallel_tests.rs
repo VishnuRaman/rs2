@@ -1,6 +1,6 @@
 use std::time::Duration;
 use tokio::time::sleep;
-use rs2_stream::stream::{StreamExt, from_iter};
+use rs2_stream::stream::{StreamExt, from_iter, ParallelStreamExt};
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 #[tokio::test]
@@ -9,7 +9,7 @@ async fn test_par_eval_map_preserves_order() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_rs2(2, |x| async move {
+        .par_eval_map(2, |x| async move {
             // Add delay to ensure concurrency is working
             sleep(Duration::from_millis(10)).await;
             Ok::<_, rs2_stream::error::StreamError>(x * 2)
@@ -27,7 +27,7 @@ async fn test_par_eval_map_unordered_all_results() {
     let stream = from_iter(data);
     
     let mut result: Vec<_> = stream
-        .par_eval_map_unordered_rs2(2, |x| async move {
+        .par_eval_map_unordered(2, |x| async move {
             // Add delay to ensure concurrency is working
             sleep(Duration::from_millis(10)).await;
             Ok::<_, rs2_stream::error::StreamError>(x * 2)
@@ -45,7 +45,7 @@ async fn test_par_eval_map_concurrency_1() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_rs2(1, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x + 10) })
+        .par_eval_map(1, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x + 10) })
         .collect()
         .await;
     let result: Vec<_> = result.into_iter().map(|r| r.unwrap()).collect();
@@ -58,7 +58,7 @@ async fn test_par_eval_map_unordered_concurrency_1() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_unordered_rs2(1, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x + 10) })
+        .par_eval_map_unordered(1, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x + 10) })
         .collect()
         .await;
     let result: Vec<_> = result.into_iter().map(|r| r.unwrap()).collect();
@@ -71,7 +71,7 @@ async fn test_par_eval_map_empty_stream() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_rs2(2, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x * 2) })
+        .par_eval_map(2, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x * 2) })
         .collect()
         .await;
     let result: Vec<_> = result.into_iter().map(|r| r.unwrap()).collect();
@@ -84,7 +84,7 @@ async fn test_par_eval_map_unordered_empty_stream() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_unordered_rs2(2, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x * 2) })
+        .par_eval_map_unordered(2, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x * 2) })
         .collect()
         .await;
     let result: Vec<_> = result.into_iter().map(|r| r.unwrap()).collect();
@@ -97,7 +97,7 @@ async fn test_par_eval_map_single_item() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_rs2(3, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x.to_string()) })
+        .par_eval_map(3, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x.to_string()) })
         .collect()
         .await;
     let result: Vec<_> = result.into_iter().map(|r| r.unwrap()).collect();
@@ -110,7 +110,7 @@ async fn test_par_eval_map_unordered_single_item() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_unordered_rs2(3, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x.to_string()) })
+        .par_eval_map_unordered(3, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x.to_string()) })
         .collect()
         .await;
     let result: Vec<_> = result.into_iter().map(|r| r.unwrap()).collect();
@@ -123,7 +123,7 @@ async fn test_par_eval_map_high_concurrency() {
     let stream = from_iter(data.clone());
     
     let result: Vec<_> = stream
-        .par_eval_map_rs2(10, |x| async move {
+        .par_eval_map(10, |x| async move {
             sleep(Duration::from_millis(1)).await;
             Ok::<_, rs2_stream::error::StreamError>(x * 2)
         })
@@ -141,7 +141,7 @@ async fn test_par_eval_map_unordered_high_concurrency() {
     let stream = from_iter(data.clone());
     
     let mut result: Vec<_> = stream
-        .par_eval_map_unordered_rs2(10, |x| async move {
+        .par_eval_map_unordered(10, |x| async move {
             sleep(Duration::from_millis(1)).await;
             Ok::<_, rs2_stream::error::StreamError>(x * 2)
         })
@@ -160,7 +160,7 @@ async fn test_par_eval_map_with_different_delays() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_rs2(3, |x| async move {
+        .par_eval_map(3, |x| async move {
             // Different delays to test ordering
             let delay = if x % 2 == 0 { 20 } else { 5 };
             sleep(Duration::from_millis(delay)).await;
@@ -180,7 +180,7 @@ async fn test_par_eval_map_error_handling() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_rs2(2, |x| async move {
+        .par_eval_map(2, |x| async move {
             if x == 3 {
                 Err(rs2_stream::error::StreamError::Custom(format!("Error on {}", x)))
             } else {
@@ -206,7 +206,7 @@ async fn test_par_eval_map_with_string_processing() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_rs2(2, |s| async move {
+        .par_eval_map(2, |s| async move {
             sleep(Duration::from_millis(5)).await;
             Ok::<_, rs2_stream::error::StreamError>(s.to_uppercase())
         })
@@ -223,8 +223,8 @@ async fn test_par_eval_map_chaining() {
     let stream = from_iter(data);
     
     let result: Vec<_> = stream
-        .par_eval_map_rs2(2, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x * 2) })
-        .par_eval_map_rs2(2, |x| async move {
+        .par_eval_map(2, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x * 2) })
+        .par_eval_map(2, |x| async move {
             let x = x.unwrap();
             Ok::<_, rs2_stream::error::StreamError>(x + 1)
         })
@@ -242,7 +242,7 @@ async fn test_par_eval_map_zero_concurrency() {
     
     // Concurrency of 0 should still work (treat as 1)
     let result: Vec<_> = stream
-        .par_eval_map_rs2(0, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x * 2) })
+        .par_eval_map(0, |x| async move { Ok::<_, rs2_stream::error::StreamError>(x * 2) })
         .collect()
         .await;
     let result: Vec<_> = result.into_iter().map(|r| r.unwrap()).collect();
@@ -272,7 +272,7 @@ async fn test_performance_comparison() {
     let start = std::time::Instant::now();
     let stream = from_iter(data);
     let _parallel: Vec<_> = stream
-        .par_eval_map_rs2(5, |x| async move {
+        .par_eval_map(5, |x| async move {
             sleep(Duration::from_millis(10)).await;
             Ok::<_, rs2_stream::error::StreamError>(x * 2)
         })

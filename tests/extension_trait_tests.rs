@@ -1082,3 +1082,369 @@ fn test_map_parallel_with_concurrency_rs2() {
         );
     });
 }
+
+// ================================
+// Advanced Parallel Operations Tests
+// ================================
+
+#[test]
+fn test_par_eval_map_with_config_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 100;
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        // Create custom configuration
+        use rs2_stream::stream::parallel::ParallelConfig;
+        let mut config = ParallelConfig::default();
+        config.concurrency = 4;
+        config.max_buffer_size = 50;
+        config.task_timeout = std::time::Duration::from_secs(10);
+
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_with_config_rs2(config, |x| async move {
+                // Simulate async work
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                x * 2
+            });
+
+        let results: Vec<usize> = stream.collect().await;
+        assert_eq!(results.len(), item_count);
+
+        // Sort for comparison since order might vary
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+        let expected: Vec<usize> = source_data.iter().map(|&x| x * 2).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(sorted_results, sorted_expected);
+    });
+}
+
+#[test]
+fn test_par_eval_map_unordered_with_config_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 100;
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        // Create custom configuration
+        use rs2_stream::stream::parallel::ParallelConfig;
+        let mut config = ParallelConfig::default();
+        config.concurrency = 4;
+        config.max_buffer_size = 50;
+        config.task_timeout = std::time::Duration::from_secs(10);
+
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_unordered_with_config_rs2(config, |x| async move {
+                // Simulate async work with varying duration
+                let delay = (x % 5) as u64;
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                x * 3
+            });
+
+        let results: Vec<usize> = stream.collect().await;
+        assert_eq!(results.len(), item_count);
+
+        // Sort for comparison since order might vary
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+        let expected: Vec<usize> = source_data.iter().map(|&x| x * 3).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(sorted_results, sorted_expected);
+    });
+}
+
+#[test]
+fn test_par_eval_map_small_workloads_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 50; // Small workload
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_small_workloads_rs2(|x| async move {
+                // Simulate light async work
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                x + 100
+            });
+
+        let results: Vec<usize> = stream.collect().await;
+        assert_eq!(results.len(), item_count);
+
+        // Sort for comparison
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+        let expected: Vec<usize> = source_data.iter().map(|&x| x + 100).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(sorted_results, sorted_expected);
+    });
+}
+
+#[test]
+fn test_par_eval_map_large_workloads_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 500; // Large workload
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_large_workloads_rs2(|x| async move {
+                // Simulate moderate async work
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                x * 4
+            });
+
+        let results: Vec<usize> = stream.collect().await;
+        assert_eq!(results.len(), item_count);
+
+        // Sort for comparison
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+        let expected: Vec<usize> = source_data.iter().map(|&x| x * 4).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(sorted_results, sorted_expected);
+    });
+}
+
+#[test]
+fn test_par_eval_map_adaptive_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 200;
+        let concurrency = 6;
+        let expected_items = 200;
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_adaptive_rs2(concurrency, expected_items, |x| async move {
+                // Simulate async work
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                x * 5
+            });
+
+        let results: Vec<usize> = stream.collect().await;
+        assert_eq!(results.len(), item_count);
+
+        // Sort for comparison
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+        let expected: Vec<usize> = source_data.iter().map(|&x| x * 5).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(sorted_results, sorted_expected);
+    });
+}
+
+#[test]
+fn test_par_eval_map_with_timeout_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 20;
+        let concurrency = 4;
+        let task_timeout = std::time::Duration::from_millis(50);
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_with_timeout_rs2(concurrency, task_timeout, |x| async move {
+                // Some items will timeout, others won't
+                if x % 3 == 0 {
+                    // This will timeout
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                } else {
+                    // This will complete
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                x * 10
+            });
+
+        let results: Vec<usize> = stream.collect().await;
+        
+        // Some items might be dropped due to timeout, so we can't guarantee exact count
+        // But we should have some results
+        assert!(!results.is_empty(), "Should have some results");
+        assert!(results.len() <= item_count, "Should not have more results than items");
+
+        // All results should be multiples of 10
+        for &result in &results {
+            assert_eq!(result % 10, 0, "All results should be multiples of 10");
+        }
+    });
+}
+
+#[test]
+fn test_par_eval_map_with_sequence_timeout_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 30;
+        let concurrency = 4;
+        let sequence_timeout = std::time::Duration::from_millis(100);
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_with_sequence_timeout_rs2(concurrency, sequence_timeout, |x| async move {
+                // Simulate async work
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                x * 7
+            });
+
+        let results: Vec<usize> = stream.collect().await;
+        assert_eq!(results.len(), item_count);
+
+        // Sort for comparison
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+        let expected: Vec<usize> = source_data.iter().map(|&x| x * 7).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(sorted_results, sorted_expected);
+    });
+}
+
+#[test]
+fn test_par_eval_map_with_buffer_size_rs2() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 100;
+        let concurrency = 4;
+        let max_buffer_size = 25; // Small buffer to test backpressure
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_with_buffer_size_rs2(concurrency, max_buffer_size, |x| async move {
+                // Simulate async work
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                x * 6
+            });
+
+        let results: Vec<usize> = stream.collect().await;
+        assert_eq!(results.len(), item_count);
+
+        // Sort for comparison
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+        let expected: Vec<usize> = source_data.iter().map(|&x| x * 6).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(sorted_results, sorted_expected);
+    });
+}
+
+#[test]
+fn test_parallel_operations_chaining() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 50;
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        // Test chaining multiple parallel operations
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_small_workloads_rs2(|x| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                x * 2
+            })
+            .par_eval_map_with_buffer_size_rs2(3, 20, |x| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                x + 100
+            })
+            .map_parallel_rs2(|x| x * 3);
+
+        let results: Vec<usize> = stream.collect().await;
+        assert_eq!(results.len(), item_count);
+
+        // Sort for comparison
+        let mut sorted_results = results.clone();
+        sorted_results.sort();
+        let expected: Vec<usize> = source_data.iter().map(|&x| (x * 2 + 100) * 3).collect();
+        let mut sorted_expected = expected.clone();
+        sorted_expected.sort();
+        assert_eq!(sorted_results, sorted_expected);
+    });
+}
+
+#[test]
+fn test_parallel_operations_with_error_handling() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 20;
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        // Test parallel operations with potential failures
+        let stream = from_iter(source_data.clone())
+            .par_eval_map_with_timeout_rs2(
+                4,
+                std::time::Duration::from_millis(200),
+                |x| async move {
+                    if x % 5 == 0 {
+                        // Simulate a failure case
+                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    x * 2
+                }
+            )
+            .filter_map_async_rs2(|x| async move {
+                // Filter out None results (timeouts)
+                Some(x)
+            });
+
+        let results: Vec<usize> = stream.collect().await;
+        
+        // Should have fewer results due to timeouts
+        assert!(results.len() < item_count);
+        assert!(!results.is_empty());
+
+        // All results should be even
+        for &result in &results {
+            assert_eq!(result % 2, 0, "All results should be even");
+        }
+    });
+}
+
+#[test]
+fn test_parallel_operations_performance_comparison() {
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let item_count = 100;
+        let source_data: Vec<usize> = (0..item_count).collect();
+
+        // Test sequential vs parallel performance
+        let start = std::time::Instant::now();
+        let sequential_results: Vec<usize> = from_iter(source_data.clone())
+            .map(|x| {
+                // Simulate CPU work
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                x * 2
+            })
+            .collect()
+            .await;
+        let sequential_duration = start.elapsed();
+
+        let start = std::time::Instant::now();
+        let parallel_results: Vec<usize> = from_iter(source_data.clone())
+            .map_parallel_rs2(|x| {
+                // Simulate CPU work
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                x * 2
+            })
+            .collect()
+            .await;
+        let parallel_duration = start.elapsed();
+
+        // Verify results are the same
+        assert_eq!(sequential_results, parallel_results);
+
+        // Both should complete successfully - timing can vary due to system load
+        assert!(sequential_duration > std::time::Duration::from_millis(10));
+        assert!(parallel_duration > std::time::Duration::from_millis(5));
+        
+        // Log the performance comparison for analysis
+        println!("Sequential duration: {:?}", sequential_duration);
+        println!("Parallel duration: {:?}", parallel_duration);
+        println!("Speedup: {:.2}x", sequential_duration.as_millis() as f64 / parallel_duration.as_millis() as f64);
+    });
+}
