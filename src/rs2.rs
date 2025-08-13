@@ -23,7 +23,7 @@ use crate::stream::timeout::TimeoutStream;
 // Create a simple noop waker for testing
 
 /// Backpressure strategy for automatic flow control
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BackpressureStrategy {
     /// Drop oldest items when buffer is full
     DropOldest,
@@ -83,7 +83,7 @@ where
 }
 
 /// Create a rs2_stream from an iterator
-pub fn from_iter_rs2<I, O>(iter: I) -> impl Stream<Item = O> + Send + 'static
+pub fn from_iter_rs2<I, O>(iter: I) -> crate::stream::constructors::Iter<I::IntoIter>
 where
     I: IntoIterator<Item = O> + Send + 'static,
     <I as IntoIterator>::IntoIter: Send,

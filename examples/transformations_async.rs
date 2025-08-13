@@ -113,7 +113,7 @@ fn main() {
         let start_time = std::time::Instant::now();
         
         // Use par_eval_map_rs2 for parallel processing
-        let parallel_users: Vec<User> = user_ids.par_eval_map_rs2(3, |id| Box::pin(async move {
+        let parallel_users: Vec<User> = user_ids.par_eval_map_rs2(Some(3), |id| Box::pin(async move {
             println!("  🚀 Parallel fetching user {}", id);
             fetch_user_details(id).await
         }))

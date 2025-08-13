@@ -240,6 +240,23 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         }
     }
 
+    /// Growing then sliding window - starts with small windows and grows to full size
+    fn growing_then_sliding_window_rs2(
+        self,
+        size: usize,
+    ) -> impl Stream<Item = Vec<Self::Item>> + Send + 'static
+    where
+        Self: Sized + 'static,
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::stream::Either;
+        if size == 0 {
+            Either::Left(crate::stream::constructors::empty::<Vec<Self::Item>>())
+        } else {
+            Either::Right(growing_then_sliding_window(self, size))
+        }
+    }
+
     /// Enumerate items
     fn enumerate_rs2(self) -> impl Stream<Item = (usize, Self::Item)> + Send + 'static {
         self.enumerate()
@@ -373,6 +390,49 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     /// Process items in parallel with bounded concurrency
     fn par_eval_map_rs2<F, Fut, U>(
         self,
+        concurrency: Option<usize>,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParEvalMap;
+        use crate::session::get_global_parallel_config;
+        
+        // Try to get concurrency from session config, fall back to explicit parameter
+        let effective_concurrency = concurrency.unwrap_or_else(|| {
+            get_global_parallel_config()
+                .map(|config| config.concurrency)
+                .unwrap_or(4) // Default fallback
+        });
+        
+        let config = crate::stream::parallel::ParallelConfig {
+            concurrency: effective_concurrency,
+            max_buffer_size: get_global_parallel_config()
+                .map(|config| config.max_buffer_size)
+                .unwrap_or(1024),
+            timeout: get_global_parallel_config()
+                .map(|config| config.timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            sequence_timeout: get_global_parallel_config()
+                .map(|config| config.sequence_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            task_timeout: get_global_parallel_config()
+                .map(|config| config.task_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+        };
+        
+        ParEvalMap::with_config(self, f, config)
+    }
+
+    /// Parallel map with explicit concurrency - Preserves order
+    /// Backward compatibility method
+    fn par_eval_map_with_concurrency_rs2<F, Fut, U>(
+        self,
         concurrency: usize,
         f: F,
     ) -> impl Stream<Item = U> + Send + 'static
@@ -383,12 +443,241 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         Self: Send + 'static + Unpin,
         Self::Item: Send + 'static + Unpin,
     {
-        use crate::stream::parallel::ParallelStreamExt;
-        let boxed_f = move |item: Self::Item| {
-            let fut = f(item);
-            Box::pin(fut) as std::pin::Pin<Box<dyn std::future::Future<Output = U> + Send + 'static>>
+        self.par_eval_map_rs2(Some(concurrency), f)
+    }
+
+    /// Parallel map using session configuration - Preserves order
+    fn par_eval_map_with_session_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        self.par_eval_map_rs2(None, f)
+    }
+
+    /// Parallel map with concurrency control - Does not preserve order
+    fn par_eval_map_unordered_rs2<F, Fut, U>(
+        self,
+        concurrency: Option<usize>,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParEvalMapUnordered;
+        use crate::session::get_global_parallel_config;
+        
+        // Try to get concurrency from session config, fall back to explicit parameter
+        let effective_concurrency = concurrency.unwrap_or_else(|| {
+            get_global_parallel_config()
+                .map(|config| config.concurrency)
+                .unwrap_or(4) // Default fallback
+        });
+        
+        let config = crate::stream::parallel::ParallelConfig {
+            concurrency: effective_concurrency,
+            max_buffer_size: get_global_parallel_config()
+                .map(|config| config.max_buffer_size)
+                .unwrap_or(1024),
+            timeout: get_global_parallel_config()
+                .map(|config| config.timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            sequence_timeout: get_global_parallel_config()
+                .map(|config| config.sequence_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            task_timeout: get_global_parallel_config()
+                .map(|config| config.task_timeout)
+                .unwrap_or(std::time::Duration::MAX),
         };
-        ParallelStreamExt::par_eval_map(self, concurrency, boxed_f)
+        
+        ParEvalMapUnordered::with_config(self, f, config)
+    }
+
+    /// Parallel map unordered with explicit concurrency - Does not preserve order
+    fn par_eval_map_unordered_with_concurrency_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        self.par_eval_map_unordered_rs2(Some(concurrency), f)
+    }
+
+    /// Parallel map unordered using session configuration - Does not preserve order
+    fn par_eval_map_unordered_with_session_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        self.par_eval_map_unordered_rs2(None, f)
+    }
+
+    /// Parallel map using session configuration
+    fn map_parallel_with_session_rs2<F, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> U + Send + Sync + Clone + 'static + Unpin,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        let concurrency = crate::session::get_global_parallel_config()
+            .map(|config| config.concurrency)
+            .unwrap_or(4);
+        self.map_parallel_rs2(Some(concurrency), f)
+    }
+
+    /// Parallel join using session configuration
+    fn par_join_with_session_rs2(self) -> impl Stream<Item = <Self::Item as Stream>::Item> + Send + 'static
+    where
+        Self: Send + 'static + Unpin,
+        Self::Item: Stream + Send + 'static + Unpin,
+        <Self::Item as Stream>::Item: Send + 'static + Unpin + Clone,
+    {
+        let concurrency = crate::session::get_global_parallel_config()
+            .map(|config| config.concurrency)
+            .unwrap_or(4);
+        self.par_join_rs2(concurrency)
+    }
+
+    /// Parallel map optimized for small workloads (4 workers, 256 buffer)
+    fn par_eval_map_small_workloads_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let config = ParallelConfig::for_small_workloads();
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map optimized for large workloads (CPU cores, 4096 buffer)
+    fn par_eval_map_large_workloads_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let config = ParallelConfig::for_large_workloads();
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map with adaptive configuration based on expected workload
+    fn par_eval_map_adaptive_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        expected_items: usize,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let config = ParallelConfig::adaptive(concurrency, expected_items);
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map with task timeout (drops items that take too long)
+    fn par_eval_map_with_timeout_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        task_timeout: std::time::Duration,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let mut config = ParallelConfig::default();
+        config.concurrency = concurrency;
+        config.task_timeout = task_timeout;
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map with sequence timeout (skips missing items in ordered mode)
+    fn par_eval_map_with_sequence_timeout_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        sequence_timeout: std::time::Duration,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let mut config = ParallelConfig::default();
+        config.concurrency = concurrency;
+        config.sequence_timeout = sequence_timeout;
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map with custom buffer size
+    fn par_eval_map_with_buffer_size_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        max_buffer_size: usize,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let mut config = ParallelConfig::default();
+        config.concurrency = concurrency;
+        config.max_buffer_size = max_buffer_size;
+        self.par_eval_map_with_config_rs2(config, f)
     }
 
     /// Apply backpressure with default configuration
@@ -573,22 +862,7 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         rs2::prefetch(self, prefetch_count)
     }
 
-    /// Process items in parallel with unordered results
-    fn par_eval_map_unordered_rs2<F, Fut, U>(self, concurrency: usize, f: F) -> impl Stream<Item = U> + Send + 'static
-    where
-        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static + Unpin + Clone,
-        Self: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-    {
-        use crate::stream::parallel::ParallelStreamExt;
-        let boxed_f = move |item: Self::Item| {
-            let fut = f(item);
-            Box::pin(fut) as std::pin::Pin<Box<dyn std::future::Future<Output = U> + Send + 'static>>
-        };
-        ParallelStreamExt::par_eval_map_unordered(self, concurrency, boxed_f)
-    }
+
 
     /// Join parallel streams with concurrency control
     fn par_join_rs2(
@@ -601,7 +875,7 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         Self: Send + 'static + Unpin,
     {
         // Use par_eval_map_rs2 to process streams with the given concurrency
-        self.par_eval_map_rs2(concurrency, |stream| async move {
+        self.par_eval_map_rs2(Some(concurrency), |stream| async move {
             // Collect all items from the stream
             let items: Vec<_> = stream.collect().await;
             items
@@ -768,19 +1042,44 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     }
 
     /// Parallel map for CPU-bound operations
-    fn map_parallel_rs2<F, O>(self, f: F) -> impl Stream<Item = O> + Send + 'static
+    fn map_parallel_rs2<F, U>(
+        self,
+        concurrency: Option<usize>,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
     where
-        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-        O: Send + 'static + Unpin + Clone,
+        F: Fn(Self::Item) -> U + Send + Sync + Clone + 'static + Unpin,
+        U: Send + 'static + Unpin + Clone,
         Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
     {
-        use crate::stream::parallel::ParallelStreamExt;
-        let concurrency = num_cpus::get();
-        self.par_eval_map_rs2(concurrency, move |x| {
-            let f = f.clone();
-            async move { f(x) }
-        })
+        use crate::stream::parallel::ParMap;
+        use crate::session::get_global_parallel_config;
+        
+        // Try to get concurrency from session config, fall back to explicit parameter
+        let effective_concurrency = concurrency.unwrap_or_else(|| {
+            get_global_parallel_config()
+                .map(|config| config.concurrency)
+                .unwrap_or(4) // Default fallback
+        });
+        
+        let config = crate::stream::parallel::ParallelConfig {
+            concurrency: effective_concurrency,
+            max_buffer_size: get_global_parallel_config()
+                .map(|config| config.max_buffer_size)
+                .unwrap_or(1024),
+            timeout: get_global_parallel_config()
+                .map(|config| config.timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            sequence_timeout: get_global_parallel_config()
+                .map(|config| config.sequence_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            task_timeout: get_global_parallel_config()
+                .map(|config| config.task_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+        };
+        
+        ParMap::with_config(self, f, config)
     }
 
     /// Parallel map with concurrency control
@@ -796,7 +1095,7 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         Self: Send + 'static + Unpin,
     {
         use crate::stream::parallel::ParallelStreamExt;
-        self.par_eval_map_rs2(concurrency, move |x| {
+        self.par_eval_map_rs2(Some(concurrency), move |x| {
             let f = f.clone();
             async move { f(x) }
         })
@@ -856,122 +1155,27 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         use crate::stream::parallel::ParEvalMapUnordered;
         ParEvalMapUnordered::with_config(self, f, config)
     }
+}
 
-    /// Parallel map optimized for small workloads (4 workers, 256 buffer)
-    fn par_eval_map_small_workloads_rs2<F, Fut, U>(
-        self,
-        f: F,
-    ) -> impl Stream<Item = U> + Send + 'static
-    where
-        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static + Unpin + Clone,
-        Self: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-    {
-        use crate::stream::parallel::ParallelConfig;
-        let config = ParallelConfig::for_small_workloads();
-        self.par_eval_map_with_config_rs2(config, f)
-    }
-
-    /// Parallel map optimized for large workloads (CPU cores, 4096 buffer)
-    fn par_eval_map_large_workloads_rs2<F, Fut, U>(
-        self,
-        f: F,
-    ) -> impl Stream<Item = U> + Send + 'static
-    where
-        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static + Unpin + Clone,
-        Self: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-    {
-        use crate::stream::parallel::ParallelConfig;
-        let config = ParallelConfig::for_large_workloads();
-        self.par_eval_map_with_config_rs2(config, f)
-    }
-
-    /// Parallel map with adaptive configuration based on expected workload
-    fn par_eval_map_adaptive_rs2<F, Fut, U>(
-        self,
-        concurrency: usize,
-        expected_items: usize,
-        f: F,
-    ) -> impl Stream<Item = U> + Send + 'static
-    where
-        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static + Unpin + Clone,
-        Self: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-    {
-        use crate::stream::parallel::ParallelConfig;
-        let config = ParallelConfig::adaptive(concurrency, expected_items);
-        self.par_eval_map_with_config_rs2(config, f)
-    }
-
-    /// Parallel map with task timeout (drops items that take too long)
-    fn par_eval_map_with_timeout_rs2<F, Fut, U>(
-        self,
-        concurrency: usize,
-        task_timeout: std::time::Duration,
-        f: F,
-    ) -> impl Stream<Item = U> + Send + 'static
-    where
-        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static + Unpin + Clone,
-        Self: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-    {
-        use crate::stream::parallel::ParallelConfig;
-        let mut config = ParallelConfig::default();
-        config.concurrency = concurrency;
-        config.task_timeout = task_timeout;
-        self.par_eval_map_with_config_rs2(config, f)
-    }
-
-    /// Parallel map with sequence timeout (skips missing items in ordered mode)
-    fn par_eval_map_with_sequence_timeout_rs2<F, Fut, U>(
-        self,
-        concurrency: usize,
-        sequence_timeout: std::time::Duration,
-        f: F,
-    ) -> impl Stream<Item = U> + Send + 'static
-    where
-        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static + Unpin + Clone,
-        Self: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-    {
-        use crate::stream::parallel::ParallelConfig;
-        let mut config = ParallelConfig::default();
-        config.concurrency = concurrency;
-        config.sequence_timeout = sequence_timeout;
-        self.par_eval_map_with_config_rs2(config, f)
-    }
-
-    /// Parallel map with custom buffer size
-    fn par_eval_map_with_buffer_size_rs2<F, Fut, U>(
-        self,
-        concurrency: usize,
-        max_buffer_size: usize,
-        f: F,
-    ) -> impl Stream<Item = U> + Send + 'static
-    where
-        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static + Unpin + Clone,
-        Self: Send + 'static + Unpin,
-        Self::Item: Send + 'static + Unpin,
-    {
-        use crate::stream::parallel::ParallelConfig;
-        let mut config = ParallelConfig::default();
-        config.concurrency = concurrency;
-        config.max_buffer_size = max_buffer_size;
-        self.par_eval_map_with_config_rs2(config, f)
-    }
+/// Growing then sliding window implementation
+/// Starts with small windows and grows to full size, then slides
+pub fn growing_then_sliding_window<S, T>(
+    stream: S,
+    size: usize,
+) -> impl Stream<Item = Vec<T>> + Send + 'static
+where
+    S: Stream<Item = T> + Send + 'static,
+    T: Clone + Send + 'static,
+{
+    use crate::stream::StreamExt;
+    
+    stream.scan(Vec::<T>::new(), move |window, item| {
+        window.push(item);
+        if window.len() > size {
+            window.remove(0);
+        }
+        Some(window.clone())
+    })
 }
 
 // Blanket impl for all streams, including unsized

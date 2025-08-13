@@ -29,7 +29,7 @@ fn main() {
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let start = std::time::Instant::now();
 
-        let result = controlled_stream.par_eval_map_rs2(1, move |x| {
+        let result = controlled_stream.par_eval_map_rs2(Some(1), move |x| {
             let counter = counter.clone();
             async move {
                 // Simulate slow consumption

@@ -3,11 +3,12 @@ use rs2_stream::resource_manager::ResourceConfig;
 use rs2_stream::state::stream_ext::StateAccess;
 use rs2_stream::state::StateError;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::rs2::from_iter_rs2;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tokio;
 // Remove unused import
-use rs2_stream::stream::constructors::from_iter;
+// use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::StreamExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -68,7 +69,7 @@ async fn test_stateful_map() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
         stream.stateful_map_rs2(config, key_extractor, |item, state_access: StateAccess| {
             let fut = async move {
@@ -126,7 +127,7 @@ async fn test_stateful_filter() {
             count: 30,
         },
     ];
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
         stream.stateful_filter_rs2(config, key_extractor, |item, state_access: StateAccess| {
             let item = item.clone();
@@ -177,7 +178,7 @@ async fn test_stateful_fold() {
             count: 30,
         },
     ];
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_fold_rs2(
         config,
         key_extractor,
@@ -220,7 +221,7 @@ async fn test_stateful_window() {
             count: 30,
         },
     ];
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2(
         config,
         key_extractor,
@@ -312,8 +313,8 @@ async fn test_stateful_join() {
         }
     });
 
-    let stream1 = from_iter(data1);
-    let stream2 = from_iter(data2);
+    let stream1 = from_iter_rs2(data1);
+    let stream2 = from_iter_rs2(data2);
 
     let result_stream = stream1.stateful_join_rs2(
         stream2,
@@ -402,7 +403,7 @@ async fn test_stateful_join() {
 
 #[tokio::test]
 async fn test_stateful_map_user_events() {
-    let events = from_iter(vec![
+    let events = from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -461,7 +462,7 @@ async fn test_stateful_map_user_events() {
 
 #[tokio::test]
 async fn test_stateful_filter_user_events() {
-    let events = from_iter(vec![
+    let events = from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -523,7 +524,7 @@ async fn test_stateful_filter_user_events() {
 
 #[tokio::test]
 async fn test_stateful_fold_user_events() {
-    let events = from_iter(vec![
+    let events = from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -559,7 +560,7 @@ async fn test_stateful_fold_user_events() {
 
 #[tokio::test]
 async fn test_stateful_window_user_events() {
-    let events = from_iter(vec![
+    let events = from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -674,8 +675,8 @@ async fn test_stateful_join_user_events() {
             tokio::task::yield_now().await;
         }
     });
-    let stream1 = from_iter(stream1_data);
-    let stream2 = from_iter(stream2_data);
+    let stream1 = from_iter_rs2(stream1_data);
+    let stream2 = from_iter_rs2(stream2_data);
 
     let config = StateConfig::default();
     let key_extractor1 = CustomKeyExtractor::new(|data: &TestData| data.id.to_string());

@@ -293,7 +293,8 @@ pub fn repeat<T>(value: T) -> Repeat<T> {
 
 /// Create a stream from an iterator
 pub fn from_iter<I>(iter: I) -> Iter<I::IntoIter>
-where I: IntoIterator {
+where I: IntoIterator + Send + 'static,
+    I::IntoIter: Send {
     Iter { iter: iter.into_iter() }
 }
 

@@ -466,7 +466,7 @@ async fn demonstrate_advanced_features() -> Result<(), Box<dyn std::error::Error
     // 2. Parallel processing demonstration
     println!("2. Parallel processing...");
     let parallel_stream = from_iter(1..=10)
-        .par_eval_map_rs2(3, |i| async move {
+        .par_eval_map_rs2(Some(3), |i| async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
             i * 2
         });

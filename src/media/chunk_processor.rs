@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
 use sha2::{Digest, Sha256};
+use crate::session::{get_global_parallel_config, get_global_buffer_config};
 
 /// Errors that can occur during chunk processing
 #[derive(Debug, Clone)]
@@ -255,7 +256,7 @@ impl ChunkProcessor {
     ) -> impl Stream<Item = Result<MediaChunk, ChunkProcessingError>> + Send + 'static {
         let processor = Arc::new(self.clone());
         
-        chunk_stream.par_eval_map_rs2(self.config.parallel_processing, move |chunk| {
+        chunk_stream.par_eval_map_rs2(Some(self.config.parallel_processing), move |chunk| {
             let processor = Arc::clone(&processor);
             async move {
                 processor.process_single_chunk(chunk).await
@@ -545,6 +546,63 @@ impl ChunkProcessor {
             }
         })
     }
+
+    /// Process chunks with session-aware parallel processing
+    pub fn process_chunks_with_session(
+        &self,
+        chunk_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt + Unpin,
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
+        let session_parallel = get_global_parallel_config();
+        let session_buffer = get_global_buffer_config();
+        
+        // Use session parallel processing if available, otherwise use config
+        let parallel_workers = session_parallel
+            .map(|config| config.concurrency)
+            .unwrap_or(self.config.parallel_processing);
+        
+        // Use session buffer size if available, otherwise use config
+        let buffer_size = session_buffer
+            .and_then(|config| config.max_capacity)
+            .unwrap_or(self.config.max_buffer_size);
+        
+        let processor = Arc::new(self.clone());
+        chunk_stream
+            .par_eval_map_rs2(Some(parallel_workers), move |chunk| {
+                let processor = Arc::clone(&processor);
+                async move {
+                    processor.process_single_chunk(chunk).await
+                }
+            })
+            .filter_map_rs2(|result| {
+                match result {
+                    Ok(chunk) => Some(chunk),
+                    Err(e) => {
+                        log::warn!("Chunk processing failed: {:?}", e);
+                        None
+                    }
+                }
+            })
+    }
+
+    /// Create a session-aware chunk processor with dynamic configuration
+    pub fn with_session_config(&self) -> SessionAwareChunkProcessor {
+        let session_parallel = get_global_parallel_config();
+        let session_buffer = get_global_buffer_config();
+        
+        let parallel_workers = session_parallel
+            .map(|config| config.concurrency)
+            .unwrap_or(self.config.parallel_processing);
+        
+        let buffer_size = session_buffer
+            .and_then(|config| config.max_capacity)
+            .unwrap_or(self.config.max_buffer_size);
+        
+        SessionAwareChunkProcessor {
+            base_processor: Arc::new(self.clone()),
+            session_parallel_workers: parallel_workers,
+            session_buffer_size: buffer_size,
+        }
+    }
 }
 
 impl Clone for ChunkProcessor {
@@ -556,5 +614,43 @@ impl Clone for ChunkProcessor {
             stats: Arc::clone(&self.stats),
             output_queue: Arc::clone(&self.output_queue),
         }
+    }
+}
+
+/// Session-aware wrapper for chunk processor
+pub struct SessionAwareChunkProcessor {
+    base_processor: Arc<ChunkProcessor>,
+    session_parallel_workers: usize,
+    session_buffer_size: usize,
+}
+
+impl SessionAwareChunkProcessor {
+    /// Process chunks using session configuration
+    pub fn process_chunks(
+        &self,
+        chunk_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt + Unpin,
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
+        let processor = Arc::clone(&self.base_processor);
+        chunk_stream
+            .par_eval_map_rs2(Some(self.session_parallel_workers), move |chunk| {
+                let processor = Arc::clone(&processor);
+                async move {
+                    processor.process_single_chunk(chunk).await
+                }
+            })
+            .filter_map_rs2(|result| {
+                match result {
+                    Ok(chunk) => Some(chunk),
+                    Err(e) => {
+                        log::warn!("Chunk processing failed: {:?}", e);
+                        None
+                    }
+                }
+            })
+    }
+
+    /// Get session-aware configuration
+    pub fn get_session_config(&self) -> (usize, usize) {
+        (self.session_parallel_workers, self.session_buffer_size)
     }
 }

@@ -1,15 +1,17 @@
 //! Main streaming implementation
 
-use super::priority_queue::MediaPriorityQueue;
 use super::types::*;
-use crate::stream_performance_metrics::StreamMetrics;
+use super::priority_queue::MediaPriorityQueue;
 use crate::{auto_backpressure_block, auto_backpressure_drop_newest, throttle};
 use crate::rs2_stream_ext::RS2StreamExt;
-use crate::stream::Stream;
 use crate::rs2::BackpressureConfig;
+use crate::session::{get_global_backpressure_config, get_global_buffer_config};
+use crate::stream::Stream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
+use crate::stream_performance_metrics::StreamMetrics;
 use crate::rs2;
 
 // Define missing types
@@ -282,7 +284,7 @@ impl MediaStreamingService {
 
     /// Create a monitoring stream for statistics
     pub fn create_monitoring_stream(&self) -> impl Stream<Item = StreamingStats> + Send + 'static {
-        rs2::tick(Duration::from_secs(1), ()).par_eval_map_rs2(1, move |_| {
+        rs2::tick(Duration::from_secs(1), ()).par_eval_map_rs2(Some(1), move |_| {
             async move {
                 StreamingStats {
                     chunks_processed: 1000,
@@ -352,7 +354,7 @@ impl MediaStreamingService {
 
     /// Create a monitoring stream for adaptive streaming
     pub fn create_adaptive_monitoring_stream(&self) -> impl Stream<Item = StreamingStats> + Send + 'static {
-        rs2::tick(Duration::from_secs(1), ()).par_eval_map_rs2(1, move |_| {
+        rs2::tick(Duration::from_secs(1), ()).par_eval_map_rs2(Some(1), move |_| {
             async move {
                 StreamingStats {
                     chunks_processed: 500,
@@ -362,6 +364,84 @@ impl MediaStreamingService {
                 }
             }
         })
+    }
+
+    /// Create a media stream with session-aware backpressure handling
+    pub fn create_stream_with_session(
+        &self,
+        _source_url: String,
+    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt, String> {
+        let session_backpressure = get_global_backpressure_config()
+            .unwrap_or_else(|| self.backpressure_config.clone());
+        let session_buffer = get_global_buffer_config()
+            .unwrap_or_else(|| crate::stream_configuration::BufferConfig::default());
+        
+        // Use session buffer size if available
+        let buffer_size = session_buffer.max_capacity.unwrap_or(512);
+        
+        let backpressure_config = BackpressureConfig {
+            buffer_size,
+            strategy: session_backpressure.strategy,
+            high_watermark: session_backpressure.high_watermark,
+            low_watermark: session_backpressure.low_watermark,
+        };
+        
+        let stream = rs2::auto_backpressure_drop_newest(
+            self.create_raw_stream(_source_url)?,
+            backpressure_config,
+        );
+        Ok(stream)
+    }
+
+    /// Create an adaptive stream with session-aware configuration
+    pub fn create_adaptive_stream_with_session(
+        &self,
+        _source_url: String,
+    ) -> Result<impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt, String> {
+        let session_backpressure = get_global_backpressure_config()
+            .unwrap_or_else(|| self.backpressure_config.clone());
+        let session_buffer = get_global_buffer_config()
+            .unwrap_or_else(|| crate::stream_configuration::BufferConfig::default());
+        
+        // Use session buffer size if available
+        let buffer_size = session_buffer.max_capacity.unwrap_or(256);
+        
+        let backpressure_config = BackpressureConfig {
+            buffer_size,
+            strategy: session_backpressure.strategy,
+            high_watermark: session_backpressure.high_watermark,
+            low_watermark: session_backpressure.low_watermark,
+        };
+        
+        let stream = rs2::auto_backpressure_block(
+            self.create_raw_stream(_source_url)?,
+            backpressure_config,
+        );
+        Ok(stream)
+    }
+
+    /// Process media chunks with session-aware quality enhancement
+    pub fn enhance_quality_with_session(
+        &self,
+        input_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt,
+    ) -> Box<dyn Stream<Item = ProcessedChunk> + Send + 'static> {
+        let session_backpressure = get_global_backpressure_config();
+        
+        let enhanced_stream = input_stream
+            .map_rs2(|chunk| {
+                ProcessedChunk {
+                    chunk,
+                    processing_time: Duration::from_millis(10),
+                    quality_score: 0.95,
+                }
+            });
+        
+        // Apply session backpressure if available
+        if let Some(config) = session_backpressure {
+            Box::new(rs2::auto_backpressure_drop_newest(enhanced_stream, config))
+        } else {
+            Box::new(enhanced_stream)
+        }
     }
 }
 

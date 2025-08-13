@@ -30,7 +30,7 @@ fn main() {
         let start = std::time::Instant::now();
 
         let results = from_iter(numbers.clone())
-            .map_parallel_rs2(|n| {
+            .map_parallel_rs2(Some(4), |n| {
                 println!(
                     "  Computing Fibonacci for {} on thread {:?}",
                     n,

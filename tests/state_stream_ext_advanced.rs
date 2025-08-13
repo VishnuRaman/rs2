@@ -1,11 +1,12 @@
 use rs2_stream::stream::StreamExt;
 use rs2_stream::state::stream_ext::StateAccess;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::rs2::from_iter_rs2;
 use rs2_stream::resource_manager::ResourceConfig;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tokio;
-use rs2_stream::stream::constructors::from_iter;
+// use rs2_stream::stream::constructors::from_iter;
 
 use rs2_stream::stream::Stream;
 use std::collections::HashMap;
@@ -74,7 +75,7 @@ async fn test_stateful_reduce() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_reduce_rs2(
         config,
         key_extractor,
@@ -113,7 +114,7 @@ async fn test_stateful_group_by() {
         });
     }
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_group_by_rs2(
         config,
         key_extractor,
@@ -204,7 +205,7 @@ async fn test_stateful_group_by_advanced() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_group_by_advanced_rs2(
         config,
         key_extractor,
@@ -293,7 +294,7 @@ async fn test_stateful_deduplicate() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_deduplicate_rs2(
         config,
         key_extractor,
@@ -453,7 +454,7 @@ async fn test_stateful_session() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_session_rs2(
         config,
         key_extractor,
@@ -516,7 +517,7 @@ async fn test_stateful_pattern() {
         }, // Different key, shouldn't affect pattern
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_pattern_rs2(
         config,
         key_extractor,
@@ -763,7 +764,7 @@ async fn test_stateful_operations_with_empty_state() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             let state_bytes = state_access.get().await.unwrap_or(Vec::new());
@@ -828,7 +829,7 @@ async fn test_stateful_operations_with_concurrent_keys() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_reduce_rs2(
         config,
         key_extractor,
@@ -892,7 +893,7 @@ async fn test_stateful_window_with_overlapping_windows() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2(
         config,
         key_extractor,
@@ -980,7 +981,7 @@ async fn test_stateful_session_with_timeout() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_session_rs2(
         config,
         key_extractor,
@@ -1036,7 +1037,7 @@ async fn test_stateful_pattern_with_complex_sequence() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_pattern_rs2(
         config,
         key_extractor,
@@ -1181,8 +1182,8 @@ async fn test_stateful_join_with_multiple_matches() {
         }
     });
 
-    let stream1 = from_iter(data1_for_stream);
-    let stream2 = from_iter(data2_for_stream);
+    let stream1 = from_iter_rs2(data1_for_stream);
+    let stream2 = from_iter_rs2(data2_for_stream);
 
     let result_stream = stream1.stateful_join_rs2(
         stream2,
@@ -1309,7 +1310,7 @@ async fn test_stateful_throttle_with_multiple_keys() {
     ];
 
     // Emit all items as fast as possible
-    let stream = from_iter(data.clone().into_iter().map(|mut item| {
+    let stream = from_iter_rs2(data.clone().into_iter().map(|mut item| {
         item.value = format!("{}-{}", item.value, "test");
         item
     }));
@@ -1421,7 +1422,7 @@ async fn test_stateful_deduplicate_with_custom_comparison() {
         is_new_session: None,
     });
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_deduplicate_rs2(
         config,
         key_extractor,
@@ -1459,7 +1460,7 @@ async fn test_stateful_group_by_with_aggregation() {
         });
     }
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_group_by_rs2(
         config,
         key_extractor,
@@ -1544,7 +1545,7 @@ async fn test_stateful_window_sliding_overlap() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2_advanced(
         config,
         key_extractor,
@@ -1587,7 +1588,7 @@ async fn test_stateful_window_partial_window() {
         count: 5,
         is_new_session: None,
     }];
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2_advanced(
         config,
         key_extractor,
@@ -1647,7 +1648,7 @@ async fn test_stateful_window_multi_key() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2_advanced(
         config,
         key_extractor,

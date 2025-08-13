@@ -233,7 +233,7 @@ fn test_par_eval_map_rs2() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
         let result = stream
-            .par_eval_map_rs2(2, |x| async move { x * 2 })
+            .par_eval_map_rs2(Some(2), |x| async move { x * 2 })
             .collect::<Vec<_>>()
             .await;
 
@@ -252,7 +252,7 @@ fn test_par_eval_map_unordered_rs2() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
         let result = stream
-            .par_eval_map_unordered_rs2(2, |x| async move { x * 2 })
+            .par_eval_map_unordered_rs2(Some(2), |x| async move { x * 2 })
             .collect::<Vec<_>>()
             .await;
 
@@ -1022,7 +1022,7 @@ fn test_map_parallel_rs2() {
         let source_data: Vec<usize> = (0..item_count).collect();
 
         // Apply parallel mapping
-        let stream = from_iter(source_data.clone()).map_parallel_rs2(|x| x * 2);
+        let stream = from_iter(source_data.clone()).map_parallel_rs2(Some(2), |x| x * 2);
 
         // Collect the results
         let results: Vec<usize> = stream.collect().await;
@@ -1350,7 +1350,7 @@ fn test_parallel_operations_chaining() {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 x + 100
             })
-            .map_parallel_rs2(|x| x * 3);
+            .map_parallel_rs2(Some(2), |x| x * 3);
 
         let results: Vec<usize> = stream.collect().await;
         assert_eq!(results.len(), item_count);
@@ -1426,7 +1426,7 @@ fn test_parallel_operations_performance_comparison() {
 
         let start = std::time::Instant::now();
         let parallel_results: Vec<usize> = from_iter(source_data.clone())
-            .map_parallel_rs2(|x| {
+                          .map_parallel_rs2(Some(2), |x| {
                 // Simulate CPU work
                 std::thread::sleep(std::time::Duration::from_millis(1));
                 x * 2
@@ -1435,8 +1435,12 @@ fn test_parallel_operations_performance_comparison() {
             .await;
         let parallel_duration = start.elapsed();
 
-        // Verify results are the same
-        assert_eq!(sequential_results, parallel_results);
+        // Verify results are the same (order may differ due to parallel processing)
+        let mut sorted_sequential = sequential_results.clone();
+        let mut sorted_parallel = parallel_results.clone();
+        sorted_sequential.sort();
+        sorted_parallel.sort();
+        assert_eq!(sorted_sequential, sorted_parallel);
 
         // Both should complete successfully - timing can vary due to system load
         assert!(sequential_duration > std::time::Duration::from_millis(10));

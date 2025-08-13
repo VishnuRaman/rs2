@@ -21,6 +21,7 @@ pub mod state;
 
 pub mod resource_manager;
 pub mod stream;
+pub mod session;
 
 mod util;
 pub use pipeline::*;

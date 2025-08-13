@@ -87,7 +87,7 @@ fn test_par_eval_map() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
         let concurrency = 2;
 
-        let result = stream.par_eval_map_rs2(concurrency, |n| async move { n * 2 })
+        let result = stream.par_eval_map_rs2(Some(concurrency), |n| async move { n * 2 })
             .collect_rs2()
             .await;
 
@@ -106,7 +106,7 @@ fn test_par_eval_map_unordered() {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
         let concurrency = 2;
 
-        let result = stream.par_eval_map_unordered_rs2(concurrency, |n| async move { n * 2 })
+        let result = stream.par_eval_map_unordered_rs2(Some(concurrency), |n| async move { n * 2 })
             .collect_rs2()
             .await;
 
@@ -134,7 +134,7 @@ fn test_par_eval_map_with_delays() {
         let concurrency = 3;
 
         let start = Instant::now();
-                  let result = stream.par_eval_map_rs2(concurrency, |(n, delay_ms)| async move {
+                  let result = stream.par_eval_map_rs2(Some(concurrency), |(n, delay_ms)| async move {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             n * 2
         })

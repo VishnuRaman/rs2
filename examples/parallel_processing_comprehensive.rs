@@ -153,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n2️⃣ Parallel Processing (Ordered)");
     let start = Instant::now();
     let parallel_ordered_results: Vec<ProcessedUser> = from_iter(users.clone())
-        .par_eval_map_rs2(10, |user| Box::pin(cpu_intensive_processing(user)))
+        .par_eval_map_rs2(Some(10), |user| Box::pin(cpu_intensive_processing(user)))
         .collect_rs2()
         .await;
     let parallel_ordered_time = start.elapsed();
@@ -164,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n3️⃣ Parallel Processing (Unordered)");
     let start = Instant::now();
     let parallel_unordered_results: Vec<ProcessedUser> = from_iter(users.clone())
-        .par_eval_map_unordered_rs2(10, |user| Box::pin(cpu_intensive_processing(user)))
+        .par_eval_map_unordered_rs2(Some(10), |user| Box::pin(cpu_intensive_processing(user)))
         .collect_rs2()
         .await;
     let parallel_unordered_time = start.elapsed();
@@ -175,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n4️⃣ Mixed Workload Processing (CPU + I/O)");
     let start = Instant::now();
     let mixed_results: Vec<(ProcessedUser, ApiResponse, DatabaseRecord)> = from_iter(users.clone())
-        .par_eval_map_rs2(8, |user| {
+        .par_eval_map_rs2(Some(8), |user| {
             Box::pin(async move {
                 let processed_user = cpu_intensive_processing(user.clone()).await;
                 let api_response = api_call(user.id).await;
@@ -192,9 +192,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n5️⃣ Pipeline Processing");
     let start = Instant::now();
     let pipeline_results: Vec<String> = from_iter(users.clone())
-        .par_eval_map_rs2(6, |user| Box::pin(cpu_intensive_processing(user)))
-        .par_eval_map_rs2(4, |processed_user| Box::pin(api_call(processed_user.id)))
-        .par_eval_map_rs2(8, |api_response| Box::pin(file_processing(api_response.user_id)))
+        .par_eval_map_rs2(Some(6), |user| Box::pin(cpu_intensive_processing(user)))
+        .par_eval_map_rs2(Some(4), |processed_user| Box::pin(api_call(processed_user.id)))
+        .par_eval_map_rs2(Some(8), |api_response| Box::pin(file_processing(api_response.user_id)))
         .collect_rs2()
         .await;
     let pipeline_time = start.elapsed();
@@ -207,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for concurrency in concurrency_levels {
         let start = Instant::now();
         let results: Vec<ProcessedUser> = from_iter(users.clone())
-            .par_eval_map_rs2(concurrency, |user| Box::pin(cpu_intensive_processing(user)))
+            .par_eval_map_rs2(Some(concurrency), |user| Box::pin(cpu_intensive_processing(user)))
             .collect_rs2()
             .await;
         let time = start.elapsed();
@@ -229,7 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let error_results: Vec<Result<ProcessedUser, String>> = from_iter(users_with_errors)
-        .par_eval_map_rs2(5, |user| {
+        .par_eval_map_rs2(Some(5), |user| {
             Box::pin(async move {
                 if user.id % 10 == 0 {
                     // Simulate error for every 10th user
@@ -251,7 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     // Note: buffer_unordered is only for streams of futures, not values. Here we just collect directly.
     let resource_results: Vec<ProcessedUser> = from_iter(users.clone())
-        .par_eval_map_rs2(4, |user| Box::pin(cpu_intensive_processing(user)))
+        .par_eval_map_rs2(Some(4), |user| Box::pin(cpu_intensive_processing(user)))
         .collect_rs2()
         .await;
     let resource_time = start.elapsed();
@@ -263,7 +263,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let start = Instant::now();
     let order_results: Vec<(u64, ApiResponse, DatabaseRecord, String)> = from_iter(orders)
-        .par_eval_map_rs2(12, |order_id| {
+        .par_eval_map_rs2(Some(12), |order_id| {
             Box::pin(async move {
                 // Simulate order processing pipeline
                 let api_response = api_call(order_id).await;

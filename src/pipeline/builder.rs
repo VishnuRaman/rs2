@@ -105,7 +105,7 @@ where
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PipelineConfig {
     pub name: String,
     pub buffer_size: usize,

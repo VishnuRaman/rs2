@@ -121,7 +121,7 @@ fn main() {
         let start = std::time::Instant::now();
         let processed_profiles = from_iter(users.clone())
             .filter_rs2(|user| user.active)
-            .par_eval_map_rs2(3, |user| async move {
+            .par_eval_map_rs2(Some(3), |user| async move {
                 // Process the user profile in parallel (with 3 concurrent tasks max)
                 match process_profile(&user).await {
                     Ok(result) => (user.id, result),
@@ -149,7 +149,7 @@ fn main() {
         let start = std::time::Instant::now();
         let permission_updates = from_iter(users.clone())
             .filter_rs2(|user| user.active)
-            .par_eval_map_unordered_rs2(2, |user| async move {
+            .par_eval_map_unordered_rs2(Some(2), |user| async move {
                 // Update permissions in parallel (with 2 concurrent tasks max)
                 // Results will be returned in the order they complete, not input order
                 match update_permissions(&user).await {

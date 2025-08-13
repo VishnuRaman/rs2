@@ -141,7 +141,7 @@ async fn test_concurrent_stream_transformations() {
             }
         })
         // Third transformation: parallel processing with high concurrency
-        .par_eval_map_rs2(10, {
+        .par_eval_map_rs2(Some(10), {
             let counter = counter.clone();
             move |x| {
                 let counter = counter.clone();
@@ -205,7 +205,7 @@ async fn test_parallel_processing_with_par_eval_map() {
     let shared_state = Arc::new(Mutex::new(HashSet::new()));
 
     // Create a stream with parallel processing
-    let stream = from_iter(source_data.clone()).par_eval_map_rs2(20, {
+    let stream = from_iter(source_data.clone()).par_eval_map_rs2(Some(20), {
         let shared_state = shared_state.clone();
         move |x| {
             let shared_state = shared_state.clone();
@@ -268,7 +268,7 @@ async fn test_shared_resource_access() {
     let source_data: Vec<usize> = (0..item_count).collect();
 
     // Process the stream with high concurrency, but limited by the connection pool
-    let stream = from_iter(source_data).par_eval_map_rs2(20, {
+    let stream = from_iter(source_data).par_eval_map_rs2(Some(20), {
         let connection_pool = connection_pool.clone();
         let concurrent_connections = concurrent_connections.clone();
         let max_concurrent = max_concurrent.clone();
@@ -358,7 +358,7 @@ async fn test_deadlock_prevention() {
 
     // Process the stream with a simpler pipeline
     let stream = from_iter(source_data)
-        .par_eval_map_rs2(5, { // Reduced concurrency
+        .par_eval_map_rs2(Some(5), { // Reduced concurrency
             let resource = resource.clone();
 
             move |x| {
@@ -415,7 +415,7 @@ async fn test_race_condition_detection() {
     let source_data: Vec<usize> = (0..item_count).collect();
 
     // Process the stream with high concurrency to try to trigger race conditions
-    let stream = from_iter(source_data.clone()).par_eval_map_unordered_rs2(20, {
+    let stream = from_iter(source_data.clone()).par_eval_map_unordered_rs2(Some(20), {
         let counter = counter.clone();
         move |x| {
             let counter = counter.clone();
@@ -454,7 +454,7 @@ async fn test_race_condition_detection() {
     let shared_map = Arc::new(Mutex::new(HashMap::new()));
 
     // Process the stream again with a different transformation
-    let stream = from_iter(source_data).par_eval_map_rs2(20, {
+    let stream = from_iter(source_data).par_eval_map_rs2(Some(20), {
         let shared_map = shared_map.clone();
         move |x| {
             let shared_map = shared_map.clone();
@@ -515,7 +515,7 @@ async fn property_based_parallel_processing() {
 
         // Process in parallel
         let parallel_results: Vec<usize> = from_iter(input.clone())
-            .par_eval_map_rs2(4, |x| async move { x * 2 })
+            .par_eval_map_rs2(Some(4), |x| async move { x * 2 })
             .collect_rs2()
             .await;
 
@@ -570,7 +570,7 @@ async fn stress_test_concurrent_operations() {
     let shared_map = Arc::new(Mutex::new(HashMap::new()));
 
     // Process with high concurrency
-    let stream = from_iter(source_data).par_eval_map_rs2(50, {
+    let stream = from_iter(source_data).par_eval_map_rs2(Some(50), {
         let counter = counter.clone();
         let shared_map = shared_map.clone();
 
@@ -733,7 +733,7 @@ async fn test_concurrent_shared_state_modifications() {
     let mutex_vec = Arc::new(Mutex::new(Vec::new()));
 
     // Process the stream with high concurrency
-    let stream = from_iter(source_data.clone()).par_eval_map_rs2(20, {
+    let stream = from_iter(source_data.clone()).par_eval_map_rs2(Some(20), {
         let atomic_counter = atomic_counter.clone();
         let mutex_map = mutex_map.clone();
         let mutex_vec = mutex_vec.clone();
@@ -833,7 +833,7 @@ async fn test_backpressure_handling() {
     // Create a stream with backpressure simulation
     let stream = from_iter(source_data.clone())
         // Process items slowly to create backpressure
-        .par_eval_map_rs2(5, {
+        .par_eval_map_rs2(Some(5), {
             let processed_count = processed_count.clone();
 
             move |x| {
@@ -891,7 +891,7 @@ async fn test_backpressure_handling() {
     // Create a stream with drop oldest strategy simulation
     let stream = from_iter(source_data.clone())
         // Process items very slowly to force dropping
-        .par_eval_map_rs2(1, { // Single thread to make it even slower
+        .par_eval_map_rs2(Some(1), { // Single thread to make it even slower
             let processed_count = processed_count.clone();
 
             move |x| {
@@ -984,7 +984,7 @@ async fn test_resource_cleanup() {
             let source_data = source_data.clone();
             move |resource| {
                 // Use the resource to process the stream
-                from_iter(source_data.clone()).par_eval_map_rs2(10, {
+                from_iter(source_data.clone()).par_eval_map_rs2(Some(10), {
                     let resource = resource.clone();
 
                     move |x| {
@@ -1051,7 +1051,7 @@ async fn test_resource_cleanup() {
             let source_data = source_data.clone();
             move |resource| {
                 // Use the resource to process the stream
-                from_iter(source_data.clone()).par_eval_map_rs2(10, {
+                from_iter(source_data.clone()).par_eval_map_rs2(Some(10), {
                     let resource = resource.clone();
 
                     move |x| {
@@ -1150,7 +1150,7 @@ async fn test_timeout_handling() {
 
     // Create a stream with the par_eval_map_rs2 combinator
     let stream = from_iter((0..item_count).collect::<Vec<usize>>())
-        .par_eval_map_rs2(5, { // Reduced concurrency
+        .par_eval_map_rs2(Some(5), { // Reduced concurrency
             move |x| async move {
                 // Determine processing time based on the item value
                 let processing_time = if x % 5 == 0 { // Some items take longer
@@ -1237,7 +1237,7 @@ async fn test_manual_poll_par_eval_map() {
     let stream = rs2_stream::rs2::from_iter_rs2(vec![1, 2, 3, 4, 5]);
     println!("Created source stream");
     
-    let mut stream = stream.par_eval_map_rs2(2, |x| async move {
+    let mut stream = stream.par_eval_map_rs2(Some(2), |x| async move {
         println!("Processing item: {}", x);
         tokio::time::sleep(Duration::from_millis(10)).await;
         let result = x * 2;
@@ -1300,7 +1300,7 @@ async fn test_manual_poll_par_eval_map_multiple() {
     let stream = rs2_stream::rs2::from_iter_rs2(vec![1, 2, 3, 4, 5]);
     println!("Created source stream");
     
-    let mut stream = stream.par_eval_map_rs2(2, |x| async move {
+    let mut stream = stream.par_eval_map_rs2(Some(2), |x| async move {
         println!("Processing item: {}", x);
         tokio::time::sleep(Duration::from_millis(10)).await;
         let result = x * 2;
@@ -1375,7 +1375,7 @@ async fn test_debug_par_eval_map() {
     let stream = rs2_stream::rs2::from_iter_rs2(vec![1, 2, 3, 4, 5]);
     println!("Created source stream");
     
-    let stream = stream.par_eval_map_rs2(2, |x| async move {
+    let stream = stream.par_eval_map_rs2(Some(2), |x| async move {
         println!("Processing item: {}", x);
         tokio::time::sleep(Duration::from_millis(10)).await;
         let result = x * 2;
@@ -1400,7 +1400,7 @@ async fn test_simple_par_eval_map() {
     let start = std::time::Instant::now();
     
     let stream = from_iter_rs2(vec![1, 2, 3, 4, 5])
-        .par_eval_map_rs2(2, |x| async move {
+        .par_eval_map_rs2(Some(2), |x| async move {
             // Simulate some async work
             tokio::time::sleep(Duration::from_millis(100)).await;
             x * 2

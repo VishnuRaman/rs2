@@ -780,6 +780,11 @@ where
         }
     }
 
+    /// Create a new ParMap with configuration
+    pub fn with_config(source: S, f: F, config: ParallelConfig) -> Self {
+        Self::new(source, f, config)
+    }
+
     fn spawn_worker(&mut self, item: S::Item) {
         let f = self.f.clone();
         let tx = match &self.result_tx {

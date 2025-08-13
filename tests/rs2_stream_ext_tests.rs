@@ -96,7 +96,7 @@ async fn test_map_rs2() {
 #[tokio::test]
 async fn test_map_parallel_rs2() {
     let stream = rs2::from_iter_rs2(vec![1, 2, 3, 4]);
-    let mapped = stream.map_parallel_rs2(|x| x * 2);
+    let mapped = stream.map_parallel_rs2(Some(2), |x| x * 2);
     let result: Vec<_> = mapped.collect_rs2().await;
     assert_eq!(result, vec![2, 4, 6, 8]);
 }
@@ -211,7 +211,7 @@ async fn test_sample_rs2() {
 #[tokio::test]
 async fn test_par_eval_map_rs2() {
     let stream = rs2::from_iter_rs2(vec![1, 2, 3, 4]);
-    let mapped = stream.par_eval_map_rs2(2, |x| async move { x * 2 });
+    let mapped = stream.par_eval_map_rs2(Some(2), |x| async move { x * 2 });
     let result: Vec<_> = mapped.collect_rs2().await;
     assert_eq!(result, vec![2, 4, 6, 8]);
 }
@@ -768,7 +768,7 @@ async fn test_bracket_rs2() {
 #[tokio::test]
 async fn test_par_eval_map_unordered_rs2() {
     let stream = rs2::from_iter_rs2(vec![1, 2, 3, 4]);
-    let mapped = stream.par_eval_map_unordered_rs2(2, |x| async move { x * 2 });
+    let mapped = stream.par_eval_map_unordered_rs2(Some(2), |x| async move { x * 2 });
     let result: Vec<_> = mapped.collect_rs2().await;
     assert_eq!(result, vec![2, 4, 6, 8]);
 }
@@ -832,9 +832,9 @@ async fn test_complex_chain() {
 #[tokio::test]
 async fn test_parallel_processing_chain() {
     let stream = rs2::from_iter_rs2(vec![1, 2, 3, 4])
-        .map_parallel_rs2(|x| x * 2)
+        .map_parallel_rs2(Some(2), |x| x * 2)
         .filter_rs2(|x| *x > 4)
-        .par_eval_map_rs2(2, |x| async move { 
+        .par_eval_map_rs2(Some(2), |x| async move { 
             x + 1 
         });
     
@@ -915,7 +915,7 @@ async fn test_single_item_operations() {
 #[tokio::test]
 async fn test_async_operations_chain() {
     let stream = rs2::from_iter_rs2(vec![1, 2, 3])
-        .par_eval_map_rs2(2, |x| async move {
+        .par_eval_map_rs2(Some(2), |x| async move {
             x * 2 + 1
         })
         .throttle_rs2(Duration::ZERO);

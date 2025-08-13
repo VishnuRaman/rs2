@@ -1,5 +1,6 @@
 use crate::resource_manager::{ResourceConfig, ResourceManager};
 use crate::stream::Stream;
+use crate::rs2_stream_ext::RS2StreamExt;
 use std::task::{Context, Poll, Waker, RawWaker, RawWakerVTable};
 use std::pin::Pin;
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,7 @@ use crate::state::{StateConfig, StateError, StateStorage};
 use std::future::Future;
 use crate::stream::core::StreamExt as CoreStreamExt;
 use std::collections::VecDeque;
+use crate::session::{get_global_state_config, get_global_buffer_config};
 
 // Memory management constants
 const MAX_BUFFER_SIZE: usize = 10_000; // Max items per buffer
@@ -1107,7 +1109,71 @@ where
             }
         })
     }
-}
+
+    /// Stateful map with session-aware configuration
+    fn stateful_map_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Unpin + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_map_rs2(config, key_extractor, f)
+    }
+
+    /// Stateful filter with session-aware configuration
+    fn stateful_filter_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
+    where
+        F: FnMut(&T, StateAccess) -> Pin<Box<dyn Future<Output = Result<bool, StateError>> + Send>> + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_filter_rs2(config, key_extractor, f)
+    }
+
+    /// Stateful aggregate with session-aware configuration
+    fn stateful_aggregate_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        initial: R,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(R, T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Clone + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_aggregate_rs2(config, key_extractor, initial, f)
+    }
+
+    /// Stateful group by with session-aware configuration
+    fn stateful_group_by_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(String, Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_group_by_rs2(config, key_extractor, None, None, f)
+    }
+} 
 
 pub struct StateAccess {
     storage: Arc<dyn StateStorage + Send + Sync>,
@@ -1162,11 +1228,12 @@ fn noop_waker() -> Waker {
     // 2. The VTable functions are all no-ops that don't access the data pointer
     // 3. The waker is only used in contexts where it won't be woken
     unsafe { Waker::from_raw(noop_raw_waker()) }
-}
+} 
 
+// Blanket implementation for StatefulStreamExt
 impl<T, S> StatefulStreamExt<T> for S
 where
-    S: Stream<Item = T> + Send + Sync + Unpin + 'static,
+    S: Stream<Item = T> + Send + Sync + Sized + Unpin + 'static,
     T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Unpin + 'static,
 {
 } 

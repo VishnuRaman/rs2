@@ -1,5 +1,5 @@
 use rs2_stream::rs2::*;
-use rs2_stream::stream::constructors::from_iter;
+// use rs2_stream::stream::constructors::from_iter; // This returns basic Iter, not RS2Stream
 use rs2_stream::stream::StreamExt;
 use tokio::runtime::Runtime;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
@@ -47,7 +47,7 @@ async fn test_stateful_map_basic() {
             is_new_session: None,
         },
     ];
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             let state_bytes = state_access.get().await.unwrap_or(Vec::new());
@@ -114,7 +114,7 @@ async fn test_stateful_filter() {
             is_new_session: None,
         },
     ];
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_filter_rs2(config, key_extractor, |item, state_access| {
         let item = item.clone();
         let state_access = state_access.clone();
@@ -175,7 +175,7 @@ async fn test_stateful_fold() {
             is_new_session: None,
         },
     ];
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
         stream.stateful_fold_rs2(config, key_extractor, 0u64, |acc, item, _state_access| {
             Box::pin(async move { Ok(acc + item.count as u64) })
@@ -222,7 +222,7 @@ async fn test_stateful_window() {
             is_new_session: None,
         },
     ];
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2(
         config,
         key_extractor,
@@ -298,8 +298,8 @@ async fn test_stateful_join() {
         },
     ];
 
-    let left_stream = from_iter(left_data);
-    let right_stream = from_iter(right_data);
+    let left_stream = from_iter_rs2(left_data);
+    let right_stream = from_iter_rs2(right_data);
 
     let result_stream = left_stream.stateful_join_rs2(
         right_stream,
@@ -396,8 +396,8 @@ async fn test_stateful_join_different_keys() {
         }, // id=0 maps to key="1"
     ];
 
-    let left_stream = from_iter(left_data);
-    let right_stream = from_iter(right_data);
+    let left_stream = from_iter_rs2(left_data);
+    let right_stream = from_iter_rs2(right_data);
 
     let result_stream = left_stream.stateful_join_rs2(
         right_stream,
@@ -441,7 +441,7 @@ async fn test_stateful_operations_with_empty_stream() {
     let key_extractor: fn(&TestData) -> String = |data| data.id.to_string();
     let empty_data: Vec<TestData> = vec![];
 
-    let stream = from_iter(empty_data);
+    let stream = from_iter_rs2(empty_data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             let state_bytes = state_access.get().await.unwrap_or(Vec::new());
@@ -488,7 +488,7 @@ async fn test_stateful_operations_with_single_item() {
         is_new_session: None,
     }];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_filter_rs2(config, key_extractor, |item, state_access| {
         let item = item.clone();
         let state_access = state_access.clone();
@@ -554,7 +554,7 @@ async fn test_stateful_operations_with_multiple_keys() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
         stream.stateful_fold_rs2(config, key_extractor, 0u64, |acc, item, _state_access| {
             Box::pin(async move { Ok(acc + item.count as u64) })
@@ -588,7 +588,7 @@ async fn test_stateful_operations_with_large_data() {
         });
     }
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2(
         config,
         key_extractor,
@@ -643,7 +643,7 @@ async fn test_stateful_operations_error_handling() {
         is_new_session: None,
     }];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             // Simulate state access error
@@ -689,7 +689,7 @@ async fn test_stateful_operations_concurrent_access() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
         stream.stateful_reduce_rs2(config, key_extractor, Some(0u64), |acc, item, _state_access| {
             Box::pin(async move { Ok(acc + item.count as u64) })
@@ -734,7 +734,7 @@ async fn test_stateful_operations_with_custom_key_extractor() {
         },
     ];
 
-    let stream = from_iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             let state_bytes = state_access.get().await.unwrap_or(Vec::new());

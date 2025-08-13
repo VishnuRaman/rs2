@@ -490,7 +490,7 @@ async fn test_tick() {
 #[tokio::test]
 async fn test_par_eval_map() {
     let stream = from_iter_rs2(vec![1, 2, 3, 4]);
-    let mapped = stream.par_eval_map_rs2(2, |x| async move { x * 2 });
+    let mapped = stream.par_eval_map_rs2(Some(2), |x| async move { x * 2 });
     let result: Vec<_> = mapped.collect_rs2().await;
     assert_eq!(result, vec![2, 4, 6, 8]);
 }
@@ -527,7 +527,7 @@ async fn test_collect_ext() {
 #[tokio::test]
 async fn test_par_eval_map_unordered() {
     let stream = from_iter_rs2(vec![1, 2, 3, 4]);
-    let mapped = stream.par_eval_map_unordered_rs2(2, |x| async move { x * 2 });
+    let mapped = stream.par_eval_map_unordered_rs2(Some(2), |x| async move { x * 2 });
     let result: Vec<_> = mapped.collect_rs2().await;
     assert_eq!(result, vec![2, 4, 6, 8]);
 }
