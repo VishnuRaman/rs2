@@ -26,7 +26,7 @@ async fn test_par_eval_map_unordered_all_results() {
     let data = vec![1, 2, 3, 4, 5];
     let stream = from_iter(data);
     
-    let mut result: Vec<_> = stream
+    let result: Vec<_> = stream
         .par_eval_map_unordered(2, |x| async move {
             // Add delay to ensure concurrency is working
             sleep(Duration::from_millis(10)).await;
@@ -140,7 +140,7 @@ async fn test_par_eval_map_unordered_high_concurrency() {
     let data: Vec<i32> = (0..100).collect();
     let stream = from_iter(data.clone());
     
-    let mut result: Vec<_> = stream
+    let result: Vec<_> = stream
         .par_eval_map_unordered(10, |x| async move {
             sleep(Duration::from_millis(1)).await;
             Ok::<_, rs2_stream::error::StreamError>(x * 2)

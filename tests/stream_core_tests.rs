@@ -1,8 +1,6 @@
 use rs2_stream::stream::{Stream, StreamExt, UtilityStreamExt, empty, once, repeat, from_iter};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::future::Future;
-use tokio_test::{assert_ok, assert_pending, assert_ready};
 
 // Test stream that yields numbers
 struct TestStream {

@@ -2,20 +2,16 @@ use std::future::Future;
 use std::time::Duration;
 use std::sync::Arc;
 use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
 use tokio::sync::Mutex;
 
 use crate::stream::{
     Stream, StreamExt, AdvancedStreamExt, SpecializedStreamExt, SelectStreamExt,
     empty, once, repeat, from_iter, pending, repeat_with, once_with, unfold,
-    UtilityStreamExt, ParallelStreamExt
+    UtilityStreamExt
 };
 use crate::stream::constructors::ConstructorStreamExt;
 use crate::stream::rate::RateStreamExt;
-use crate::stream::async_combinators::AsyncStreamExt;
-use crate::error::{StreamError, StreamResult};
 use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
-use crate::rs2_stream_ext::RS2StreamExt;
 use crate::stream_configuration::MetricsConfig;
 use crate::stream::core::{BracketStream, BracketState};
 use crate::stream::timeout::TimeoutStream;
@@ -263,7 +259,7 @@ where
         let mut stream = s;
         let first = {
             use std::pin::Pin;
-            use std::task::{Context, Poll};
+            
             use std::future::poll_fn;
             poll_fn(|cx| Pin::new(&mut stream).poll_next(cx)).await
         };
@@ -488,7 +484,7 @@ where
     S: Stream<Item = O> + Send + 'static,
     O: Send + 'static + Clone,
 {
-    use crate::stream::specialized::{Backpressure, BackpressureStrategy, SpecializedStreamExt};
+    use crate::stream::specialized::{BackpressureStrategy, SpecializedStreamExt};
     
     let buffer_size = config.buffer_size;
     let low_watermark = config.low_watermark.unwrap_or(buffer_size / 4);
@@ -508,7 +504,7 @@ where
     S: Stream<Item = O> + Send + 'static,
     O: Clone + Send + 'static,
 {
-    use crate::stream::specialized::{Backpressure, BackpressureStrategy, SpecializedStreamExt};
+    use crate::stream::specialized::{BackpressureStrategy, SpecializedStreamExt};
     
     let buffer_size = config.buffer_size;
     let low_watermark = config.low_watermark.unwrap_or(buffer_size / 4);
@@ -528,7 +524,7 @@ where
     S: Stream<Item = O> + Send + 'static,
     O: Clone + Send + 'static,
 {
-    use crate::stream::specialized::{Backpressure, BackpressureStrategy, SpecializedStreamExt};
+    use crate::stream::specialized::{BackpressureStrategy, SpecializedStreamExt};
     
     let buffer_size = config.buffer_size;
     let low_watermark = config.low_watermark.unwrap_or(buffer_size / 4);
@@ -548,7 +544,7 @@ where
     S: Stream<Item = O> + Send + 'static,
     O: Send + 'static + Clone,
 {
-    use crate::stream::specialized::{Backpressure, BackpressureStrategy, SpecializedStreamExt};
+    use crate::stream::specialized::{BackpressureStrategy, SpecializedStreamExt};
     
     let buffer_size = config.buffer_size;
     let low_watermark = config.low_watermark.unwrap_or(buffer_size / 4);

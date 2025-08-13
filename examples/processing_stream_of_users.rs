@@ -1,5 +1,4 @@
 use rs2_stream::stream::constructors::from_iter;
-use rs2_stream::stream::Stream;
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::rs2::eval;
 use std::error::Error;

@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use serial_test::serial;
-use rs2_stream::media::types::*;
 
 // ============================================================================
 // Types Tests
@@ -954,7 +953,7 @@ fn test_chunk_processor_monitoring_stream() {
             ChunkProcessor::new(ChunkProcessorConfig::default(), codec, output_queue.clone());
 
         // Start monitoring stream
-        let mut monitoring_stream = processor.create_monitoring_stream();
+        let monitoring_stream = processor.create_monitoring_stream();
 
         // Process some chunks
         let chunks = vec![
@@ -1121,7 +1120,7 @@ fn test_chunk_processor_timeout_handling() {
         let chunk = create_test_chunk("test_stream", 1, ChunkType::VideoIFrame);
         let chunk_stream = from_iter(vec![chunk]);
         // Process the chunk
-        let mut result_stream = processor.process_chunks(chunk_stream);
+        let result_stream = processor.process_chunks(chunk_stream);
         let results: Vec<_> = result_stream.collect().await;
         let result = results.first().unwrap();
         assert!(result.is_ok());

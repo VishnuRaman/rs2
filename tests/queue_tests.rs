@@ -1,4 +1,4 @@
-use rs2_stream::queue::{Queue, QueueError};
+use rs2_stream::queue::Queue;
 use rs2_stream::stream::StreamExt;
 use tokio::runtime::Runtime;
 

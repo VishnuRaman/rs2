@@ -1,6 +1,4 @@
-use rs2_stream::stream::{Stream, StreamExt, UtilityStreamExt, from_iter, empty, once, repeat, pending};
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use rs2_stream::stream::{StreamExt, UtilityStreamExt, from_iter, empty, once, repeat, pending};
 use tokio::time::{timeout, Duration};
 
 #[tokio::test]

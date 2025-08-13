@@ -1,6 +1,6 @@
 use rs2_stream::rs2::*;
-use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
-use rs2_stream::session::{SessionBuilder, SessionPreset, set_global_session, get_global_state_config, get_global_buffer_config};
+use rs2_stream::state::{KeyExtractor, StatefulStreamExt};
+use rs2_stream::session::{SessionBuilder, SessionPreset, set_global_session, get_global_state_config};
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::stream::StreamExt;
 use serde::{Deserialize, Serialize};

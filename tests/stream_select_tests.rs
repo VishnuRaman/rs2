@@ -1,4 +1,4 @@
-use rs2_stream::stream::{Stream, StreamExt, SelectStreamExt, AdvancedStreamExt, UtilityStreamExt, from_iter, empty};
+use rs2_stream::stream::{Stream, StreamExt, SelectStreamExt, AdvancedStreamExt, UtilityStreamExt};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 

@@ -6,7 +6,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use std::future::Future;
-use pin_project_lite::pin_project;
 
 use crate::stream::Stream;
 use crate::state::stream_ext::StateAccess;

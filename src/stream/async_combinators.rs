@@ -3,7 +3,6 @@ use crate::stream::{Stream, StreamExt};
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::time::{Duration, Instant};
 use std::future::Future;
 use tokio::task::{JoinHandle, spawn};
 

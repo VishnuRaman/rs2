@@ -97,7 +97,7 @@ where
             if let Some(right_items) = self.right_buffer.get(key) {
                 for (li, left_item) in left_items.iter().enumerate() {
                     for (ri, right_item) in right_items.iter().enumerate() {
-                        if (left_item.timestamp as i64 - right_item.timestamp as i64).abs() 
+                        if (left_item.timestamp as i64 - right_item.timestamp as i64).abs()
                             <= self.window_duration.as_millis() as i64 {
                             let pair_id = (key.clone(), li, ri);
                             if !self.emitted_pairs.contains(&pair_id) {
@@ -124,7 +124,7 @@ where
 {
     type Item = Result<R, crate::state::StateError>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         // SAFETY: We never move fields that are !Unpin
         let this = unsafe { self.get_unchecked_mut() };
 

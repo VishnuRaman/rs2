@@ -3,7 +3,6 @@ use rs2_stream::connectors::stream_connector::{ConnectorConfig, ConnectorMetadat
 use rs2_stream::connectors::CommonConfig;
 use tokio::runtime::Runtime;
 use rs2_stream::stream::{from_iter, Stream, StreamExt};
-use std::sync::Arc;
 use std::pin::Pin;
 use std::future::Future;
 

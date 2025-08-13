@@ -4,7 +4,7 @@
 
 use super::types::{MediaChunk, MediaPriority};
 use crate::queue::{Queue, QueueError};
-use crate::stream::{Stream, StreamExt};
+use crate::stream::Stream;
 use crate::rs2_stream_ext::RS2StreamExt;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -50,7 +50,7 @@ impl Stream for PriorityQueueStream {
     type Item = MediaChunk;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut this = self.project();
+        let this = self.project();
         
         // First check priority buffer
         if let Ok(mut buffer) = this.priority_buffer.try_lock() {

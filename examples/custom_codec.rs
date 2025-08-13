@@ -7,10 +7,8 @@
 //! 4. Monitor codec performance
 
 use rs2_stream::stream::{StreamExt, from_iter};
-use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::media::codec::{CodecFactory, EncodingConfig, MediaCodec, RawMediaData};
 use rs2_stream::media::types::{MediaType, QualityLevel};
-use rs2_stream::rs2::*;
 use std::collections::HashMap;
 use std::time::Duration;
 

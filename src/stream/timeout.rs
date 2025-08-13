@@ -1,5 +1,4 @@
 use pin_project_lite::pin_project;
-use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -37,7 +36,7 @@ where
     type Item = StreamResult<S::Item>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut this = self.project();
+        let this = self.project();
 
         // Check if we've exceeded the timeout duration
         if this.last_activity.elapsed() >= *this.timeout_duration {

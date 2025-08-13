@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
-use tokio::sync::RwLock;
 use crate::stream_performance_metrics::StreamMetrics;
 use crate::rs2;
 

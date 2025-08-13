@@ -112,7 +112,7 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     }
 
     /// Fold over the stream
-    async fn fold_rs2<B, F>(mut self, init: B, f: F) -> B
+    async fn fold_rs2<B, F>(self, init: B, f: F) -> B
     where
         F: FnMut(B, Self::Item) -> B + Send + 'static,
         B: Send + 'static + Clone,
@@ -798,7 +798,7 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     }
 
     /// Interleave multiple streams in a round-robin fashion
-    fn interleave_rs2(mut self, mut streams: Vec<Self>) -> RoundRobinInterleave<Self>
+    fn interleave_rs2(self, mut streams: Vec<Self>) -> RoundRobinInterleave<Self>
     where
         Self: Sized + Send + Unpin + 'static,
         Self::Item: Send + 'static,
@@ -1094,7 +1094,7 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         O: Send + 'static + Unpin + Clone,
         Self: Send + 'static + Unpin,
     {
-        use crate::stream::parallel::ParallelStreamExt;
+        
         self.par_eval_map_rs2(Some(concurrency), move |x| {
             let f = f.clone();
             async move { f(x) }
@@ -1167,7 +1167,7 @@ where
     S: Stream<Item = T> + Send + 'static,
     T: Clone + Send + 'static,
 {
-    use crate::stream::StreamExt;
+    
     
     stream.scan(Vec::<T>::new(), move |window, item| {
         window.push(item);

@@ -41,7 +41,7 @@ impl OneShotSignal {
 
 impl std::future::Future for OneShotSignal {
     type Output = ();
-    fn poll(mut self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+    fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
         if self.yielded {
             std::task::Poll::Ready(())
         } else {
@@ -750,7 +750,7 @@ async fn test_tick_rs2_basic() {
     // let result = ticked.take_rs2(2).collect_rs2().await;
     
     // For now, we just verify the method exists by checking the trait
-    use rs2_stream::rs2_stream_ext::RS2StreamExt;
+    
     
     // This test passes if the trait method exists with the correct signature
     assert!(true, "tick_rs2 method exists on RS2StreamExt trait");

@@ -1,6 +1,5 @@
 use crate::resource_manager::{ResourceConfig, ResourceManager};
 use crate::stream::Stream;
-use crate::rs2_stream_ext::RS2StreamExt;
 use std::task::{Context, Poll, Waker, RawWaker, RawWakerVTable};
 use std::pin::Pin;
 use serde::{Deserialize, Serialize};
@@ -12,7 +11,6 @@ use crate::state::{StateConfig, StateError, StateStorage};
 use std::future::Future;
 use crate::stream::core::StreamExt as CoreStreamExt;
 use std::collections::VecDeque;
-use crate::session::{get_global_state_config, get_global_buffer_config};
 
 // Memory management constants
 const MAX_BUFFER_SIZE: usize = 10_000; // Max items per buffer
@@ -405,7 +403,7 @@ where
                         println!("StatefulWindow: emitting window for key {}", key);
                         *this.current_future = Some(Box::pin(future));
                         // Poll the future immediately to completion
-                        let mut pinned = this.current_future.as_mut().unwrap();
+                        let pinned = this.current_future.as_mut().unwrap();
                         match pinned.as_mut().poll(cx) {
                             Poll::Ready(result) => {
                                 *this.current_future = None;
@@ -432,7 +430,7 @@ where
                                 // Poll the future to completion synchronously
                                 let waker = noop_waker();
                                 let mut cx = Context::from_waker(&waker);
-                                let mut pinned = this.current_future.as_mut().unwrap();
+                                let pinned = this.current_future.as_mut().unwrap();
                                 match pinned.as_mut().poll(&mut cx) {
                                     Poll::Ready(result) => {
                                         this.result_queue.push_back(result);

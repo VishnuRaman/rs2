@@ -1,5 +1,4 @@
 use rs2_stream::stream::{StreamExt, from_iter};
-use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::state::config::StateConfig;
 use rs2_stream::state::{CustomKeyExtractor, StatefulStreamExt};
 use serde::{Deserialize, Serialize};

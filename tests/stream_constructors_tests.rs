@@ -3,7 +3,6 @@ use rs2_stream::stream::AdvancedStreamExt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::time::{timeout, Duration};
-use tokio_test::{assert_ok, assert_pending, assert_ready};
 
 // Test stream that yields numbers
 struct TestStream {

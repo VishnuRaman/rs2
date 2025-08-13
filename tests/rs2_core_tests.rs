@@ -3,8 +3,7 @@ use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::stream_performance_metrics::HealthThresholds;
 use rs2_stream::stream_configuration::*;
 use rs2_stream::stream::{
-    Stream, StreamExt, AdvancedStreamExt, SpecializedStreamExt, SelectStreamExt,
-    empty, once, repeat, from_iter, pending, repeat_with, once_with, unfold,
+    StreamExt,
     UtilityStreamExt, RateStreamExt
 };
 use std::time::Duration;

@@ -682,7 +682,7 @@ async fn test_stateful_join_user_events() {
     let key_extractor1 = CustomKeyExtractor::new(|data: &TestData| data.id.to_string());
     let key_extractor2 = CustomKeyExtractor::new(|data: &TestData| data.id.to_string());
 
-    let mut result_stream = stream1.stateful_join_rs2(
+    let result_stream = stream1.stateful_join_rs2(
         stream2,
         config,
         key_extractor1,

@@ -286,7 +286,7 @@ where
         }
     }
 
-    fn or_else_rs2<F>(self, mut f: F) -> impl Stream<Item = T> + Send + 'static
+    fn or_else_rs2<F>(self, f: F) -> impl Stream<Item = T> + Send + 'static
     where
         F: FnMut(E) -> T + Send + 'static,
     {

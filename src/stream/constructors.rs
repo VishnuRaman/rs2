@@ -376,7 +376,7 @@ where
             }
         } else {
             log::info!("Creating new future");
-            let fut = ((*this.f)());
+            let fut = (*this.f)();
             this.future.set(Some(Box::pin(fut)));
             cx.waker().wake_by_ref();
             Poll::Pending

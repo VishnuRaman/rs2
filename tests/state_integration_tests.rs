@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio;
 use rs2_stream::from_iter_rs2;
-use rs2_stream::resource_manager::ResourceConfig;
 // use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::StreamExt;
 

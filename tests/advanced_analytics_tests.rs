@@ -8,11 +8,9 @@
 //! - Time-based grouping
 
 use rs2_stream::advanced_analytics::*;
-use rs2_stream::rs2::*;
 use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use std::time::{Duration, SystemTime};
-use tokio::runtime::Runtime;
 
 // ================================
 // Test Data Structures

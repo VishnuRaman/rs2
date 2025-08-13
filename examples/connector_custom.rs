@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use rs2_stream::*;
 use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::{Stream, StreamExt};
 use rs2_stream::connectors::stream_connector::*;

@@ -3,7 +3,6 @@ use rs2_stream::state::{CustomKeyExtractor, StateConfig, StatefulStreamExt};
 use rs2_stream::resource_manager::ResourceConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::runtime::Runtime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UserEvent {

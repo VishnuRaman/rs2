@@ -1,13 +1,11 @@
 use rs2_stream::rs2::*;
 // use rs2_stream::stream::constructors::from_iter; // This returns basic Iter, not RS2Stream
 use rs2_stream::stream::StreamExt;
-use tokio::runtime::Runtime;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
 use rs2_stream::resource_manager::ResourceConfig;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio;
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestData {

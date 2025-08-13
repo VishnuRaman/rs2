@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::time::Duration;
 use tokio::time::Instant;
 use std::sync::Arc;
-use crate::rs2::{self, auto_backpressure_block};
 use crate::rs2_stream_ext::RS2StreamExt;
 use crate::media::types::MediaChunk;
 

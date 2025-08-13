@@ -3,7 +3,6 @@
 use crate::stream::Stream;
 use crate::error::RetryPolicy;
 use async_trait::async_trait;
-use std::sync::Arc;
 use std::pin::Pin;
 use std::future::Future;
 

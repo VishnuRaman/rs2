@@ -1,6 +1,5 @@
 use quickcheck::TestResult;
 use rand::{thread_rng, Rng};
-use rs2_stream::error::StreamResult;
 use rs2_stream::rs2::*;
 use rs2_stream::stream::from_iter;
 use serial_test::serial;
@@ -16,7 +15,6 @@ use tokio::time::{sleep, timeout};
 use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::join_all;
 use rs2_stream::stream::StreamExt;
-use std::pin::pin;
 
 /// Test 1: Multiple consumers reading from the same stream safely
 #[tokio::test]
@@ -1250,7 +1248,7 @@ async fn test_manual_poll_par_eval_map() {
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use futures::task::noop_waker;
-    use std::task::Waker;
+    
     use rs2_stream::stream::Stream;
     
     let waker = noop_waker();

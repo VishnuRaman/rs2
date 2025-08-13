@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
 use crate::stream::Stream;
 use crate::rs2_stream_ext::{RS2StreamExt, growing_then_sliding_window};
-use crate::session::{get_global_parallel_config, get_global_backpressure_config, get_global_state_config, get_global_buffer_config, get_global_time_window_config};
+use crate::session::{get_global_parallel_config, get_global_buffer_config, get_global_time_window_config};
 use crate::rs2;
 
 #[derive(Debug, Clone)]

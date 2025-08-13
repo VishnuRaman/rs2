@@ -1,5 +1,4 @@
 use rs2_stream::rs2::*;
-use rs2_stream::stream::constructors::from_iter;
 use rs2_stream::stream::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
