@@ -111,6 +111,21 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         collection
     }
 
+    /// Collect all items from the stream into a collection using session buffer configuration
+    ///
+    /// This combinator collects all items from the stream into a collection of type B.
+    /// It automatically uses the buffer configuration from the global session.
+    async fn collect_with_session_rs2<B>(self) -> B
+    where
+        B: Default + Extend<Self::Item> + Send + 'static,
+        Self::Item: Send + 'static,
+        Self: Unpin,
+    {
+        use crate::session::get_global_buffer_config;
+        let config = get_global_buffer_config().unwrap_or_default();
+        self.collect_with_config_rs2(config).await
+    }
+
     /// Fold over the stream
     async fn fold_rs2<B, F>(self, init: B, f: F) -> B
     where
@@ -699,6 +714,18 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         rs2::auto_backpressure_block(self, config)
     }
 
+    /// Apply backpressure using session configuration
+    fn auto_backpressure_with_session_rs2(
+        self,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::session::get_global_backpressure_config;
+        let config = get_global_backpressure_config().unwrap_or_default();
+        rs2::auto_backpressure_block(self, config)
+    }
+
     /// Throttle the stream
     fn throttle_rs2(self, duration: Duration) -> impl Stream<Item = Self::Item> + Send + 'static
     where
@@ -894,6 +921,18 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         rs2::auto_backpressure_drop_oldest(self, config)
     }
 
+    /// Apply backpressure with drop oldest strategy using session configuration
+    fn auto_backpressure_drop_oldest_with_session_rs2(
+        self,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::session::get_global_backpressure_config;
+        let config = get_global_backpressure_config().unwrap_or_default();
+        rs2::auto_backpressure_drop_oldest(self, config)
+    }
+
     /// Apply backpressure with drop newest strategy
     fn auto_backpressure_drop_newest_rs2(
         self,
@@ -905,6 +944,18 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         rs2::auto_backpressure_drop_newest(self, config)
     }
 
+    /// Apply backpressure with drop newest strategy using session configuration
+    fn auto_backpressure_drop_newest_with_session_rs2(
+        self,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::session::get_global_backpressure_config;
+        let config = get_global_backpressure_config().unwrap_or_default();
+        rs2::auto_backpressure_drop_newest(self, config)
+    }
+
     /// Apply backpressure with error strategy
     fn auto_backpressure_error_rs2(
         self,
@@ -913,6 +964,18 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     where
         Self::Item: Send + 'static + Clone,
     {
+        rs2::auto_backpressure_error(self, config)
+    }
+
+    /// Apply backpressure with error strategy using session configuration
+    fn auto_backpressure_error_with_session_rs2(
+        self,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::session::get_global_backpressure_config;
+        let config = get_global_backpressure_config().unwrap_or_default();
         rs2::auto_backpressure_error(self, config)
     }
 
@@ -967,6 +1030,20 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     where
         Self::Item: Send + 'static,
     {
+        rs2::with_metrics_config(self, name, health_thresholds, metrics_config)
+    }
+
+    /// Add metrics using session configuration
+    fn with_metrics_with_session_rs2(
+        self,
+        name: String,
+        health_thresholds: crate::stream_performance_metrics::HealthThresholds,
+    ) -> (impl Stream<Item = Self::Item> + Send + 'static, Arc<Mutex<StreamMetrics>>)
+    where
+        Self::Item: Send + 'static,
+    {
+        use crate::session::get_global_metrics_config;
+        let metrics_config = get_global_metrics_config().unwrap_or_default();
         rs2::with_metrics_config(self, name, health_thresholds, metrics_config)
     }
 
@@ -1139,6 +1216,23 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
         ParEvalMap::with_config(self, f, config)
     }
 
+    /// Parallel map using session configuration
+    fn par_eval_map_with_session_config_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::session::get_global_parallel_config;
+        let config = get_global_parallel_config().unwrap_or_default();
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
     /// Parallel map unordered with full configuration control
     fn par_eval_map_unordered_with_config_rs2<F, Fut, U>(
         self,
@@ -1154,6 +1248,23 @@ pub trait RS2StreamExt: Stream + Sized + Send + 'static {
     {
         use crate::stream::parallel::ParEvalMapUnordered;
         ParEvalMapUnordered::with_config(self, f, config)
+    }
+
+    /// Parallel map unordered using session configuration
+    fn par_eval_map_unordered_with_session_config_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::session::get_global_parallel_config;
+        let config = get_global_parallel_config().unwrap_or_default();
+        self.par_eval_map_unordered_with_config_rs2(config, f)
     }
 }
 
