@@ -1,6 +1,5 @@
-use async_stream::stream;
-use futures_util::stream::StreamExt;
 use rs2_stream::rs2::*;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 
@@ -17,6 +16,8 @@ struct User {
 fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
+        println!("=== RS2 Stream Combining Transformations Example ===\n");
+
         // Create two streams of users
         let admins = vec![
             User {
@@ -59,62 +60,138 @@ fn main() {
             },
         ];
 
+        println!("1. Zip Transformation - Pairing Admins with Users");
+        println!("   Admins: {}", admins.len());
+        println!("   Regular Users: {}", regular_users.len());
+
         // Zip the streams to pair admins with users they manage
-        let admin_user_pairs = from_iter(admins.clone())
-            .zip_rs2(from_iter(regular_users.clone()))
-            .collect::<Vec<_>>()
+        let admin_user_pairs: Vec<(User, User)> = from_iter_rs2(admins.clone())
+            .zip_rs2(from_iter_rs2(regular_users.clone()))
+            .collect_rs2()
             .await;
 
-        for (admin, user) in admin_user_pairs {
-            println!("Admin {} manages user {}", admin.name, user.name);
+        println!("   Admin-User Pairs:");
+        for (admin, user) in &admin_user_pairs {
+            println!("     👤 Admin {} manages user {}", admin.name, user.name);
         }
 
+        println!("\n2. Zip With Transformation - Custom Management Assignments");
+
         // Use zip_with to create management assignments
-        let assignments = from_iter(admins.clone())
-            .zip_with_rs2(from_iter(regular_users.clone()), |admin, user| {
+        let assignments: Vec<String> = from_iter_rs2(admins.clone())
+            .zip_with_rs2(from_iter_rs2(regular_users.clone()), |admin, user| {
                 format!(
-                    "{} is responsible for {}'s onboarding",
+                    "🎯 {} is responsible for {}'s onboarding",
                     admin.name, user.name
                 )
             })
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
-        for assignment in assignments {
-            println!("{}", assignment);
+        println!("   Management Assignments:");
+        for assignment in &assignments {
+            println!("     {}", assignment);
         }
+
+        println!("\n3. Merge Transformation - Combining All Users");
 
         // Merge streams to get all users in a single stream
-        let all_users = from_iter(admins.clone())
-            .merge_rs2(from_iter(regular_users.clone()))
-            .collect::<Vec<_>>()
+        let all_users: Vec<User> = from_iter_rs2(admins.clone())
+            .merge_rs2(from_iter_rs2(regular_users.clone()))
+            .collect_rs2()
             .await;
 
-        println!("Total users after merge: {}", all_users.len()); // 5
-
-        // Create two streams with different timing
-        let fast_stream = stream! {
-            yield "Fast response";
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            yield "Fast again";
+        println!("   Total users after merge: {}", all_users.len());
+        println!("   All users by role:");
+        for user in &all_users {
+            let role_icon = if user.role == "admin" { "👑" } else { "👤" };
+            println!("     {} {} ({})", role_icon, user.name, user.role);
         }
-        .boxed();
 
-        let slow_stream = stream! {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            yield "Slow response";
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            yield "Slow again";
+        println!("\n4. Timing-based Stream Selection");
+
+        // Create two streams with different timing using unfold_stream
+        let fast_stream = unfold_stream(0, |state| async move {
+            match state {
+                0 => {
+                    Some(("⚡ Fast response", 1))
+                }
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Some(("⚡ Fast again", 2))
+                }
+                _ => None,
+            }
+        });
+
+        let slow_stream = unfold_stream(0, |state| async move {
+            match state {
+                0 => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Some(("🐌 Slow response", 1))
+                }
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Some(("🐌 Slow again", 2))
+                }
+                _ => None,
+            }
+        });
+
+        // Collect both streams to demonstrate their behavior
+        println!("   Fast stream results:");
+        let fast_results: Vec<&str> = fast_stream.collect_rs2().await;
+        for result in &fast_results {
+            println!("     {}", result);
         }
-        .boxed();
 
-        // Use either to select whichever stream produces a value first
-        let results = fast_stream
-            .either_rs2(slow_stream)
-            .collect::<Vec<_>>()
+        println!("   Slow stream results:");
+        let slow_results: Vec<&str> = slow_stream.collect_rs2().await;
+        for result in &slow_results {
+            println!("     {}", result);
+        }
+
+        println!("\n5. Advanced Stream Combining - Round Robin");
+
+        // Create multiple streams and demonstrate round-robin combining
+        let stream1 = from_iter_rs2(vec!["A1", "A2", "A3"]);
+        let stream2 = from_iter_rs2(vec!["B1", "B2"]);
+        let stream3 = from_iter_rs2(vec!["C1", "C2", "C3", "C4"]);
+
+        // Use interleave to round-robin between streams
+        let interleaved: Vec<&str> = stream1
+            .interleave_rs2(vec![stream2, stream3])
+            .collect_rs2()
             .await;
 
-        println!("Results from either: {:?}", results);
-        // Should contain "Fast response", "Slow response", "Fast again", "Slow again"
+        println!("   Round-robin interleaved results:");
+        for (i, item) in interleaved.iter().enumerate() {
+            println!("     {}: {}", i + 1, item);
+        }
+
+        println!("\n6. Stream Concatenation");
+
+        // Demonstrate stream concatenation
+        let first_batch = from_iter_rs2(vec!["First-1", "First-2"]);
+        let second_batch = from_iter_rs2(vec!["Second-1", "Second-2", "Second-3"]);
+
+        let concatenated: Vec<&str> = first_batch
+            .chain_rs2(second_batch)
+            .collect_rs2()
+            .await;
+
+        println!("   Concatenated stream results:");
+        for (i, item) in concatenated.iter().enumerate() {
+            println!("     {}: {}", i + 1, item);
+        }
+
+        println!("\n=== Stream Combining Transformations Example Complete ===");
+        println!("\n🎯 Key Features Demonstrated:");
+        println!("1. Zip transformation - pairing elements from two streams");
+        println!("2. Zip with transformation - custom combining logic");
+        println!("3. Merge transformation - combining streams into one");
+        println!("4. Timing-based streams - different execution patterns");
+        println!("5. Round-robin interleaving - balanced stream mixing");
+        println!("6. Stream concatenation - sequential stream joining");
     });
 }

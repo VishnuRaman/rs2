@@ -1,8 +1,8 @@
-use rs2_stream::rs2::*;
+use rs2_stream::stream::from_iter;
 use serde::{Deserialize, Serialize};
-use futures_util::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UserProfile {
@@ -88,7 +88,7 @@ async fn api_call(user_id: u64) -> ApiResponse {
 
 // Simulate database operations
 async fn database_operation(user_id: u64) -> DatabaseRecord {
-    let start = Instant::now();
+    Instant::now();
     
     // Simulate database delay
     sleep(Duration::from_millis(20 + (user_id % 50))).await;
@@ -144,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let sequential_results: Vec<ProcessedUser> = from_iter(users.clone())
         .eval_map_rs2(|user| Box::pin(cpu_intensive_processing(user)))
-        .collect()
+        .collect_rs2()
         .await;
     let sequential_time = start.elapsed();
     println!("   ✅ Sequential: {} users in {:?}", sequential_results.len(), sequential_time);
@@ -153,8 +153,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n2️⃣ Parallel Processing (Ordered)");
     let start = Instant::now();
     let parallel_ordered_results: Vec<ProcessedUser> = from_iter(users.clone())
-        .par_eval_map_rs2(10, |user| Box::pin(cpu_intensive_processing(user)))
-        .collect()
+        .par_eval_map_rs2(Some(10), |user| Box::pin(cpu_intensive_processing(user)))
+        .collect_rs2()
         .await;
     let parallel_ordered_time = start.elapsed();
     println!("   ✅ Parallel (Ordered): {} users in {:?}", parallel_ordered_results.len(), parallel_ordered_time);
@@ -164,8 +164,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n3️⃣ Parallel Processing (Unordered)");
     let start = Instant::now();
     let parallel_unordered_results: Vec<ProcessedUser> = from_iter(users.clone())
-        .par_eval_map_unordered_rs2(10, |user| Box::pin(cpu_intensive_processing(user)))
-        .collect()
+        .par_eval_map_unordered_rs2(Some(10), |user| Box::pin(cpu_intensive_processing(user)))
+        .collect_rs2()
         .await;
     let parallel_unordered_time = start.elapsed();
     println!("   ✅ Parallel (Unordered): {} users in {:?}", parallel_unordered_results.len(), parallel_unordered_time);
@@ -175,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n4️⃣ Mixed Workload Processing (CPU + I/O)");
     let start = Instant::now();
     let mixed_results: Vec<(ProcessedUser, ApiResponse, DatabaseRecord)> = from_iter(users.clone())
-        .par_eval_map_rs2(8, |user| {
+        .par_eval_map_rs2(Some(8), |user| {
             Box::pin(async move {
                 let processed_user = cpu_intensive_processing(user.clone()).await;
                 let api_response = api_call(user.id).await;
@@ -183,7 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (processed_user, api_response, db_record)
             })
         })
-        .collect()
+        .collect_rs2()
         .await;
     let mixed_time = start.elapsed();
     println!("   ✅ Mixed Workload: {} users in {:?}", mixed_results.len(), mixed_time);
@@ -192,10 +192,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n5️⃣ Pipeline Processing");
     let start = Instant::now();
     let pipeline_results: Vec<String> = from_iter(users.clone())
-        .par_eval_map_rs2(6, |user| Box::pin(cpu_intensive_processing(user)))
-        .par_eval_map_rs2(4, |processed_user| Box::pin(api_call(processed_user.id)))
-        .par_eval_map_rs2(8, |api_response| Box::pin(file_processing(api_response.user_id)))
-        .collect()
+        .par_eval_map_rs2(Some(6), |user| Box::pin(cpu_intensive_processing(user)))
+        .par_eval_map_rs2(Some(4), |processed_user| Box::pin(api_call(processed_user.id)))
+        .par_eval_map_rs2(Some(8), |api_response| Box::pin(file_processing(api_response.user_id)))
+        .collect_rs2()
         .await;
     let pipeline_time = start.elapsed();
     println!("   ✅ Pipeline: {} users in {:?}", pipeline_results.len(), pipeline_time);
@@ -207,8 +207,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for concurrency in concurrency_levels {
         let start = Instant::now();
         let results: Vec<ProcessedUser> = from_iter(users.clone())
-            .par_eval_map_rs2(concurrency, |user| Box::pin(cpu_intensive_processing(user)))
-            .collect()
+            .par_eval_map_rs2(Some(concurrency), |user| Box::pin(cpu_intensive_processing(user)))
+            .collect_rs2()
             .await;
         let time = start.elapsed();
         println!("   🔧 Concurrency {}: {} users in {:?} ({:.2} users/sec)", 
@@ -229,7 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     let error_results: Vec<Result<ProcessedUser, String>> = from_iter(users_with_errors)
-        .par_eval_map_rs2(5, |user| {
+        .par_eval_map_rs2(Some(5), |user| {
             Box::pin(async move {
                 if user.id % 10 == 0 {
                     // Simulate error for every 10th user
@@ -239,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             })
         })
-        .collect()
+        .collect_rs2()
         .await;
 
     let success_count = error_results.iter().filter(|r| r.is_ok()).count();
@@ -251,8 +251,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     // Note: buffer_unordered is only for streams of futures, not values. Here we just collect directly.
     let resource_results: Vec<ProcessedUser> = from_iter(users.clone())
-        .par_eval_map_rs2(4, |user| Box::pin(cpu_intensive_processing(user)))
-        .collect()
+        .par_eval_map_rs2(Some(4), |user| Box::pin(cpu_intensive_processing(user)))
+        .collect_rs2()
         .await;
     let resource_time = start.elapsed();
     println!("   ✅ Resource Managed: {} users in {:?}", resource_results.len(), resource_time);
@@ -263,7 +263,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let start = Instant::now();
     let order_results: Vec<(u64, ApiResponse, DatabaseRecord, String)> = from_iter(orders)
-        .par_eval_map_rs2(12, |order_id| {
+        .par_eval_map_rs2(Some(12), |order_id| {
             Box::pin(async move {
                 // Simulate order processing pipeline
                 let api_response = api_call(order_id).await;
@@ -272,7 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (order_id, api_response, db_record, file_result)
             })
         })
-        .collect()
+        .collect_rs2()
         .await;
     let order_time = start.elapsed();
     println!("   ✅ E-commerce Processing: {} orders in {:?}", order_results.len(), order_time);

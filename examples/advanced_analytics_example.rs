@@ -7,13 +7,13 @@
 //! This example shows real-world scenarios like user behavior analysis
 //! and system monitoring.
 
-use futures_util::stream::StreamExt;
 use rs2_stream::advanced_analytics::*;
-use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime};
 use tokio::runtime::Runtime;
-
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 // ================================
 // Data Models
 // ================================
@@ -187,13 +187,12 @@ async fn time_windowed_joins() {
 
     // Join events with profiles using time windows
     let enriched_events = from_iter(user_events)
-        .join_with_time_window_rs2::<UserProfile, _, _, _, u64, fn(&UserEvent) -> u64, fn(&UserProfile) -> u64>(
+        .join_with_time_window_rs2(
             from_iter(user_profiles),
             config,
             |event| event.timestamp,
             |profile| profile.last_login,
             |event, profile| (event, profile),
-            None::<(fn(&UserEvent) -> u64, fn(&UserProfile) -> u64)>, // No key selector - cross join
         );
 
     let results = enriched_events.collect::<Vec<_>>().await;

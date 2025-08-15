@@ -1,512 +1,81 @@
-use async_stream::stream;
-use async_trait;
-use futures_core::Stream;
-use futures_util::future;
-use futures_util::pin_mut;
-use futures_util::stream::{BoxStream, StreamExt};
-use log;
-use num_cpus;
-use serde;
-use serde::Serialize;
-use serde_json;
+//! Extension traits for streams
+
+use crate::rs2::{self, BackpressureConfig};
+use crate::stream::constructors::from_iter;
+use crate::stream::constructors::ConstructorStreamExt;
+use crate::stream::{
+    AdvancedStreamExt, SelectStreamExt, SpecializedStreamExt, Stream, StreamExt, UtilityStreamExt,
+};
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
+use crate::stream_performance_metrics::StreamMetrics;
+use crate::stream::round_robin::RoundRobinInterleave;
 
-use crate::error::StreamResult;
-use crate::schema_validation::SchemaError;
-use crate::schema_validation::SchemaValidator;
-use crate::stream_configuration::{BufferConfig, GrowthStrategy};
-use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
-use crate::{
-    auto_backpressure, batch_process, bracket, chunk, debounce, distinct_until_changed,
-    distinct_until_changed_by, drop, drop_while, either, fold, group_adjacent_by, group_by,
-    interleave, interrupt_when, merge, par_eval_map, par_eval_map_unordered, par_join, prefetch,
-    sample, scan, sliding_window, take, take_while, throttle, tick, timeout, with_metrics,
-    zip_with, BackpressureConfig, RS2Stream,
-};
-
-/// Extension trait providing RS2-like combinators on Streams
-pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
-    /// Apply automatic backpressure with default configuration
-    fn auto_backpressure_rs2(self) -> RS2Stream<Self::Item>
+/// Extension trait for streams
+pub trait RS2StreamExt: Stream + Sized + Send + 'static {
+    /// Map over stream items
+    fn map_rs2<F, U>(self, f: F) -> impl Stream<Item = U> + Send + 'static
     where
-        Self::Item: Send + 'static,
-    {
-        auto_backpressure(self.boxed(), BackpressureConfig::default())
-    }
-
-    /// Apply automatic backpressure with custom configuration
-    fn auto_backpressure_with_rs2(self, config: BackpressureConfig) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        auto_backpressure(self.boxed(), config)
-    }
-
-    /// Map elements of the rs2_stream with a function
-    fn map_rs2<U, F>(self, f: F) -> RS2Stream<U>
-    where
-        F: FnMut(Self::Item) -> U + Send + 'static,
+        F: Fn(Self::Item) -> U + Send + 'static,
         U: Send + 'static,
     {
-        self.map(f).boxed()
+        self.map(f)
     }
 
-    /// Transforms each element of the stream in parallel using all available CPU cores.
-    ///
-    /// This method applies the given synchronous function to each element concurrently,
-    /// automatically detecting the number of CPU cores and using that as the concurrency limit.
-    /// Perfect for CPU-bound operations that benefit from parallelization.
-    ///
-    /// # Arguments
-    ///
-    /// * `f` - A synchronous function that transforms each stream element. Must be `Send + Sync + Clone`.
-    ///
-    /// # Returns
-    ///
-    /// A new `RS2Stream` containing the transformed elements. Order may not be preserved.
-    ///
-    /// # Performance
-    ///
-    /// - **Concurrency**: Automatically uses `num_cpus::get()` concurrent tasks
-    /// - **Best for**: CPU-intensive computations (math, parsing, compression)
-    /// - **Memory**: Uses one task per CPU core, moderate memory overhead
-    /// - **Backpressure**: Inherits from underlying `par_eval_map_rs2`
-    ///
-    /// # When to Use
-    ///
-    /// - ✅ **CPU-bound work**: Mathematical calculations, data parsing, compression
-    /// - ✅ **Simple parallelization**: Don't want to think about optimal concurrency
-    /// - ✅ **Balanced workloads**: Each task takes roughly the same time
-    /// - ❌ **I/O-bound work**: Use `par_eval_map_rs2` with higher concurrency instead
-    /// - ❌ **Memory-intensive**: May overwhelm system with too many concurrent tasks
-    ///
-    /// # See Also
-    ///
-    /// * [`map_parallel_with_concurrency_rs2`] - For custom concurrency control
-    /// * [`par_eval_map_rs2`] - For async functions and fine-tuned concurrency
-    fn map_parallel_rs2<O, F>(self, f: F) -> RS2Stream<O>
+    /// Filter stream items
+    fn filter_rs2<F>(self, f: F) -> impl Stream<Item = Self::Item> + Send + 'static
     where
-        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static,
-        Self::Item: Send + 'static,
-        O: Send + 'static,
+        F: Fn(&Self::Item) -> bool + Send + 'static,
     {
-        let concurrency = num_cpus::get();
-        self.par_eval_map_rs2(concurrency, move |x| {
-            let f = f.clone();
-            async move { f(x) }
-        })
+        self.filter(f)
     }
 
-    /// Transforms each element of the stream in parallel with custom concurrency control.
-    ///
-    /// This method applies the given synchronous function to each element concurrently,
-    /// using exactly the specified number of concurrent tasks. Ideal when you need precise
-    /// control over resource usage or when the optimal concurrency differs from CPU count.
-    ///
-    /// # Arguments
-    ///
-    /// * `concurrency` - Maximum number of concurrent tasks (must be > 0)
-    /// * `f` - A synchronous function that transforms each stream element. Must be `Send + Sync + Clone`.
-    ///
-    /// # Returns
-    ///
-    /// A new `RS2Stream` containing the transformed elements. Order may not be preserved.
-    ///
-    /// # Performance
-    ///
-    /// - **Concurrency**: Uses exactly `concurrency` concurrent tasks
-    /// - **Best for**: I/O-bound operations, memory-constrained environments, fine-tuning
-    /// - **Memory**: Scales with concurrency parameter
-    /// - **Backpressure**: Inherits from underlying `par_eval_map_rs2`
-    ///
-    /// # Concurrency Guidelines
-    ///
-    /// | **Workload Type** | **Recommended Concurrency** | **Reasoning** |
-    /// |-------------------|------------------------------|---------------|
-    /// | **CPU-bound** | `num_cpus::get()` | Match CPU cores |
-    /// | **I/O-bound** | `50-200` | Network can handle many concurrent requests |
-    /// | **Memory-heavy** | `1-4` | Prevent out-of-memory errors |
-    /// | **Database queries** | `10-50` | Respect connection pool limits |
-    /// | **File I/O** | `4-16` | Balance throughput vs file handle limits |
-    ///
-    /// # When to Use
-    ///
-    /// - ✅ **I/O-bound operations**: Network requests, file operations, database queries
-    /// - ✅ **Resource constraints**: Limited memory, connection pools, rate limits
-    /// - ✅ **Performance tuning**: Benchmarked optimal concurrency for your workload
-    /// - ✅ **Mixed workloads**: Some tasks much slower/faster than others
-    /// - ❌ **Simple CPU-bound work**: Use `map_parallel_rs2` for automatic optimization
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if `concurrency` is 0. Always use a positive value.
-    ///
-    /// # See Also
-    ///
-    /// * [`map_parallel_rs2`] - For automatic concurrency based on CPU cores
-    /// * [`par_eval_map_rs2`] - For async functions with the same concurrency control
-    fn map_parallel_with_concurrency_rs2<O, F>(self, concurrency: usize, f: F) -> RS2Stream<O>
+    /// Take n items from the stream
+    fn take_rs2(self, n: usize) -> impl Stream<Item = Self::Item> + Send + 'static {
+        self.take(n)
+    }
+
+    /// Skip n items from the stream
+    fn skip_rs2(self, n: usize) -> impl Stream<Item = Self::Item> + Send + 'static {
+        self.skip(n)
+    }
+
+    fn drop_rs2(self, n: usize) -> impl Stream<Item = Self::Item> + Send + 'static {
+        self.skip(n)
+    }
+
+    /// Chain with another stream
+    fn chain_rs2<U>(self, other: U) -> impl Stream<Item = Self::Item> + Send + 'static
     where
-        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static,
-        Self::Item: Send + 'static,
-        O: Send + 'static,
+        U: Stream<Item = Self::Item> + Send + 'static,
     {
-        self.par_eval_map_rs2(concurrency, move |x| {
-            let f = f.clone();
-            async move { f(x) }
-        })
+        self.chain(other)
     }
 
-    /// Filter elements of the rs2_stream with a predicate
-    fn filter_rs2<F>(self, mut f: F) -> RS2Stream<Self::Item>
+    /// Zip with another stream
+    fn zip_rs2<U>(self, other: U) -> impl Stream<Item = (Self::Item, U::Item)> + Send + 'static
     where
-        F: FnMut(&Self::Item) -> bool + Send + 'static,
+        U: Stream + Send + 'static,
+        U::Item: Send + 'static,
         Self::Item: Send + 'static,
     {
-        self.filter(move |item| future::ready(f(item))).boxed()
+        self.zip(other)
     }
 
-    /// Flat map elements of the rs2_stream with a function that returns a rs2_stream
-    fn flat_map_rs2<U, St, F>(self, f: F) -> RS2Stream<U>
+    /// Merge with another stream
+    fn merge_rs2<U>(self, other: U) -> impl Stream<Item = Self::Item> + Send + 'static
     where
-        F: FnMut(Self::Item) -> St + Send + 'static,
-        St: Stream<Item = U> + Send + 'static,
-        U: Send + 'static,
+        U: Stream<Item = Self::Item> + Send + 'static,
     {
-        self.flat_map(f).boxed()
+        self.merge(other)
     }
 
-    /// Map elements of the rs2_stream with an async function
-    fn eval_map_rs2<U, Fut, F>(self, f: F) -> RS2Stream<U>
-    where
-        F: FnMut(Self::Item) -> Fut + Send + 'static,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static,
-    {
-        self.then(f).boxed()
-    }
-
-    /// Merge this rs2_stream with another rs2_stream
-    fn merge_rs2(self, other: RS2Stream<Self::Item>) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        merge(self, other)
-    }
-
-    /// Zip this rs2_stream with another rs2_stream
-    fn zip_rs2<U>(self, other: RS2Stream<U>) -> RS2Stream<(Self::Item, U)>
-    where
-        Self::Item: Send + 'static,
-        U: Send + 'static,
-    {
-        self.zip(other).boxed()
-    }
-
-    /// Zip this rs2_stream with another rs2_stream, applying a function to each pair
-    fn zip_with_rs2<U, O, F>(self, other: RS2Stream<U>, f: F) -> RS2Stream<O>
-    where
-        Self::Item: Send + 'static,
-        U: Send + 'static,
-        O: Send + 'static,
-        F: FnMut(Self::Item, U) -> O + Send + 'static,
-    {
-        zip_with(self, other, f)
-    }
-
-    /// Throttle this rs2_stream to emit at most one element per duration
-    fn throttle_rs2(self, duration: Duration) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        throttle(self.boxed(), duration)
-    }
-
-    /// Debounce this rs2_stream, only emitting an element after a specified quiet period has passed
-    /// without receiving another element
-    fn debounce_rs2(self, duration: Duration) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        debounce(self.boxed(), duration)
-    }
-
-    /// Sample this rs2_stream at regular intervals, emitting the most recent value
-    ///
-    /// This combinator samples the most recent value from a rs2_stream at a regular interval.
-    /// It only emits a value if at least one new value has arrived since the last emission.
-    /// If no new value has arrived during an interval, that interval is skipped.
-    fn sample_rs2(self, interval: Duration) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Clone + Send + 'static,
-    {
-        sample(self.boxed(), interval)
-    }
-
-    /// Process elements in parallel with bounded concurrency, preserving order
-    /// ### Use when: `par_eval_map_rs2`
-    /// - Already have async functions**
-    /// - Need custom concurrency control**
-    /// - Want maximum control/performance**
-    fn par_eval_map_rs2<U, Fut, F>(self, concurrency: usize, f: F) -> RS2Stream<U>
-    where
-        F: FnMut(Self::Item) -> Fut + Send + 'static,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static,
-        Self::Item: Send + 'static,
-    {
-        par_eval_map(self.boxed(), concurrency, f)
-    }
-
-    /// Process elements in parallel with bounded concurrency, without preserving order
-    fn par_eval_map_unordered_rs2<U, Fut, F>(self, concurrency: usize, f: F) -> RS2Stream<U>
-    where
-        F: FnMut(Self::Item) -> Fut + Send + 'static,
-        Fut: Future<Output = U> + Send + 'static,
-        U: Send + 'static,
-        Self::Item: Send + 'static,
-    {
-        par_eval_map_unordered(self.boxed(), concurrency, f)
-    }
-
-    /// Run multiple streams concurrently and combine their outputs
-    ///
-    /// This combinator takes a rs2_stream of streams and a concurrency limit, and runs
-    /// up to n inner streams concurrently. It emits all elements from the inner streams,
-    /// and starts new inner streams as others complete.
-    fn par_join_rs2<S, O>(self, concurrency: usize) -> RS2Stream<O>
-    where
-        Self: Stream<Item = S>,
-        S: Stream<Item = O> + Send + 'static + Unpin,
-        O: Send + 'static,
-    {
-        par_join(self.boxed(), concurrency)
-    }
-
-    /// Add timeout to rs2_stream operations
-    fn timeout_rs2(self, duration: Duration) -> RS2Stream<StreamResult<Self::Item>>
-    where
-        Self::Item: Send + 'static,
-    {
-        timeout(self.boxed(), duration)
-    }
-
-    /// Prefetch a specified number of elements ahead of consumption
-    ///
-    /// This can improve performance by starting to process the next elements
-    /// before they're actually needed.
-    fn prefetch_rs2(self, prefetch_count: usize) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        prefetch(self.boxed(), prefetch_count)
-    }
-
-    /// Filter out consecutive duplicate elements from this rs2_stream
-    ///
-    /// This combinator only emits elements that are different from the previous element.
-    /// It uses the default equality operator (`==`) to compare elements.
-    /// The first element is always emitted.
-    fn distinct_until_changed_rs2(self) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Clone + Send + PartialEq + 'static,
-    {
-        distinct_until_changed(self.boxed())
-    }
-
-    /// Filter out consecutive duplicate elements from this rs2_stream using a custom equality function
-    ///
-    /// This combinator only emits elements that are different from the previous element.
-    /// It uses the provided equality function to compare elements.
-    /// The first element is always emitted.
-    fn distinct_until_changed_by_rs2<F>(self, eq: F) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Clone + Send + 'static,
-        F: FnMut(&Self::Item, &Self::Item) -> bool + Send + 'static,
-    {
-        distinct_until_changed_by(self.boxed(), eq)
-    }
-
-    /// Interrupt this rs2_stream when a signal is received
-    ///
-    /// This combinator stops processing the rs2_stream when the signal future completes.
-    /// Resources are properly cleaned up when the rs2_stream is interrupted.
-    fn interrupt_when_rs2<F>(self, signal: F) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-        F: Future<Output = ()> + Send + 'static,
-    {
-        interrupt_when(self.boxed(), signal)
-    }
-
-    /// Take elements from this rs2_stream while a predicate returns true
-    ///
-    /// This combinator yields elements from the stream as long as the predicate returns true.
-    /// It stops (and does not yield) the first element where the predicate returns false.
-    fn take_while_rs2<F, Fut>(self, predicate: F) -> RS2Stream<Self::Item>
-    where
-        F: FnMut(&Self::Item) -> Fut + Send + 'static,
-        Fut: Future<Output = bool> + Send + 'static,
-        Self::Item: Send + 'static,
-    {
-        take_while(self.boxed(), predicate)
-    }
-
-    /// Skip elements from this rs2_stream while a predicate returns true
-    ///
-    /// This combinator skips elements from the stream as long as the predicate returns true.
-    /// Once the predicate returns false, it yields that element and all remaining elements.
-    fn drop_while_rs2<F, Fut>(self, predicate: F) -> RS2Stream<Self::Item>
-    where
-        F: FnMut(&Self::Item) -> Fut + Send + 'static,
-        Fut: Future<Output = bool> + Send + 'static,
-        Self::Item: Send + 'static,
-    {
-        drop_while(self.boxed(), predicate)
-    }
-
-    /// Group adjacent elements that share a common key
-    ///
-    /// This combinator groups consecutive elements that produce the same key.
-    /// It emits groups as they complete (when the key changes or the rs2_stream ends).
-    /// Each emitted item is a tuple containing the key and a vector of elements.
-    fn group_adjacent_by_rs2<K, F>(self, key_fn: F) -> RS2Stream<(K, Vec<Self::Item>)>
-    where
-        Self::Item: Clone + Send + 'static,
-        K: Eq + Clone + Send + 'static,
-        F: FnMut(&Self::Item) -> K + Send + 'static,
-    {
-        group_adjacent_by(self.boxed(), key_fn)
-    }
-
-    /// Group consecutive elements that share a common key
-    ///
-    /// This combinator groups consecutive elements that produce the same key.
-    /// It emits groups as they complete (when the key changes or the rs2_stream ends).
-    /// Each emitted item is a tuple containing the key and a vector of elements.
-    fn group_by_rs2<K, F>(self, key_fn: F) -> RS2Stream<(K, Vec<Self::Item>)>
-    where
-        Self::Item: Clone + Send + 'static,
-        K: Eq + Clone + Send + 'static,
-        F: FnMut(&Self::Item) -> K + Send + 'static,
-    {
-        group_by(self.boxed(), key_fn)
-    }
-
-    /// Fold operation that accumulates a value over a stream
-    ///
-    /// This combinator applies a function to each element in the stream, accumulating a single result.
-    /// It returns a Future that resolves to the final accumulated value.
-    fn fold_rs2<A, F, Fut>(self, init: A, f: F) -> impl Future<Output = A>
-    where
-        F: FnMut(A, Self::Item) -> Fut + Send + 'static,
-        Fut: Future<Output = A> + Send + 'static,
-        Self::Item: Send + 'static,
-        A: Send + 'static,
-    {
-        fold(self.boxed(), init, f)
-    }
-
-    /// Scan operation that applies a function to each element and emits intermediate accumulated values
-    ///
-    /// This combinator is similar to fold but emits each intermediate accumulated value.
-    /// It applies a function to each element in the stream, accumulating a result and yielding
-    /// each intermediate accumulated value.
-    fn scan_rs2<U, F>(self, init: U, f: F) -> RS2Stream<U>
-    where
-        F: FnMut(U, Self::Item) -> U + Send + 'static,
-        Self::Item: Send + 'static,
-        U: Clone + Send + 'static,
-    {
-        scan(self.boxed(), init, f)
-    }
-
-    /// Apply a function to each element in the stream
-    ///
-    /// This combinator applies a function to each element in the stream without accumulating a result.
-    /// It returns a Future that completes when the stream is exhausted.
-    fn for_each_rs2<F, Fut>(self, mut f: F) -> impl Future<Output = ()>
-    where
-        F: FnMut(Self::Item) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send + 'static,
-        Self::Item: Send + 'static,
-    {
-        let mut stream = self.boxed();
-        async move {
-            while let Some(item) = stream.next().await {
-                f(item).await;
-            }
-        }
-    }
-
-    /// Take the first n elements from the stream
-    ///
-    /// This combinator yields the first n elements from the stream and then stops.
-    fn take_rs2(self, n: usize) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        take(self.boxed(), n)
-    }
-
-    /// Drop the first n elements from the stream
-    ///
-    /// This combinator skips the first n elements from the stream and yields all remaining elements.
-    fn drop_rs2(self, n: usize) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        drop(self.boxed(), n)
-    }
-
-    /// Skip the first n elements from the stream
-    ///
-    /// This combinator skips the first n elements from the stream and yields all remaining elements.
-    fn skip_rs2(self, n: usize) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        drop(self.boxed(), n)
-    }
-
-    /// Select between this rs2_stream and another rs2_stream based on which one produces a value first
-    ///
-    /// This combinator emits values from whichever rs2_stream produces a value first.
-    /// Once a value is received from one rs2_stream, the other rs2_stream is cancelled.
-    /// If either rs2_stream completes (returns None), the combinator switches to the other rs2_stream exclusively.
-    fn either_rs2(self, other: RS2Stream<Self::Item>) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        either(self, other)
-    }
-
-    /// Collect all items from the stream into a collection
-    ///
-    /// This combinator collects all items from the stream into a collection of type B.
-    /// It returns a Future that resolves to the collection.
-    ///
-    /// # Examples
-    /// ```
-    /// use rs2_stream::rs2::*;
-    /// use futures_util::stream::StreamExt;
-    ///
-    /// # async fn example() {
-    /// let stream = from_iter(vec![1, 2, 3, 4, 5]);
-    /// let result = stream.collect_rs2::<Vec<_>>().await;
-    /// assert_eq!(result, vec![1, 2, 3, 4, 5]);
-    /// # }
-    /// ```
-    fn collect_rs2<B>(self) -> impl Future<Output = B>
-    where
-        B: Default + Extend<Self::Item> + Send + 'static,
-        Self::Item: Send + 'static,
-    {
-        self.collect_with_config_rs2(BufferConfig::default())
+    /// Collect into a vector
+    async fn collect_rs2(self) -> Vec<Self::Item> {
+        use crate::stream::StreamExt;
+        self.collect().await
     }
 
     /// Collect all items from the stream into a collection with custom buffer configuration
@@ -514,141 +83,968 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     /// This combinator collects all items from the stream into a collection of type B.
     /// It returns a Future that resolves to the collection.
     /// The buffer configuration allows for optimized memory allocation and growth strategies.
-    // Enhanced version that uses all BufferConfig fields
-    fn collect_with_config_rs2<B>(self, config: BufferConfig) -> impl Future<Output = B>
+    async fn collect_with_config_rs2<B>(self, config: crate::stream_configuration::BufferConfig) -> B
     where
         B: Default + Extend<Self::Item> + Send + 'static,
         Self::Item: Send + 'static,
+        Self: Unpin,
     {
-        let mut stream = self.boxed();
-        async move {
-            if std::any::TypeId::of::<B>() == std::any::TypeId::of::<Vec<Self::Item>>() {
-                // Create Vec with smart capacity management
-                let mut vec = Vec::with_capacity(config.initial_capacity);
-                let mut items_collected = 0;
-
-                while let Some(item) = stream.next().await {
-                    // Check max_capacity limit
-                    if let Some(max_cap) = config.max_capacity {
-                        if items_collected >= max_cap {
-                            break; // Respect size limit
-                        }
-                    }
-
-                    // Apply growth strategy when needed
-                    if vec.len() == vec.capacity() {
-                        let new_capacity = match config.growth_strategy {
-                            GrowthStrategy::Linear(step) => vec.capacity() + step,
-                            GrowthStrategy::Exponential(factor) => {
-                                (vec.capacity() as f64 * factor) as usize
-                            }
-                            GrowthStrategy::Fixed => vec.capacity(), // No growth
-                        };
-
-                        let capped_capacity = if let Some(max_cap) = config.max_capacity {
-                            new_capacity.min(max_cap)
-                        } else {
-                            new_capacity
-                        };
-
-                        vec.reserve(capped_capacity - vec.capacity());
-                    }
-
-                    vec.push(item);
-                    items_collected += 1;
+        use crate::stream::StreamExt;
+        let mut collection = B::default();
+        let mut count = 0;
+        let max = config.max_capacity;
+        let mut stream = std::pin::pin!(self);
+        loop {
+            if let Some(max) = max {
+                if count >= max {
+                    break;
                 }
-
-                // Safe transmute back to B
-                let result = unsafe {
-                    let ptr = &vec as *const Vec<Self::Item> as *const B;
-                    let result = std::ptr::read(ptr);
-                    std::mem::forget(vec);
-                    result
-                };
-                result
-            } else {
-                // Fallback for other collection types
-                let mut collection = B::default();
-                while let Some(item) = stream.next().await {
-                    collection.extend(std::iter::once(item));
-                }
-                collection
             }
+            match StreamExt::next(stream.as_mut().get_mut()).await {
+                Some(item) => {
+                    collection.extend(std::iter::once(item));
+                    count += 1;
+                }
+                None => break,
+            }
+        }
+        collection
+    }
+
+    /// Collect all items from the stream into a collection using session buffer configuration
+    ///
+    /// This combinator collects all items from the stream into a collection of type B.
+    /// It automatically uses the buffer configuration from the global session.
+    async fn collect_with_session_rs2<B>(self) -> B
+    where
+        B: Default + Extend<Self::Item> + Send + 'static,
+        Self::Item: Send + 'static,
+        Self: Unpin,
+    {
+        use crate::session::get_global_buffer_config;
+        let config = get_global_buffer_config().unwrap_or_default();
+        self.collect_with_config_rs2(config).await
+    }
+
+    /// Fold over the stream
+    async fn fold_rs2<B, F>(self, init: B, f: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B + Send + 'static,
+        B: Send + 'static + Clone,
+    {
+        let items = self.collect_rs2().await;
+        items.into_iter().fold(init, f)
+    }
+
+    /// Reduce the stream using a binary operation
+    /// Returns None if the stream is empty, otherwise returns Some with the reduced value
+    async fn reduce_rs2<F>(self, f: F) -> Option<Self::Item>
+    where
+        F: Fn(Self::Item, Self::Item) -> Self::Item + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        let items = self.collect_rs2().await;
+        let mut iter = items.into_iter();
+        
+        if let Some(first) = iter.next() {
+            Some(iter.fold(first, f))
+        } else {
+            None
         }
     }
 
-    /// Create a sliding window of elements from the stream
+    /// Count items in the stream
+    async fn count_rs2(self) -> usize {
+        use crate::stream::StreamExt;
+        self.collect::<Vec<_>>().await.len()
+    }
+
+    /// Get the first item
+    fn first_rs2(self) -> impl std::future::Future<Output = Option<Self::Item>> + Send + 'static
+    where
+        Self::Item: Send + 'static,
+    {
+        self.nth(0)
+    }
+
+    /// Get the last item
+    async fn last_rs2(self) -> Option<Self::Item> {
+        use crate::stream::StreamExt;
+        let items = self.collect::<Vec<_>>().await;
+        items.into_iter().last()
+    }
+
+    /// Find an item matching a predicate
+    async fn find_rs2<F>(self, f: F) -> Option<Self::Item>
+    where
+        F: Fn(&Self::Item) -> bool + Send + 'static,
+    {
+        use crate::stream::StreamExt;
+        let items = self.collect::<Vec<_>>().await;
+        items.into_iter().find(f)
+    }
+
+    /// Check if any item matches a predicate
+    async fn any_rs2<F>(self, f: F) -> bool
+    where
+        F: Fn(&Self::Item) -> bool + Send + 'static,
+    {
+        use crate::stream::StreamExt;
+        let items = self.collect::<Vec<_>>().await;
+        items.iter().any(f)
+    }
+
+    /// Check if all items match a predicate
+    async fn all_rs2<F>(self, f: F) -> bool
+    where
+        F: Fn(&Self::Item) -> bool + Send + 'static,
+    {
+        use crate::stream::StreamExt;
+        let items = self.collect::<Vec<_>>().await;
+        items.iter().all(f)
+    }
+
+    /// Get the nth item
+    async fn nth_rs2(self, n: usize) -> Option<Self::Item> {
+        use crate::stream::StreamExt;
+        let items = self.collect::<Vec<_>>().await;
+        items.into_iter().nth(n)
+    }
+
+    /// Get the position of an item matching a predicate
+    async fn position_rs2<F>(mut self, f: F) -> Option<usize>
+    where
+        F: Fn(&Self::Item) -> bool + Send + 'static,
+        Self: Unpin,
+    {
+        let mut position = 0;
+        let mut stream = std::pin::Pin::new(&mut self);
+        while let Some(item) = stream.as_mut().next().await {
+            if f(&item) {
+                return Some(position);
+            }
+            position += 1;
+        }
+        None
+    }
+
+    /// Chunk items into vectors
+    fn chunks_rs2(self, size: usize) -> impl Stream<Item = Vec<Self::Item>> + Send + 'static
+    where
+        Self::Item: Send + 'static,
+    {
+        self.chunks(size)
+    }
+
+    /// Window items with overlap
+    fn sliding_window_with_step_rs2(
+        self,
+        size: usize,
+        step: usize,
+    ) -> impl Stream<Item = Vec<Self::Item>> + Send + 'static
+    where
+        Self: Sized + 'static,
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::stream::specialized::SpecializedStreamExt;
+        use crate::stream::Either;
+        if size == 0 {
+            Either::Left(crate::stream::constructors::empty::<Vec<Self::Item>>())
+        } else {
+            Either::Right(self.sliding_window_with_step(size, step))
+        }
+    }
+
+    /// Growing then sliding window - starts with small windows and grows to full size
+    fn growing_then_sliding_window_rs2(
+        self,
+        size: usize,
+    ) -> impl Stream<Item = Vec<Self::Item>> + Send + 'static
+    where
+        Self: Sized + 'static,
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::stream::Either;
+        if size == 0 {
+            Either::Left(crate::stream::constructors::empty::<Vec<Self::Item>>())
+        } else {
+            Either::Right(growing_then_sliding_window(self, size))
+        }
+    }
+
+    /// Enumerate items
+    fn enumerate_rs2(self) -> impl Stream<Item = (usize, Self::Item)> + Send + 'static {
+        self.enumerate()
+    }
+
+    /// Inspect items without modifying them
+    fn inspect_rs2<F>(self, f: F) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        F: Fn(&Self::Item) + Send + 'static,
+    {
+        self.inspect(f)
+    }
+
+    /// Peek at the next item without consuming it
+    fn peekable_rs2(self) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static,
+    {
+        self.peekable()
+    }
+
+    /// Skip while a predicate is true
+    fn skip_while_rs2<F>(self, f: F) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        F: FnMut(&Self::Item) -> bool + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        self.skip_while(f)
+    }
+
+    /// Drop while a predicate is true (same as skip_while)
+    fn drop_while_rs2<F>(self, f: F) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        F: FnMut(&Self::Item) -> bool + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        crate::rs2::drop_while(self, f)
+    }
+
+    /// Take while a predicate is true
+    fn take_while_rs2<F>(self, f: F) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        F: FnMut(&Self::Item) -> bool + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        self.take_while(f)
+    }
+
+    /// Scan over the stream
+    fn scan_rs2<St, F, B>(self, initial_state: St, f: F) -> impl Stream<Item = B> + Send + 'static
+    where
+        F: Fn(&mut St, Self::Item) -> Option<B> + Send + 'static,
+        St: Send + 'static,
+        B: Send + 'static,
+    {
+        self.scan(initial_state, f)
+    }
+
+    /// Apply a function to each element in the stream
     ///
-    /// This combinator creates a sliding window of the specified size over the stream.
-    /// It yields a vector of items for each window position.
-    fn sliding_window_rs2(self, size: usize) -> RS2Stream<Vec<Self::Item>>
+    /// This combinator applies a function to each element in the stream without accumulating a result.
+    /// It returns a Future that completes when the stream is exhausted.
+    async fn for_each_rs2<F, Fut>(mut self, mut f: F)
+    where
+        F: FnMut(Self::Item) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+        Self::Item: Send + 'static,
+        Self: Unpin,
+    {
+        let mut stream = std::pin::Pin::new(&mut self);
+        while let Some(item) = stream.as_mut().next().await {
+            f(item).await;
+        }
+    }
+
+    /// Flat map over the stream
+    fn flat_map_rs2<U, F>(self, f: F) -> impl Stream<Item = U::Item> + Send + 'static
+    where
+        U: Stream + Send + 'static,
+        F: FnMut(Self::Item) -> U + Send + 'static,
+        Self::Item: Send + 'static,
+        U::Item: Send + 'static,
+    {
+        self.flat_map::<U::Item, U, F>(f)
+    }
+
+    /// Map elements of the stream with an async function
+    fn eval_map_rs2<U, Fut, F>(self, f: F) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: FnMut(Self::Item) -> Fut + Send + 'static,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static,
+        Self::Item: Send + 'static,
+        Self: Unpin,
+    {
+        rs2::eval_map(self, f)
+    }
+
+    /// Flatten nested streams
+    fn flatten_rs2(self) -> impl Stream<Item = <Self::Item as Stream>::Item> + Send + 'static
+    where
+        Self::Item: Stream + Send + 'static,
+        <Self::Item as Stream>::Item: Send + 'static,
+    {
+        StreamExt::flatten(self)
+    }
+
+    /// Filter and map over stream items
+    fn filter_map_rs2<U, F>(self, f: F) -> impl Stream<Item = U> + Send + 'static
+    where
+        U: Send + 'static,
+        F: FnMut(Self::Item) -> Option<U> + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        StreamExt::filter_map(self, f)
+    }
+
+    /// Filter and map over stream items with an async function
+    fn filter_map_async_rs2<F, Fut, U>(self, f: F) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: FnMut(Self::Item) -> Fut + Send + 'static,
+        Fut: Future<Output = Option<U>> + Send + 'static,
+        U: Send + 'static,
+        Self::Item: Send + 'static,
+        Self: Unpin,
+    {
+        use crate::stream::async_combinators::AsyncStreamExt;
+        self.filter_map_async(f)
+    }
+
+    /// Process items in parallel with bounded concurrency
+    fn par_eval_map_rs2<F, Fut, U>(
+        self,
+        concurrency: Option<usize>,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParEvalMap;
+        use crate::session::get_global_parallel_config;
+        
+        // Try to get concurrency from session config, fall back to explicit parameter
+        let effective_concurrency = concurrency.unwrap_or_else(|| {
+            get_global_parallel_config()
+                .map(|config| config.concurrency)
+                .unwrap_or(4) // Default fallback
+        });
+        
+        let config = crate::stream::parallel::ParallelConfig {
+            concurrency: effective_concurrency,
+            max_buffer_size: get_global_parallel_config()
+                .map(|config| config.max_buffer_size)
+                .unwrap_or(1024),
+            timeout: get_global_parallel_config()
+                .map(|config| config.timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            sequence_timeout: get_global_parallel_config()
+                .map(|config| config.sequence_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            task_timeout: get_global_parallel_config()
+                .map(|config| config.task_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+        };
+        
+        ParEvalMap::with_config(self, f, config)
+    }
+
+    /// Parallel map with explicit concurrency - Preserves order
+    /// Backward compatibility method
+    fn par_eval_map_with_concurrency_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        self.par_eval_map_rs2(Some(concurrency), f)
+    }
+
+    /// Parallel map using session configuration - Preserves order
+    fn par_eval_map_with_session_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        self.par_eval_map_rs2(None, f)
+    }
+
+    /// Parallel map with concurrency control - Does not preserve order
+    fn par_eval_map_unordered_rs2<F, Fut, U>(
+        self,
+        concurrency: Option<usize>,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParEvalMapUnordered;
+        use crate::session::get_global_parallel_config;
+        
+        // Try to get concurrency from session config, fall back to explicit parameter
+        let effective_concurrency = concurrency.unwrap_or_else(|| {
+            get_global_parallel_config()
+                .map(|config| config.concurrency)
+                .unwrap_or(4) // Default fallback
+        });
+        
+        let config = crate::stream::parallel::ParallelConfig {
+            concurrency: effective_concurrency,
+            max_buffer_size: get_global_parallel_config()
+                .map(|config| config.max_buffer_size)
+                .unwrap_or(1024),
+            timeout: get_global_parallel_config()
+                .map(|config| config.timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            sequence_timeout: get_global_parallel_config()
+                .map(|config| config.sequence_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            task_timeout: get_global_parallel_config()
+                .map(|config| config.task_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+        };
+        
+        ParEvalMapUnordered::with_config(self, f, config)
+    }
+
+    /// Parallel map unordered with explicit concurrency - Does not preserve order
+    fn par_eval_map_unordered_with_concurrency_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        self.par_eval_map_unordered_rs2(Some(concurrency), f)
+    }
+
+    /// Parallel map unordered using session configuration - Does not preserve order
+    fn par_eval_map_unordered_with_session_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        self.par_eval_map_unordered_rs2(None, f)
+    }
+
+    /// Parallel map using session configuration
+    fn map_parallel_with_session_rs2<F, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> U + Send + Sync + Clone + 'static + Unpin,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        let concurrency = crate::session::get_global_parallel_config()
+            .map(|config| config.concurrency)
+            .unwrap_or(4);
+        self.map_parallel_rs2(Some(concurrency), f)
+    }
+
+    /// Parallel join using session configuration
+    fn par_join_with_session_rs2(self) -> impl Stream<Item = <Self::Item as Stream>::Item> + Send + 'static
+    where
+        Self: Send + 'static + Unpin,
+        Self::Item: Stream + Send + 'static + Unpin,
+        <Self::Item as Stream>::Item: Send + 'static + Unpin + Clone,
+    {
+        let concurrency = crate::session::get_global_parallel_config()
+            .map(|config| config.concurrency)
+            .unwrap_or(4);
+        self.par_join_rs2(concurrency)
+    }
+
+    /// Parallel map optimized for small workloads (4 workers, 256 buffer)
+    fn par_eval_map_small_workloads_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let config = ParallelConfig::for_small_workloads();
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map optimized for large workloads (CPU cores, 4096 buffer)
+    fn par_eval_map_large_workloads_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let config = ParallelConfig::for_large_workloads();
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map with adaptive configuration based on expected workload
+    fn par_eval_map_adaptive_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        expected_items: usize,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let config = ParallelConfig::adaptive(concurrency, expected_items);
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map with task timeout (drops items that take too long)
+    fn par_eval_map_with_timeout_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        task_timeout: std::time::Duration,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let mut config = ParallelConfig::default();
+        config.concurrency = concurrency;
+        config.task_timeout = task_timeout;
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map with sequence timeout (skips missing items in ordered mode)
+    fn par_eval_map_with_sequence_timeout_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        sequence_timeout: std::time::Duration,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let mut config = ParallelConfig::default();
+        config.concurrency = concurrency;
+        config.sequence_timeout = sequence_timeout;
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map with custom buffer size
+    fn par_eval_map_with_buffer_size_rs2<F, Fut, U>(
+        self,
+        concurrency: usize,
+        max_buffer_size: usize,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParallelConfig;
+        let mut config = ParallelConfig::default();
+        config.concurrency = concurrency;
+        config.max_buffer_size = max_buffer_size;
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Apply backpressure with default configuration
+    fn auto_backpressure_rs2(self) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::auto_backpressure_block(self, BackpressureConfig::default())
+    }
+
+    /// Apply backpressure with custom configuration
+    fn auto_backpressure_with_rs2(
+        self,
+        config: BackpressureConfig,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::auto_backpressure_block(self, config)
+    }
+
+    /// Apply backpressure using session configuration
+    fn auto_backpressure_with_session_rs2(
+        self,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::session::get_global_backpressure_config;
+        let config = get_global_backpressure_config().unwrap_or_default();
+        rs2::auto_backpressure_block(self, config)
+    }
+
+    /// Throttle the stream
+    fn throttle_rs2(self, duration: Duration) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static,
+    {
+        rs2::throttle(self, duration)
+    }
+
+    /// Debounce the stream
+    fn debounce_rs2(self, duration: Duration) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static,
+    {
+        rs2::debounce(self, duration)
+    }
+
+    /// Sample the stream at regular intervals
+    fn sample_rs2(self, interval: Duration) -> impl Stream<Item = Self::Item> + Send + 'static
     where
         Self::Item: Clone + Send + 'static,
     {
-        sliding_window(self.boxed(), size)
+        rs2::sample(self, interval)
     }
 
-    /// Process items in batches for better throughput
-    ///
-    /// This combinator processes items in batches of the specified size,
-    /// applying the processor function to each batch.
-    fn batch_process_rs2<U, F>(self, batch_size: usize, processor: F) -> RS2Stream<U>
+    /// Zip items from multiple streams with a function
+    fn zip_with_rs2<U, F, R>(self, other: U, f: F) -> impl Stream<Item = R> + Send + 'static
     where
-        F: FnMut(Vec<Self::Item>) -> Vec<U> + Send + 'static,
+        U: Stream + Send + 'static,
+        F: FnMut(Self::Item, U::Item) -> R + Send + 'static,
+        R: Send + 'static,
         Self::Item: Send + 'static,
-        U: Send + 'static,
+        U::Item: Send + 'static,
     {
-        batch_process(self.boxed(), batch_size, processor)
+        rs2::zip_with(self, other, f)
     }
 
-    /// Collect metrics while processing the stream
-    ///
-    /// This combinator collects metrics while processing the stream,
-    /// returning both the stream and the metrics.
-    fn with_metrics_rs2(
+    /// Group items by a key function
+    fn group_by_rs2<K, F>(
         self,
-        name: String,
-        health_thresholds: HealthThresholds,
-    ) -> (RS2Stream<Self::Item>, Arc<Mutex<StreamMetrics>>)
+        key_fn: F,
+    ) -> impl Stream<Item = (K, Vec<Self::Item>)> + Send + 'static
     where
+        K: Send + 'static + Clone + Eq + std::hash::Hash,
+        F: Fn(&Self::Item) -> K + Send + 'static,
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::group_by(self, key_fn)
+    }
+
+    /// Group adjacent items by a key function
+    fn group_adjacent_by_rs2<K, F>(
+        self,
+        key_fn: F,
+    ) -> impl Stream<Item = (K, Vec<Self::Item>)> + Send + 'static
+    where
+        K: Send + 'static + Clone + Eq,
+        F: Fn(&Self::Item) -> K + Send + 'static,
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::group_adjacent_by(self, key_fn)
+    }
+
+    /// Create a sliding window of items
+    fn sliding_window_rs2(self, size: usize) -> impl Stream<Item = Vec<Self::Item>> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::stream::Either;
+        if size == 0 {
+            Either::Left(crate::stream::constructors::empty::<Vec<Self::Item>>())
+        } else {
+            Either::Right(rs2::sliding_window(self, size))
+        }
+    }
+
+    /// Apply timeout to stream items
+    fn timeout_rs2(
+        self,
+        duration: Duration,
+    ) -> impl Stream<Item = crate::error::StreamResult<Self::Item>> + Send + 'static
+    where
+        Self: Sized + Send + Unpin + 'static,
         Self::Item: Send + 'static,
     {
-        with_metrics(self.boxed(), name, health_thresholds)
+        rs2::timeout(self, duration)
+    }
+
+    /// Apply rate limiting with backpressure
+    fn rate_limit_backpressure_rs2(
+        self,
+        capacity: usize,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::rate_limit_backpressure(self, capacity)
     }
 
     /// Interleave multiple streams in a round-robin fashion
-    ///
-    /// This combinator takes a vector of streams and interleaves their elements
-    /// in a round-robin fashion.
-    fn interleave_rs2<S>(self, streams: Vec<S>) -> RS2Stream<Self::Item>
+    fn interleave_rs2(self, mut streams: Vec<Self>) -> RoundRobinInterleave<Self>
     where
-        S: Stream<Item = Self::Item> + Send + 'static + Unpin,
+        Self: Sized + Send + Unpin + 'static,
         Self::Item: Send + 'static,
     {
-        let mut all_streams = vec![self.boxed()];
-        all_streams.extend(streams.into_iter().map(|s| s.boxed()));
-        interleave(all_streams)
+        streams.insert(0, self);
+        RoundRobinInterleave::new(streams)
     }
 
-    /// Chunk the stream into vectors of the specified size
-    ///
-    /// This combinator collects elements from the stream into vectors of the specified size.
-    /// If the stream ends before a chunk is filled, the final chunk may contain fewer elements.
-    fn chunk_rs2(self, size: usize) -> RS2Stream<Vec<Self::Item>>
+    /// Concatenate two streams
+    fn concat_rs2<U>(self, other: U) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        U: Stream<Item = Self::Item> + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        rs2::concat(self, other)
+    }
+
+    /// Take items from either stream
+    fn either_rs2<U>(self, other: U) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        U: Stream<Item = Self::Item> + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        rs2::either(self, other)
+    }
+
+    /// Remove consecutive duplicate items
+    fn distinct_until_changed_rs2(self) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone + PartialEq,
+    {
+        rs2::distinct_until_changed(self)
+    }
+
+    /// Remove consecutive duplicate items with custom equality
+    fn distinct_until_changed_by_rs2<F>(
+        self,
+        eq: F,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        F: Fn(&Self::Item, &Self::Item) -> bool + Send + 'static,
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::distinct_until_changed_by(self, eq)
+    }
+
+    /// Emit items at regular intervals
+    fn tick_rs2(self, period: Duration) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+        Self: Clone,
+    {
+        AdvancedStreamExt::flatten(rs2::tick(period, self))
+    }
+
+    /// Prefetch items for better performance
+    fn prefetch_rs2(self, prefetch_count: usize) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::prefetch(self, prefetch_count)
+    }
+
+
+
+    /// Join parallel streams with concurrency control
+    fn par_join_rs2(
+        self,
+        concurrency: usize,
+    ) -> impl Stream<Item = <Self::Item as Stream>::Item> + Send + 'static
+    where
+        Self::Item: Stream + Send + 'static + Unpin,
+        <Self::Item as Stream>::Item: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+    {
+        // Use par_eval_map_rs2 to process streams with the given concurrency
+        self.par_eval_map_rs2(Some(concurrency), |stream| async move {
+            // Collect all items from the stream
+            let items: Vec<_> = stream.collect().await;
+            items
+        })
+        .flat_map_rs2(|items| from_iter(items))
+    }
+
+    /// Apply backpressure with drop oldest strategy
+    fn auto_backpressure_drop_oldest_rs2(
+        self,
+        config: BackpressureConfig,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::auto_backpressure_drop_oldest(self, config)
+    }
+
+    /// Apply backpressure with drop oldest strategy using session configuration
+    fn auto_backpressure_drop_oldest_with_session_rs2(
+        self,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::session::get_global_backpressure_config;
+        let config = get_global_backpressure_config().unwrap_or_default();
+        rs2::auto_backpressure_drop_oldest(self, config)
+    }
+
+    /// Apply backpressure with drop newest strategy
+    fn auto_backpressure_drop_newest_rs2(
+        self,
+        config: BackpressureConfig,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::auto_backpressure_drop_newest(self, config)
+    }
+
+    /// Apply backpressure with drop newest strategy using session configuration
+    fn auto_backpressure_drop_newest_with_session_rs2(
+        self,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::session::get_global_backpressure_config;
+        let config = get_global_backpressure_config().unwrap_or_default();
+        rs2::auto_backpressure_drop_newest(self, config)
+    }
+
+    /// Apply backpressure with error strategy
+    fn auto_backpressure_error_rs2(
+        self,
+        config: BackpressureConfig,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        rs2::auto_backpressure_error(self, config)
+    }
+
+    /// Apply backpressure with error strategy using session configuration
+    fn auto_backpressure_error_with_session_rs2(
+        self,
+    ) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static + Clone,
+    {
+        use crate::session::get_global_backpressure_config;
+        let config = get_global_backpressure_config().unwrap_or_default();
+        rs2::auto_backpressure_error(self, config)
+    }
+
+    /// Interrupt stream when a signal is received
+    fn interrupt_when_rs2<F>(self, signal: F) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        F: Stream + Send + 'static + std::future::Future<Output = ()>,
+        F::Item: Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        rs2::interrupt_when(self, signal)
+    }
+
+    /// Batch process items
+    fn batch_process_rs2<U, F>(
+        self,
+        batch_size: usize,
+        processor: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Vec<Self::Item>) -> Vec<U> + Send + 'static,
+        U: Send + 'static + Clone,
+        Self::Item: Send + 'static,
+    {
+        rs2::batch_process(self, batch_size, processor)
+    }
+
+    /// Add metrics to the stream
+    fn with_metrics_rs2(
+        self,
+        name: String,
+        health_thresholds: crate::stream_performance_metrics::HealthThresholds,
+    ) -> (impl Stream<Item = Self::Item> + Send, Arc<Mutex<StreamMetrics>>)
+    where
+        Self::Item: Send + 'static,
+        Self: Unpin,
+    {
+        rs2::with_metrics(
+            self,
+            name,
+            health_thresholds,
+        )
+    }
+
+    /// Add metrics with custom configuration
+    fn with_metrics_config_rs2(
+        self,
+        name: String,
+        health_thresholds: crate::stream_performance_metrics::HealthThresholds,
+        metrics_config: crate::stream_configuration::MetricsConfig,
+    ) -> (impl Stream<Item = Self::Item> + Send + 'static, Arc<Mutex<StreamMetrics>>)
     where
         Self::Item: Send + 'static,
     {
-        chunk(self.boxed(), size)
+        rs2::with_metrics_config(self, name, health_thresholds, metrics_config)
     }
 
-    /// Create a stream that emits values at a fixed rate
-    ///
-    /// This combinator creates a stream that emits the provided item at a fixed rate.
-    fn tick_rs<O>(self, period: Duration, item: O) -> RS2Stream<O>
+    /// Add metrics using session configuration
+    fn with_metrics_with_session_rs2(
+        self,
+        name: String,
+        health_thresholds: crate::stream_performance_metrics::HealthThresholds,
+    ) -> (impl Stream<Item = Self::Item> + Send + 'static, Arc<Mutex<StreamMetrics>>)
     where
-        O: Clone + Send + 'static,
+        Self::Item: Send + 'static,
     {
-        tick(period, item)
+        use crate::session::get_global_metrics_config;
+        let metrics_config = get_global_metrics_config().unwrap_or_default();
+        rs2::with_metrics_config(self, name, health_thresholds, metrics_config)
     }
 
     /// Bracket for resource management
@@ -658,12 +1054,12 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     /// 1. A future that acquires a resource
     /// 2. A function that uses the resource and returns a stream
     /// 3. A function that releases the resource
-    fn bracket_rs<A, O, St, FAcq, FUse, FRel, R>(
+    fn bracket_rs2<A, O, St, FAcq, FUse, FRel, R>(
         self,
         acquire: FAcq,
         use_fn: FUse,
         release: FRel,
-    ) -> RS2Stream<O>
+    ) -> impl Stream<Item = O> + Send + 'static
     where
         FAcq: Future<Output = A> + Send + 'static,
         FUse: FnOnce(A) -> St + Send + 'static,
@@ -673,21 +1069,35 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         O: Send + 'static,
         A: Clone + Send + 'static,
     {
-        bracket(acquire, use_fn, release)
+        rs2::bracket(acquire, use_fn, release)
     }
 
+    /// Add simple metrics to the stream
+    fn with_metrics_simple_rs2(self) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static,
+    {
+        let (stream, _metrics) = rs2::with_metrics_simple(
+            self,
+            "stream".to_string(),
+            crate::stream_performance_metrics::HealthThresholds::default(),
+        );
+        stream
+    }
+
+    /// Apply schema validation to stream items
     fn with_schema_validation_rs2<V, T>(
         self,
         validator: V,
-    ) -> Pin<Box<dyn futures_util::Stream<Item = T> + Send>>
+    ) -> impl Stream<Item = T> + Send + 'static
     where
-        V: SchemaValidator + 'static,
-        T: serde::de::DeserializeOwned + Serialize + Send + 'static,
-        Self: futures_util::Stream<Item = T> + Send + 'static,
+        V: crate::schema_validation::SchemaValidator + 'static,
+        T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static + Unpin,
+        Self: Stream<Item = T> + Send + 'static,
+        Self: Unpin,
     {
-        use futures_util::StreamExt;
         let validator = std::sync::Arc::new(validator);
-        self.filter_map(move |item| {
+        self.filter_map_async_rs2(move |item| {
             let validator = validator.clone();
             async move {
                 let bytes = match serde_json::to_vec(&item) {
@@ -706,8 +1116,178 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
                 }
             }
         })
-        .boxed()
+    }
+
+    /// Parallel map for CPU-bound operations
+    fn map_parallel_rs2<F, U>(
+        self,
+        concurrency: Option<usize>,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> U + Send + Sync + Clone + 'static + Unpin,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParMap;
+        use crate::session::get_global_parallel_config;
+        
+        // Try to get concurrency from session config, fall back to explicit parameter
+        let effective_concurrency = concurrency.unwrap_or_else(|| {
+            get_global_parallel_config()
+                .map(|config| config.concurrency)
+                .unwrap_or(4) // Default fallback
+        });
+        
+        let config = crate::stream::parallel::ParallelConfig {
+            concurrency: effective_concurrency,
+            max_buffer_size: get_global_parallel_config()
+                .map(|config| config.max_buffer_size)
+                .unwrap_or(1024),
+            timeout: get_global_parallel_config()
+                .map(|config| config.timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            sequence_timeout: get_global_parallel_config()
+                .map(|config| config.sequence_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+            task_timeout: get_global_parallel_config()
+                .map(|config| config.task_timeout)
+                .unwrap_or(std::time::Duration::MAX),
+        };
+        
+        ParMap::with_config(self, f, config)
+    }
+
+    /// Parallel map with concurrency control
+    fn map_parallel_with_concurrency_rs2<F, O>(
+        self,
+        concurrency: usize,
+        f: F,
+    ) -> impl Stream<Item = O> + Send + 'static
+    where
+        F: Fn(Self::Item) -> O + Send + Sync + Clone + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+        O: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+    {
+        
+        self.par_eval_map_rs2(Some(concurrency), move |x| {
+            let f = f.clone();
+            async move { f(x) }
+        })
+    }
+
+    /// Chunk items into vectors of specified size
+    fn chunk_rs2(self, size: usize) -> impl Stream<Item = Vec<Self::Item>> + Send + 'static
+    where
+        Self::Item: Send + 'static,
+    {
+        rs2::chunk(self, size)
+    }
+
+    /// Sample every nth item
+    fn sample_every_nth_rs2(self, n: usize) -> impl Stream<Item = Self::Item> + Send + 'static
+    where
+        Self::Item: Send + 'static,
+    {
+        use crate::stream::rate::RateStreamExt;
+        self.sample_every_nth(n)
+    }
+
+    // ================================
+    // Advanced Parallel Operations with Configuration
+    // ================================
+
+    /// Parallel map with full configuration control
+    fn par_eval_map_with_config_rs2<F, Fut, U>(
+        self,
+        config: crate::stream::parallel::ParallelConfig,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParEvalMap;
+        ParEvalMap::with_config(self, f, config)
+    }
+
+    /// Parallel map using session configuration
+    fn par_eval_map_with_session_config_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::session::get_global_parallel_config;
+        let config = get_global_parallel_config().unwrap_or_default();
+        self.par_eval_map_with_config_rs2(config, f)
+    }
+
+    /// Parallel map unordered with full configuration control
+    fn par_eval_map_unordered_with_config_rs2<F, Fut, U>(
+        self,
+        config: crate::stream::parallel::ParallelConfig,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::stream::parallel::ParEvalMapUnordered;
+        ParEvalMapUnordered::with_config(self, f, config)
+    }
+
+    /// Parallel map unordered using session configuration
+    fn par_eval_map_unordered_with_session_config_rs2<F, Fut, U>(
+        self,
+        f: F,
+    ) -> impl Stream<Item = U> + Send + 'static
+    where
+        F: Fn(Self::Item) -> Fut + Send + Sync + Clone + 'static + Unpin,
+        Fut: Future<Output = U> + Send + 'static,
+        U: Send + 'static + Unpin + Clone,
+        Self: Send + 'static + Unpin,
+        Self::Item: Send + 'static + Unpin,
+    {
+        use crate::session::get_global_parallel_config;
+        let config = get_global_parallel_config().unwrap_or_default();
+        self.par_eval_map_unordered_with_config_rs2(config, f)
     }
 }
 
-impl<S> RS2StreamExt for S where S: Stream + Sized + Unpin + Send + 'static {}
+/// Growing then sliding window implementation
+/// Starts with small windows and grows to full size, then slides
+pub fn growing_then_sliding_window<S, T>(
+    stream: S,
+    size: usize,
+) -> impl Stream<Item = Vec<T>> + Send + 'static
+where
+    S: Stream<Item = T> + Send + 'static,
+    T: Clone + Send + 'static,
+{
+    
+    
+    stream.scan(Vec::<T>::new(), move |window, item| {
+        window.push(item);
+        if window.len() > size {
+            window.remove(0);
+        }
+        Some(window.clone())
+    })
+}
+
+// Blanket impl for all streams, including unsized
+impl<S> RS2StreamExt for S where S: Stream + Send + 'static {}

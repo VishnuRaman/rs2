@@ -1,13 +1,9 @@
-//! Stream connectors for integrating with external systems
+//! Connectors for external data sources
 
 pub mod connection_errors;
+pub mod kafka_connector;
 pub mod stream_connector;
 
-pub mod kafka_connector;
-
-// Re-export main types
-pub use connection_errors::{ConnectorError, ConnectorResult};
-pub use stream_connector::{BidirectionalConnector, CommonConfig, StreamConnector};
-
-// Re-export connector implementations
+pub use connection_errors::ConnectorError;
 pub use kafka_connector::KafkaConnector;
+pub use stream_connector::{CommonConfig, StreamConnector};

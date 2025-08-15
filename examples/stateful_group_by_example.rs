@@ -1,6 +1,7 @@
-use futures::StreamExt;
-use rs2_stream::state::{CustomKeyExtractor, StatefulStreamExt};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
+use rs2_stream::state::{CustomKeyExtractor, StatefulStreamExt, StateConfig};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LogEntry {
@@ -84,13 +85,12 @@ async fn main() {
 
     // Example 1: Group by service with size-based emission (emit when group reaches 3 items)
     println!("1. Group by Service with Size-Based Emission (max 3 items per group):");
-    let service_groups = futures::stream::iter(logs.clone())
+    let service_groups: Vec<String> = rs2_stream::rs2::from_iter_rs2(logs.clone())
         .stateful_group_by_advanced_rs2(
-            rs2_stream::state::StateConfig::new(),
+            StateConfig::default(),
             CustomKeyExtractor::new(|log: &LogEntry| log.service.clone()),
-            Some(3), // max_group_size: emit when group reaches 3 items
             None,    // group_timeout: no timeout
-            false,   // emit_on_key_change: don't emit on key change
+            Some(3), // max_group_size: emit when group reaches 3 items
             |service, group_logs, state_access| {
                 let fut = async move {
                     let mut stats = if let Some(bytes) = state_access.get().await {
@@ -127,26 +127,25 @@ async fn main() {
                 Box::pin(fut)
             },
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .collect();
 
     println!("  Service groups (size-based):");
     for group in &service_groups {
         println!("    {}", group);
     }
 
-    // Example 2: Group by service with key-change emission (emit when service changes)
-    println!("\n2. Group by Service with Key-Change Emission:");
-    let service_groups_key_change = futures::stream::iter(logs.clone())
+    // Example 2: Group by service with timeout-based emission
+    println!("\n2. Group by Service with Timeout-Based Emission (100ms timeout):");
+    let service_groups_timeout: Vec<String> = rs2_stream::rs2::from_iter_rs2(logs.clone())
         .stateful_group_by_advanced_rs2(
-            rs2_stream::state::StateConfig::new(),
+            StateConfig::default(),
             CustomKeyExtractor::new(|log: &LogEntry| log.service.clone()),
+            Some(Duration::from_millis(100)), // group_timeout: 100ms timeout
             None, // max_group_size: no size limit
-            None, // group_timeout: no timeout
-            true, // emit_on_key_change: emit when key changes
             |service, group_logs, state_access| {
                 let fut = async move {
                     let mut stats = if let Some(bytes) = state_access.get().await {
@@ -183,23 +182,25 @@ async fn main() {
                 Box::pin(fut)
             },
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .collect();
 
-    println!("  Service groups (key-change):");
-    for group in &service_groups_key_change {
+    println!("  Service groups (timeout-based):");
+    for group in &service_groups_timeout {
         println!("    {}", group);
     }
 
-    // Example 3: Group by user ID with time-based emission (simulate time-based grouping)
+    // Example 3: Group by user ID (default behavior - emit at stream end)
     println!("\n3. Group by User ID (default behavior - emit at stream end):");
-    let user_groups = futures::stream::iter(logs.clone())
+    let user_groups: Vec<String> = rs2_stream::rs2::from_iter_rs2(logs.clone())
         .stateful_group_by_rs2(
-            rs2_stream::state::StateConfig::new(),
+            StateConfig::default(),
             CustomKeyExtractor::new(|log: &LogEntry| log.user_id.clone()),
+            None, // group_timeout: no timeout
+            None, // max_group_size: no size limit
             |user_id, group_logs, state_access| {
                 let fut = async move {
                     let mut stats = if let Some(bytes) = state_access.get().await {
@@ -232,11 +233,11 @@ async fn main() {
                 Box::pin(fut)
             },
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .collect();
 
     println!("  User groups:");
     for group in &user_groups {
@@ -245,13 +246,12 @@ async fn main() {
 
     // Example 4: Group by log level with size-based emission
     println!("\n4. Group by Log Level with Size-Based Emission (max 2 items per group):");
-    let level_groups = futures::stream::iter(logs.clone())
+    let level_groups: Vec<String> = rs2_stream::rs2::from_iter_rs2(logs.clone())
         .stateful_group_by_advanced_rs2(
-            rs2_stream::state::StateConfig::new(),
+            StateConfig::default(),
             CustomKeyExtractor::new(|log: &LogEntry| log.level.clone()),
-            Some(2), // max_group_size: emit when group reaches 2 items
             None,    // group_timeout: no timeout
-            false,   // emit_on_key_change: don't emit on key change
+            Some(2), // max_group_size: emit when group reaches 2 items
             |level, group_logs, state_access| {
                 let fut = async move {
                     let mut stats = if let Some(bytes) = state_access.get().await {
@@ -285,11 +285,11 @@ async fn main() {
                 Box::pin(fut)
             },
         )
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
-        .map(|r| r.unwrap())
-        .collect::<Vec<_>>();
+        .filter_map(Result::ok)
+        .collect();
 
     println!("  Level groups:");
     for group in &level_groups {
@@ -299,7 +299,7 @@ async fn main() {
     println!("\n=== Stateful Group By Example Complete ===");
     println!("\nKey Features Demonstrated:");
     println!("1. Size-based grouping: Emit groups when they reach a certain size");
-    println!("2. Key-change grouping: Emit groups when the key changes");
+    println!("2. Timeout-based grouping: Emit groups when a timeout expires");
     println!("3. End-of-stream grouping: Emit all remaining groups at stream end");
     println!("4. Stateful accumulation: Maintain statistics across group emissions");
     println!("5. True streaming: Process items as they arrive without buffering entire stream");

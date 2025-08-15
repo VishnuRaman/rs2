@@ -1,8 +1,8 @@
-use futures::StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::state::{CustomKeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::resource_manager::ResourceConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio_stream;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UserEvent {
@@ -47,8 +47,8 @@ struct WindowState {
 async fn main() {
     println!("=== RS2 State Management Example ===\n");
 
-    // Create sample event stream
-    let events = tokio_stream::iter(vec![
+    // Create sample event stream using rs2 API
+    let events = rs2_stream::rs2::from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -130,7 +130,7 @@ async fn main() {
         });
 
     let session_results: Vec<_> = session_stream
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
         .map(|r| r.unwrap())
@@ -141,7 +141,7 @@ async fn main() {
 
     // Example 2: Analytics Aggregation
     println!("\n2. Analytics Aggregation - Running totals and averages");
-    let events2 = tokio_stream::iter(vec![
+    let events2 = rs2_stream::rs2::from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -228,7 +228,7 @@ async fn main() {
     );
 
     let analytics_results: Vec<_> = analytics_stream
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
         .map(|r| r.unwrap())
@@ -242,7 +242,7 @@ async fn main() {
 
     // Example 3: Fraud Detection
     println!("\n3. Fraud Detection - Suspicious activity monitoring");
-    let events3 = tokio_stream::iter(vec![
+    let events3 = rs2_stream::rs2::from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -329,7 +329,7 @@ async fn main() {
     );
 
     let fraud_results: Vec<_> = fraud_stream
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
         .map(|r| r.unwrap())
@@ -343,7 +343,7 @@ async fn main() {
 
     // Example 4: Window Processing
     println!("\n4. Window Processing - Sliding window analytics");
-    let events4 = tokio_stream::iter(vec![
+    let events4 = rs2_stream::rs2::from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -417,10 +417,11 @@ async fn main() {
                 ))
             })
         },
+        ResourceConfig::default(), // Add the missing ResourceConfig
     );
 
     let window_results: Vec<_> = window_stream
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
         .map(|r| r.unwrap())
@@ -431,7 +432,7 @@ async fn main() {
 
     // Example 5: Distributed State Management
     println!("\n5. Distributed State Management - Multi-key processing");
-    let events5 = tokio_stream::iter(vec![
+    let events5 = rs2_stream::rs2::from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -511,7 +512,7 @@ async fn main() {
     );
 
     let distributed_results: Vec<_> = distributed_stream
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
         .map(|r| r.unwrap())

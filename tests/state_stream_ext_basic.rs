@@ -1,10 +1,11 @@
-use futures::StreamExt;
+use rs2_stream::rs2::*;
+// use rs2_stream::stream::constructors::from_iter; // This returns basic Iter, not RS2Stream
+use rs2_stream::stream::StreamExt;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::resource_manager::ResourceConfig;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestData {
@@ -44,7 +45,7 @@ async fn test_stateful_map_basic() {
             is_new_session: None,
         },
     ];
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             let state_bytes = state_access.get().await.unwrap_or(Vec::new());
@@ -111,7 +112,7 @@ async fn test_stateful_filter() {
             is_new_session: None,
         },
     ];
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_filter_rs2(config, key_extractor, |item, state_access| {
         let item = item.clone();
         let state_access = state_access.clone();
@@ -172,7 +173,7 @@ async fn test_stateful_fold() {
             is_new_session: None,
         },
     ];
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
         stream.stateful_fold_rs2(config, key_extractor, 0u64, |acc, item, _state_access| {
             Box::pin(async move { Ok(acc + item.count as u64) })
@@ -219,7 +220,7 @@ async fn test_stateful_window() {
             is_new_session: None,
         },
     ];
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2(
         config,
         key_extractor,
@@ -246,6 +247,7 @@ async fn test_stateful_window() {
             };
             Box::pin(fut)
         },
+        ResourceConfig::default(),
     );
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -264,6 +266,7 @@ async fn test_stateful_join() {
     let key_extractor: fn(&TestData) -> String = |data| data.id.to_string();
     let other_key_extractor: fn(&TestData) -> String = |data| data.id.to_string();
 
+    // Create test data
     let left_data = vec![
         TestData {
             id: 1,
@@ -293,30 +296,11 @@ async fn test_stateful_join() {
         },
     ];
 
-    // Create interleaved streams to ensure deterministic behavior
-    let (left_tx, left_rx) = mpsc::unbounded_channel();
-    let (right_tx, right_rx) = mpsc::unbounded_channel();
-
-    // Spawn a task to send items in an interleaved manner
-    tokio::spawn(async move {
-        let max_len = left_data.len().max(right_data.len());
-        for i in 0..max_len {
-            if i < left_data.len() {
-                left_tx.send(left_data[i].clone()).unwrap();
-            }
-            if i < right_data.len() {
-                right_tx.send(right_data[i].clone()).unwrap();
-            }
-            // Small yield to allow polling
-            tokio::task::yield_now().await;
-        }
-    });
-
-    let left_stream = wrappers::UnboundedReceiverStream::new(left_rx);
-    let right_stream = wrappers::UnboundedReceiverStream::new(right_rx);
+    let left_stream = from_iter_rs2(left_data);
+    let right_stream = from_iter_rs2(right_data);
 
     let result_stream = left_stream.stateful_join_rs2(
-        Box::pin(right_stream),
+        right_stream,
         config,
         key_extractor,
         other_key_extractor,
@@ -342,7 +326,7 @@ async fn test_stateful_join() {
                 Ok(format!("{} + {}", left.value, right.value))
             };
             Box::pin(fut)
-        },
+        }
     );
 
     let results: Vec<String> = result_stream
@@ -410,30 +394,11 @@ async fn test_stateful_join_different_keys() {
         }, // id=0 maps to key="1"
     ];
 
-    // Create interleaved streams to ensure deterministic behavior
-    let (left_tx, left_rx) = mpsc::unbounded_channel();
-    let (right_tx, right_rx) = mpsc::unbounded_channel();
-
-    // Spawn a task to send items in an interleaved manner
-    tokio::spawn(async move {
-        let max_len = left_data.len().max(right_data.len());
-        for i in 0..max_len {
-            if i < left_data.len() {
-                left_tx.send(left_data[i].clone()).unwrap();
-            }
-            if i < right_data.len() {
-                right_tx.send(right_data[i].clone()).unwrap();
-            }
-            // Small yield to allow polling
-            tokio::task::yield_now().await;
-        }
-    });
-
-    let left_stream = wrappers::UnboundedReceiverStream::new(left_rx);
-    let right_stream = wrappers::UnboundedReceiverStream::new(right_rx);
+    let left_stream = from_iter_rs2(left_data);
+    let right_stream = from_iter_rs2(right_data);
 
     let result_stream = left_stream.stateful_join_rs2(
-        Box::pin(right_stream),
+        right_stream,
         config,
         key_extractor,
         other_key_extractor,
@@ -441,7 +406,7 @@ async fn test_stateful_join_different_keys() {
         |left: TestData, right: TestData, _state_access| {
             let fut = async move { Ok(format!("{} + {}", left.value, right.value)) };
             Box::pin(fut)
-        },
+        }
     );
 
     let results: Vec<String> = result_stream
@@ -474,7 +439,7 @@ async fn test_stateful_operations_with_empty_stream() {
     let key_extractor: fn(&TestData) -> String = |data| data.id.to_string();
     let empty_data: Vec<TestData> = vec![];
 
-    let stream = futures::stream::iter(empty_data);
+    let stream = from_iter_rs2(empty_data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             let state_bytes = state_access.get().await.unwrap_or(Vec::new());
@@ -521,7 +486,7 @@ async fn test_stateful_operations_with_single_item() {
         is_new_session: None,
     }];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_filter_rs2(config, key_extractor, |item, state_access| {
         let item = item.clone();
         let state_access = state_access.clone();
@@ -587,7 +552,7 @@ async fn test_stateful_operations_with_multiple_keys() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
         stream.stateful_fold_rs2(config, key_extractor, 0u64, |acc, item, _state_access| {
             Box::pin(async move { Ok(acc + item.count as u64) })
@@ -621,7 +586,7 @@ async fn test_stateful_operations_with_large_data() {
         });
     }
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2(
         config,
         key_extractor,
@@ -653,6 +618,7 @@ async fn test_stateful_operations_with_large_data() {
             };
             Box::pin(fut)
         },
+        ResourceConfig::default(),
     );
 
     let results: Vec<String> = result_stream
@@ -675,7 +641,7 @@ async fn test_stateful_operations_error_handling() {
         is_new_session: None,
     }];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             // Simulate state access error
@@ -721,9 +687,9 @@ async fn test_stateful_operations_concurrent_access() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
-        stream.stateful_reduce_rs2(config, key_extractor, 0u64, |acc, item, _state_access| {
+        stream.stateful_reduce_rs2(config, key_extractor, Some(0u64), |acc, item, _state_access| {
             Box::pin(async move { Ok(acc + item.count as u64) })
         });
 
@@ -766,7 +732,7 @@ async fn test_stateful_operations_with_custom_key_extractor() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_map_rs2(config, key_extractor, |item, state_access| {
         let fut = async move {
             let state_bytes = state_access.get().await.unwrap_or(Vec::new());

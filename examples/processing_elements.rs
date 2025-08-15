@@ -1,5 +1,6 @@
-use futures_util::stream::StreamExt;
-use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
@@ -120,7 +121,7 @@ fn main() {
         let start = std::time::Instant::now();
         let processed_profiles = from_iter(users.clone())
             .filter_rs2(|user| user.active)
-            .par_eval_map_rs2(3, |user| async move {
+            .par_eval_map_rs2(Some(3), |user| async move {
                 // Process the user profile in parallel (with 3 concurrent tasks max)
                 match process_profile(&user).await {
                     Ok(result) => (user.id, result),
@@ -148,7 +149,7 @@ fn main() {
         let start = std::time::Instant::now();
         let permission_updates = from_iter(users.clone())
             .filter_rs2(|user| user.active)
-            .par_eval_map_unordered_rs2(2, |user| async move {
+            .par_eval_map_unordered_rs2(Some(2), |user| async move {
                 // Update permissions in parallel (with 2 concurrent tasks max)
                 // Results will be returned in the order they complete, not input order
                 match update_permissions(&user).await {
@@ -177,30 +178,33 @@ fn main() {
         let start = std::time::Instant::now();
 
         // Create three different streams for different user processing tasks
-        let active_users = from_iter(users.clone()).filter_rs2(|user| user.active);
+        let active_users = from_iter(users.clone())
+            .filter_rs2(|user| user.active)
+            .map_rs2(|user| format!("Active: {}", user.name));
 
-        let admin_users = from_iter(users.clone()).filter_rs2(|user| user.role == "admin");
+        let admin_users = from_iter(users.clone())
+            .filter_rs2(|user| user.role == "admin")
+            .map_rs2(|user| format!("Admin: {}", user.name));
 
-        let regular_users = from_iter(users.clone()).filter_rs2(|user| user.role == "user");
+        let regular_users = from_iter(users.clone())
+            .filter_rs2(|user| user.role == "user")
+            .map_rs2(|user| format!("Regular: {}", user.name));
 
-        // Process all three streams in parallel with bounded concurrency
-        let streams = vec![
-            active_users
-                .map_rs2(|user| format!("Active: {}", user.name))
-                .boxed(),
-            admin_users
-                .map_rs2(|user| format!("Admin: {}", user.name))
-                .boxed(),
-            regular_users
-                .map_rs2(|user| format!("Regular: {}", user.name))
-                .boxed(),
-        ];
+        // Process all three streams in parallel by collecting them concurrently
+        let (active_results, admin_results, regular_results) = tokio::join!(
+            active_users.collect_rs2(),
+            admin_users.collect_rs2(),
+            regular_users.collect_rs2()
+        );
 
-        // Create a stream of streams and use par_join_rs2
-        let combined_results = from_iter(streams).par_join_rs2(3).collect::<Vec<_>>().await;
+        // Combine all results
+        let mut combined_results = Vec::new();
+        combined_results.extend(active_results);
+        combined_results.extend(admin_results);
+        combined_results.extend(regular_results);
 
         println!(
-            "Processed {} streams in parallel in {:?}",
+            "Processed {} total items in parallel in {:?}",
             combined_results.len(),
             start.elapsed()
         );
@@ -211,19 +215,21 @@ fn main() {
         println!("\n=== Collection Examples ===");
 
         // Use collect_rs2 to gather users into different collections
-        // Collect into a HashSet (removes duplicates)
-        let unique_roles = from_iter(users.clone())
+        // Collect roles into a Vec first, then convert to HashSet (removes duplicates)
+        let role_vec = from_iter(users.clone())
             .map_rs2(|user| user.role)
-            .collect_rs2::<HashSet<_>>()
+            .collect_rs2()
             .await;
+        let unique_roles: HashSet<_> = role_vec.into_iter().collect();
 
         println!("Unique roles: {:?}", unique_roles);
 
-        // Collect into a BTreeMap (sorted by key)
-        let users_by_id = from_iter(users.clone())
+        // Collect user pairs into a Vec first, then convert to BTreeMap (sorted by key)
+        let user_pairs = from_iter(users.clone())
             .map_rs2(|user| (user.id, user))
-            .collect_rs2::<BTreeMap<_, _>>()
+            .collect_rs2()
             .await;
+        let users_by_id: BTreeMap<_, _> = user_pairs.into_iter().collect();
 
         println!("Users by ID (sorted):");
         for (id, user) in users_by_id {

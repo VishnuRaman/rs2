@@ -6,10 +6,9 @@
 //! 3. Use the codec to encode and decode media data
 //! 4. Monitor codec performance
 
-use futures_util::StreamExt;
+use rs2_stream::stream::{StreamExt, from_iter};
 use rs2_stream::media::codec::{CodecFactory, EncodingConfig, MediaCodec, RawMediaData};
 use rs2_stream::media::types::{MediaType, QualityLevel};
-use rs2_stream::rs2::*;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -83,8 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let raw_data_stream = from_iter(vec![raw_data.clone()]);
 
         // Encode with custom codec
-        let mut custom_stream =
-            custom_codec.encode_stream(raw_data_stream, "test-stream".to_string());
+        let mut custom_stream = custom_codec.create_encoding_stream(raw_data_stream);
 
         // Get the first (and only) result
         if let Some(custom_result) = custom_stream.next().await {
@@ -123,8 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let raw_data_stream = from_iter(vec![raw_data]);
 
         // Encode with standard codec
-        let mut standard_stream =
-            standard_codec.encode_stream(raw_data_stream, "test-stream".to_string());
+        let mut standard_stream = standard_codec.create_encoding_stream(raw_data_stream);
 
         // Get the first (and only) result
         if let Some(standard_result) = standard_stream.next().await {

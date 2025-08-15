@@ -1,5 +1,5 @@
-use futures_util::stream::StreamExt;
 use rs2_stream::rs2::*;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use tokio::runtime::Runtime;
 
 // Define our User type for the example
@@ -15,6 +15,8 @@ struct User {
 fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
+        println!("=== RS2 Stream Grouping Transformations Example ===\n");
+
         // Create a stream of users
         let users = vec![
             User {
@@ -54,50 +56,54 @@ fn main() {
             },
         ];
 
-        // Group users by role
-        let users_by_role = from_iter(users.clone())
+        // 1. Group users by role
+        println!("1. Grouping Users by Role:");
+        let users_by_role = from_iter_rs2(users.clone())
             .group_by_rs2(|user| user.role.clone())
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
         for (role, role_users) in users_by_role {
-            println!("Role: {}, Count: {}", role, role_users.len());
+            println!("   Role: {}, Count: {}", role, role_users.len());
             for user in role_users {
-                println!("  - {}", user.name);
+                println!("     - {}", user.name);
             }
         }
 
-        // Create a stream of status updates
+        // 2. Create a stream of status updates
+        println!("\n2. Grouping Adjacent Status Updates:");
         let status_updates = vec![
             "online", "online", "online", "away", "away", "online", "online", "offline",
         ];
 
         // Group adjacent identical status updates
-        let grouped_statuses = from_iter(status_updates)
+        let grouped_statuses = from_iter_rs2(status_updates)
             .group_adjacent_by_rs2(|&status| status)
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
         for (status, occurrences) in grouped_statuses {
             println!(
-                "Status '{}' occurred {} consecutive times",
+                "   Status '{}' occurred {} consecutive times",
                 status,
                 occurrences.len()
             );
         }
 
-        // Filter out consecutive duplicate status updates
-        let unique_statuses = from_iter(vec![
+        // 3. Filter out consecutive duplicate status updates
+        println!("\n3. Distinct Until Changed Status Updates:");
+        let unique_statuses = from_iter_rs2(vec![
             "online", "online", "away", "away", "online", "offline",
         ])
         .distinct_until_changed_rs2()
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await;
 
-        println!("Unique status transitions: {:?}", unique_statuses); // ["online", "away", "online", "offline"]
+        println!("   Unique status transitions: {:?}", unique_statuses); // ["online", "away", "online", "offline"]
 
-        // Use custom equality function to detect significant changes
-        #[derive(Clone)]
+        // 4. Use custom equality function to detect significant changes
+        println!("\n4. Detecting Significant Metric Changes:");
+        #[derive(Clone, Debug)]
         struct ServerMetrics {
             cpu: f64,
             memory: f64,
@@ -133,17 +139,25 @@ fn main() {
         ];
 
         // Only emit metrics when there's a significant change
-        let significant_changes = from_iter(metrics)
+        let significant_changes = from_iter_rs2(metrics)
             .distinct_until_changed_by_rs2(|prev, curr| {
                 // Consider it the same if CPU and memory changes are less than 20%
                 (curr.cpu - prev.cpu).abs() < 20.0 && (curr.memory - prev.memory).abs() < 20.0
             })
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
         println!(
-            "Number of significant metric changes: {}",
+            "   Number of significant metric changes: {}",
             significant_changes.len()
         ); // 3
+
+        println!("\n=== Stream Grouping Transformations Example Complete ===");
+        println!("\n🎯 Key Features Demonstrated:");
+        println!("1. Stream grouping by key using group_by_rs2()");
+        println!("2. Adjacent grouping using group_adjacent_by_rs2()");
+        println!("3. Distinct until changed with distinct_until_changed_rs2()");
+        println!("4. Custom equality detection with distinct_until_changed_by_rs2()");
+        println!("5. Stream collection using collect_rs2()");
     });
 }

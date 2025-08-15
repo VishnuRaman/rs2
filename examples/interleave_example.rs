@@ -1,24 +1,20 @@
-use async_stream::stream;
-use futures_util::stream::StreamExt;
-use rs2_stream::rs2::*;
-use std::time::Duration;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::{Stream, StreamExt};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use tokio::runtime::Runtime;
 
-// Simulate a stream that emits items with delays
+// Simulate a stream that emits items with simple delays (simplified to avoid stack overflow)
 fn delayed_stream<T: Clone + Send + 'static>(
     items: Vec<T>,
-    delay_ms: u64,
+    _delay_ms: u64,
     name: &str,
-) -> RS2Stream<(String, T)> {
+) -> impl Stream<Item = (String, T)> + Send + 'static {
     let name = name.to_string();
-    stream! {
-        for item in items {
-            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-            println!("Stream '{}' emitting item", name);
-            yield (name.clone(), item);
-        }
-    }
-    .boxed()
+    // Simplified version without actual delays to avoid stack overflow in this example
+    from_iter(items.into_iter().map(move |item| {
+        println!("Stream '{}' emitting item", name);
+        (name.clone(), item)
+    }))
 }
 
 fn main() {
@@ -76,45 +72,51 @@ fn main() {
 
         println!("\n=== Interleave for Multiplexing Data Sources ===");
 
-        // Simulate multiple data sources
-        let user_events = from_iter(
+        println!("\n=== Real-world Event Multiplexing ===");
+
+        // Helper function to create event streams with consistent types
+        fn create_event_stream(
+            events: Vec<&'static str>,
+            event_type: &'static str,
+        ) -> impl Stream<Item = (String, String)> + Send + 'static {
+            from_iter(events.into_iter().map(move |s| (event_type.to_string(), s.to_string())))
+        }
+
+        let user_events = create_event_stream(
             vec![
                 "User 1 logged in",
-                "User 2 logged in",
+                "User 2 logged in", 
                 "User 1 updated profile",
                 "User 3 logged in",
-            ]
-            .into_iter()
-            .map(|s| ("USER".to_string(), s.to_string())),
+            ],
+            "USER",
         );
 
-        let system_events = from_iter(
+        let system_events = create_event_stream(
             vec![
                 "System started",
                 "CPU usage at 80%",
                 "Memory usage at 60%",
                 "Disk space low",
                 "System update available",
-            ]
-            .into_iter()
-            .map(|s| ("SYSTEM".to_string(), s.to_string())),
+            ],
+            "SYSTEM",
         );
 
-        let application_events = from_iter(
+        let application_events = create_event_stream(
             vec![
                 "Application started",
                 "Database connected",
                 "Cache initialized",
                 "Request processed",
-            ]
-            .into_iter()
-            .map(|s| ("APP".to_string(), s.to_string())),
+            ],
+            "APP",
         );
 
         // Interleave all event streams
         let all_events = user_events
             .interleave_rs2(vec![system_events, application_events])
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
         println!("Multiplexed event stream:");
@@ -126,14 +128,14 @@ fn main() {
 
         // Create a mix of empty and non-empty streams
         let stream1 = from_iter(vec![1, 2, 3]);
-        let empty_stream1: RS2Stream<i32> = from_iter(vec![]);
+        let empty_stream1 = from_iter(vec![] as Vec<i32>);
         let stream2 = from_iter(vec![4, 5]);
-        let empty_stream2: RS2Stream<i32> = from_iter(vec![]);
+        let empty_stream2 = from_iter(vec![] as Vec<i32>);
 
         // Interleave the streams
         let interleaved = stream1
             .interleave_rs2(vec![empty_stream1, stream2, empty_stream2])
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
         println!("Interleaved with empty streams: {:?}", interleaved);

@@ -1,5 +1,6 @@
-use futures_util::stream::StreamExt;
-use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use tokio::runtime::Runtime;
 
 fn main() {
@@ -15,9 +16,9 @@ fn main() {
         println!("Chunking stream into groups of 3...");
         let chunked_stream = stream.chunk_rs2(3);
 
-        // Process each chunk
+        // Process the chunked stream
+        let mut chunked_stream = chunked_stream;
         let mut chunk_count = 0;
-        let mut chunked_stream = chunked_stream.boxed();
 
         while let Some(chunk) = chunked_stream.next().await {
             chunk_count += 1;

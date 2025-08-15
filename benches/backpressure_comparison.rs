@@ -1,7 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
 use std::time::Duration;
 use tokio::runtime::Runtime;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 
 fn bench_backpressure_strategies(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
@@ -39,7 +41,7 @@ fn bench_backpressure_strategies(c: &mut Criterion) {
                             }
                             black_box(x)
                         })
-                        .collect_rs2::<Vec<_>>()
+                        .collect_rs2()
                         .await;
                     black_box(result)
                 });

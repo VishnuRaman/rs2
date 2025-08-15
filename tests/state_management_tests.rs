@@ -1,15 +1,16 @@
-use futures::StreamExt;
+// use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::core::StreamExt;
 use rs2_stream::state::config::StateConfigs;
 use rs2_stream::state::stream_ext::StateAccess;
 use rs2_stream::state::traits::StateStorageType;
 use rs2_stream::state::{
     CustomKeyExtractor, InMemoryState, KeyExtractor, StateStorage, StatefulStreamExt,
 };
+use rs2_stream::rs2::from_iter_rs2;
+use rs2_stream::resource_manager::ResourceConfig;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex as TokioMutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct TestEvent {
@@ -27,7 +28,7 @@ struct TestState {
 
 #[tokio::test]
 async fn test_stateful_map_basic() {
-    let events = futures::stream::iter(vec![
+    let events = from_iter_rs2(vec![
         TestEvent {
             id: 1,
             value: "test1".to_string(),
@@ -97,7 +98,7 @@ async fn test_stateful_map_basic() {
 
 #[tokio::test]
 async fn test_stateful_filter() {
-    let events = futures::stream::iter(vec![
+    let events = from_iter_rs2(vec![
         TestEvent {
             id: 1,
             value: "test1".to_string(),
@@ -169,7 +170,7 @@ async fn test_stateful_filter() {
 
 #[tokio::test]
 async fn test_stateful_fold() {
-    let events = futures::stream::iter(vec![
+    let events = from_iter_rs2(vec![
         TestEvent {
             id: 1,
             value: "test1".to_string(),
@@ -363,7 +364,7 @@ async fn test_state_access_interface() {
 
 #[tokio::test]
 async fn test_stateful_window_processing() {
-    let events = futures::stream::iter(vec![
+    let events = from_iter_rs2(vec![
         TestEvent {
             id: 1,
             value: "test1".to_string(),
@@ -400,12 +401,13 @@ async fn test_stateful_window_processing() {
                     Ok((count, total_amount))
                 })
             },
+            ResourceConfig::default(),
         )
         .collect::<Vec<_>>()
         .await;
 
     let results: Vec<(usize, f64)> = results.into_iter().map(|r| r.unwrap()).collect();
-
+    println!("test_stateful_window_processing collected results: {:?}", results);
     assert_eq!(results.len(), 1);
     assert_eq!(results[0], (2, 25.0)); // Only one window: id=1, 10.0 + 15.0
 }

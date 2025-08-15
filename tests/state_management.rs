@@ -1,10 +1,15 @@
-use futures::StreamExt;
+// Remove futures import - use local StreamExt instead
+use rs2_stream::resource_manager::ResourceConfig;
 use rs2_stream::state::stream_ext::StateAccess;
 use rs2_stream::state::StateError;
 use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::rs2::from_iter_rs2;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use tokio;
+// Remove unused import
+// use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct TestData {
@@ -64,7 +69,7 @@ async fn test_stateful_map() {
         },
     ];
 
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
         stream.stateful_map_rs2(config, key_extractor, |item, state_access: StateAccess| {
             let fut = async move {
@@ -88,7 +93,7 @@ async fn test_stateful_map() {
                 })
             };
             Box::pin(fut)
-        });
+        }, );
     let results: Vec<TestData> = result_stream
         .collect::<Vec<_>>()
         .await
@@ -122,7 +127,7 @@ async fn test_stateful_filter() {
             count: 30,
         },
     ];
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream =
         stream.stateful_filter_rs2(config, key_extractor, |item, state_access: StateAccess| {
             let item = item.clone();
@@ -139,7 +144,7 @@ async fn test_stateful_filter() {
                 };
                 Ok(item.count as u64 > state.total_count)
             })
-        });
+        }, );
     let results: Vec<TestData> = result_stream
         .collect::<Vec<_>>()
         .await
@@ -173,7 +178,7 @@ async fn test_stateful_fold() {
             count: 30,
         },
     ];
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_fold_rs2(
         config,
         key_extractor,
@@ -216,7 +221,7 @@ async fn test_stateful_window() {
             count: 30,
         },
     ];
-    let stream = futures::stream::iter(data);
+    let stream = from_iter_rs2(data);
     let result_stream = stream.stateful_window_rs2(
         config,
         key_extractor,
@@ -242,7 +247,8 @@ async fn test_stateful_window() {
                 ))
             };
             Box::pin(fut)
-        },
+        }, ResourceConfig::default()
+        ,
     );
     let results: Vec<String> = result_stream
         .collect::<Vec<_>>()
@@ -251,7 +257,7 @@ async fn test_stateful_window() {
         .map(|r| r.unwrap())
         .collect();
     assert_eq!(results.len(), 1);
-    assert!(results[0].contains("Window sum: 30"));
+    assert_eq!(results[0], "Window sum: 30, Total: 30");
 }
 
 #[tokio::test]
@@ -287,29 +293,31 @@ async fn test_stateful_join() {
     ];
 
     // Create interleaved streams to ensure deterministic behavior
-    let (stream1_tx, stream1_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (stream2_tx, stream2_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (stream1_tx, _stream1_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (stream2_tx, _stream2_rx) = tokio::sync::mpsc::unbounded_channel();
 
     // Spawn a task to send items in an interleaved manner
+    let data1_clone = data1.clone();
+    let data2_clone = data2.clone();
     tokio::spawn(async move {
-        let max_len = data1.len().max(data2.len());
+        let max_len = data1_clone.len().max(data2_clone.len());
         for i in 0..max_len {
-            if i < data1.len() {
-                stream1_tx.send(data1[i].clone()).unwrap();
+            if i < data1_clone.len() {
+                stream1_tx.send(data1_clone[i].clone()).unwrap();
             }
-            if i < data2.len() {
-                stream2_tx.send(data2[i].clone()).unwrap();
+            if i < data2_clone.len() {
+                stream2_tx.send(data2_clone[i].clone()).unwrap();
             }
             // Small yield to allow polling
             tokio::task::yield_now().await;
         }
     });
 
-    let stream1 = tokio_stream::wrappers::UnboundedReceiverStream::new(stream1_rx);
-    let stream2 = tokio_stream::wrappers::UnboundedReceiverStream::new(stream2_rx);
+    let stream1 = from_iter_rs2(data1);
+    let stream2 = from_iter_rs2(data2);
 
     let result_stream = stream1.stateful_join_rs2(
-        Box::pin(stream2),
+        stream2,
         config,
         key_extractor1,
         key_extractor2,
@@ -335,6 +343,7 @@ async fn test_stateful_join() {
             };
             Box::pin(fut)
         },
+
     );
 
     let results: Vec<String> = result_stream
@@ -394,7 +403,7 @@ async fn test_stateful_join() {
 
 #[tokio::test]
 async fn test_stateful_map_user_events() {
-    let events = futures::stream::iter(vec![
+    let events = from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -442,7 +451,7 @@ async fn test_stateful_map_user_events() {
 
                 Ok(state)
             })
-        })
+        }, )
         .collect::<Vec<_>>()
         .await;
 
@@ -453,7 +462,7 @@ async fn test_stateful_map_user_events() {
 
 #[tokio::test]
 async fn test_stateful_filter_user_events() {
-    let events = futures::stream::iter(vec![
+    let events = from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -502,7 +511,7 @@ async fn test_stateful_filter_user_events() {
 
                 Ok(new_state.total_events <= 2)
             })
-        })
+        }, )
         .collect::<Vec<_>>()
         .await;
 
@@ -515,7 +524,7 @@ async fn test_stateful_filter_user_events() {
 
 #[tokio::test]
 async fn test_stateful_fold_user_events() {
-    let events = futures::stream::iter(vec![
+    let events = from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -539,6 +548,7 @@ async fn test_stateful_fold_user_events() {
             key_extractor,
             0u64,
             |acc, _event, _state_access: StateAccess| Box::pin(async move { Ok(acc + 1) }),
+
         )
         .collect::<Vec<_>>()
         .await;
@@ -550,7 +560,7 @@ async fn test_stateful_fold_user_events() {
 
 #[tokio::test]
 async fn test_stateful_window_user_events() {
-    let events = futures::stream::iter(vec![
+    let events = from_iter_rs2(vec![
         UserEvent {
             user_id: "user1".to_string(),
             event_type: "login".to_string(),
@@ -598,7 +608,8 @@ async fn test_stateful_window_user_events() {
 
                     Ok(window.len())
                 })
-            },
+            }, ResourceConfig::default()
+            ,
         )
         .collect::<Vec<_>>()
         .await;
@@ -649,10 +660,11 @@ async fn test_stateful_join_user_events() {
     }
 
     // Split into two streams: one for stream1, one for stream2, but yield alternately
-    let (stream1_tx, stream1_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (stream2_tx, stream2_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (stream1_tx, _stream1_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (stream2_tx, _stream2_rx) = tokio::sync::mpsc::unbounded_channel();
+    let interleaved_clone = interleaved.clone();
     tokio::spawn(async move {
-        for (data1, data2) in interleaved {
+        for (data1, data2) in interleaved_clone {
             if let Some(d1) = data1 {
                 stream1_tx.send(d1).unwrap();
             }
@@ -663,15 +675,15 @@ async fn test_stateful_join_user_events() {
             tokio::task::yield_now().await;
         }
     });
-    let stream1 = tokio_stream::wrappers::UnboundedReceiverStream::new(stream1_rx);
-    let stream2 = tokio_stream::wrappers::UnboundedReceiverStream::new(stream2_rx);
+    let stream1 = from_iter_rs2(stream1_data);
+    let stream2 = from_iter_rs2(stream2_data);
 
     let config = StateConfig::default();
     let key_extractor1 = CustomKeyExtractor::new(|data: &TestData| data.id.to_string());
     let key_extractor2 = CustomKeyExtractor::new(|data: &TestData| data.id.to_string());
 
-    let mut result_stream = stream1.stateful_join_rs2(
-        Box::pin(stream2),
+    let result_stream = stream1.stateful_join_rs2(
+        stream2,
         config,
         key_extractor1,
         key_extractor2,
@@ -701,12 +713,12 @@ async fn test_stateful_join_user_events() {
             };
             Box::pin(fut)
         },
+
     );
 
-    let mut results = Vec::new();
-    while let Some(result) = result_stream.next().await {
-        results.push(result);
-    }
+    let results: Vec<Result<String, StateError>> = result_stream
+        .collect::<Vec<_>>()
+        .await;
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].as_ref().unwrap(), "test1:join1");

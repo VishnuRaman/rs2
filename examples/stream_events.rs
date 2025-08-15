@@ -7,15 +7,14 @@
 //! 4. Implement a simple event handler
 
 use chrono::Utc;
-use futures_util::StreamExt;
-use rs2_stream::media::events::MediaStreamEvent;
-use rs2_stream::media::types::{QualityLevel, UserActivity};
 use rs2_stream::rs2::*;
-use tokio::time::{sleep, Duration};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
+use rs2_stream::media::types::{QualityLevel, UserActivity};
+use rs2_stream::media::MediaStreamEvent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Media Stream Events Example");
+    println!("=== Media Stream Events Example ===\n");
 
     // Create a stream of events
     let event_stream = create_sample_event_stream();
@@ -26,8 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Process the events
     println!("Processing events...\n");
 
-    let mut event_stream = std::pin::pin!(event_stream);
-    while let Some(event) = event_stream.next().await {
+    // Collect all events and process them
+    let events = event_stream.collect_rs2().await;
+    
+    for event in events {
         // Handle the event
         event_handler.handle_event(&event).await;
 
@@ -36,39 +37,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Print the activity
         println!(
-            "Activity: {} by user {} at {}",
+            "📊 Activity: {} by user {} at {}",
             activity.activity_type, activity.user_id, activity.timestamp
         );
 
         // Print some metadata
         if !activity.metadata.is_empty() {
-            println!("  Metadata:");
+            println!("   Metadata:");
             for (key, value) in &activity.metadata {
-                println!("    {}: {}", key, value);
+                println!("     {}: {}", key, value);
             }
         }
 
         println!();
 
         // Small delay for readability
-        sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
     }
 
     // Print summary
     let stats = event_handler.get_stats();
-    println!("\nEvent Statistics:");
-    println!("  Total events: {}", stats.total_events);
-    println!("  Stream started events: {}", stats.stream_started);
-    println!("  Stream stopped events: {}", stats.stream_stopped);
-    println!("  Quality changed events: {}", stats.quality_changed);
-    println!("  Buffer underrun events: {}", stats.buffer_underrun);
-    println!("  Chunk dropped events: {}", stats.chunk_dropped);
+    println!("\n=== Event Statistics ===");
+    println!("📈 Total events: {}", stats.total_events);
+    println!("🎬 Stream started events: {}", stats.stream_started);
+    println!("⏹️  Stream stopped events: {}", stats.stream_stopped);
+    println!("⚡ Quality changed events: {}", stats.quality_changed);
+    println!("⚠️  Buffer underrun events: {}", stats.buffer_underrun);
+    println!("❌ Chunk dropped events: {}", stats.chunk_dropped);
 
+    println!("\n=== Example Complete ===");
     Ok(())
 }
 
 // Create a sample stream of events for demonstration
-fn create_sample_event_stream() -> RS2Stream<MediaStreamEvent> {
+fn create_sample_event_stream() -> impl rs2_stream::stream::Stream<Item = MediaStreamEvent> + Send + 'static {
     let stream_id = "example-stream-123".to_string();
     let user_id = 42;
     let now = Utc::now();
@@ -123,8 +125,8 @@ fn create_sample_event_stream() -> RS2Stream<MediaStreamEvent> {
         },
     ];
 
-    // Convert to a stream
-    from_iter(events)
+    // Convert to a stream using rs2 API
+    from_iter_rs2(events)
 }
 
 // Simple event handler
@@ -153,7 +155,7 @@ impl EventHandler {
         // In a real application, this would do something with the event
         // like logging, alerting, or triggering adaptive behavior
 
-        // For this example, we just print the event details
+        // For this example, we just print the event details with nice formatting
         match event {
             MediaStreamEvent::StreamStarted {
                 stream_id,
@@ -162,7 +164,7 @@ impl EventHandler {
                 timestamp,
             } => {
                 println!(
-                    "Stream started: id={}, user={}, quality={:?}, time={}",
+                    "🎬 Stream started: id={}, user={}, quality={:?}, time={}",
                     stream_id, user_id, quality, timestamp
                 );
                 self.stats.stream_started += 1;
@@ -175,7 +177,7 @@ impl EventHandler {
                 timestamp,
             } => {
                 println!(
-                    "Stream stopped: id={}, user={}, duration={}s, bytes={}, time={}",
+                    "⏹️  Stream stopped: id={}, user={}, duration={}s, bytes={}, time={}",
                     stream_id, user_id, duration_seconds, bytes_transferred, timestamp
                 );
                 self.stats.stream_stopped += 1;
@@ -188,7 +190,7 @@ impl EventHandler {
                 timestamp,
             } => {
                 println!(
-                    "Quality changed: id={}, user={}, old={:?}, new={:?}, time={}",
+                    "⚡ Quality changed: id={}, user={}, old={:?}, new={:?}, time={}",
                     stream_id, user_id, old_quality, new_quality, timestamp
                 );
                 self.stats.quality_changed += 1;
@@ -200,7 +202,7 @@ impl EventHandler {
                 timestamp,
             } => {
                 println!(
-                    "Buffer underrun: id={}, user={}, level={:.2}, time={}",
+                    "⚠️  Buffer underrun: id={}, user={}, level={:.2}, time={}",
                     stream_id, user_id, buffer_level, timestamp
                 );
                 self.stats.buffer_underrun += 1;
@@ -213,7 +215,7 @@ impl EventHandler {
                 timestamp,
             } => {
                 println!(
-                    "Chunk dropped: id={}, user={}, seq={}, reason='{}', time={}",
+                    "❌ Chunk dropped: id={}, user={}, seq={}, reason='{}', time={}",
                     stream_id, user_id, sequence_number, reason, timestamp
                 );
                 self.stats.chunk_dropped += 1;

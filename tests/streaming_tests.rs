@@ -1,4 +1,4 @@
-use futures_util::StreamExt;
+use rs2_stream::stream::StreamExt;
 use rs2_stream::media::streaming::{MediaStreamingService, StreamingServiceFactory};
 use rs2_stream::media::types::{MediaStream, MediaType, QualityLevel};
 use std::collections::HashMap;
@@ -95,7 +95,7 @@ fn test_streaming_service_metrics_stream() {
         // Get metrics stream
         let mut metrics_stream = service.get_metrics_stream();
 
-        // Get first metrics update
+        // Get first metrics update (should emit immediately now)
         let metrics = metrics_stream.next().await.unwrap();
 
         // Basic verification

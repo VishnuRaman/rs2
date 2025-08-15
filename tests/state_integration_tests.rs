@@ -1,10 +1,12 @@
-use futures::StreamExt;
 use rs2_stream::state::config::StateConfigs;
 use rs2_stream::state::stream_ext::StateAccess;
 use rs2_stream::state::{CustomKeyExtractor, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio;
+use rs2_stream::from_iter_rs2;
+// use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct UserEvent {
@@ -132,7 +134,7 @@ async fn test_user_activity_tracking() {
         },
     ];
 
-    let stream = futures::stream::iter(events);
+    let stream = from_iter_rs2(events);
     let result_stream =
         stream.stateful_map_rs2(config, key_extractor, |event, state_access: StateAccess| {
             Box::pin(async move {
@@ -211,12 +213,12 @@ async fn test_customer_order_analytics() {
         },
     ];
 
-    let stream = futures::stream::iter(orders);
+    let stream = from_iter_rs2(orders);
     let result_stream = stream.stateful_fold_rs2(
         config,
         key_extractor,
         0.0f64,
-        |acc, order, state_access: StateAccess| Box::pin(async move { Ok(acc + order.amount) }),
+        |acc, order, _state_access: StateAccess| Box::pin(async move { Ok(acc + order.amount) }),
     );
 
     let results: Vec<f64> = result_stream
@@ -268,7 +270,7 @@ async fn test_real_time_fraud_detection() {
         },
     ];
 
-    let stream = futures::stream::iter(orders);
+    let stream = from_iter_rs2(orders);
     let result_stream =
         stream.stateful_filter_rs2(config, key_extractor, |order, state_access: StateAccess| {
             let order = order.clone();
@@ -339,7 +341,7 @@ async fn test_session_management() {
         },
     ];
 
-    let stream = futures::stream::iter(events);
+    let stream = from_iter_rs2(events);
     let result_stream =
         stream.stateful_map_rs2(config, key_extractor, |event, state_access: StateAccess| {
             Box::pin(async move {
@@ -444,25 +446,11 @@ async fn test_multi_stream_join() {
     }
 
     // Split into two streams: one for users, one for orders, but yield alternately
-    let (user_tx, user_rx) = tokio::sync::mpsc::unbounded_channel();
-    let (order_tx, order_rx) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(async move {
-        for (user, order) in interleaved {
-            if let Some(u) = user {
-                user_tx.send(u).unwrap();
-            }
-            if let Some(o) = order {
-                order_tx.send(o).unwrap();
-            }
-            // Small yield to allow polling
-            tokio::task::yield_now().await;
-        }
-    });
-    let user_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(user_rx);
-    let order_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(order_rx);
+    let user_stream = from_iter_rs2(user_events);
+    let order_stream = from_iter_rs2(order_events);
 
     let result_stream = user_stream.stateful_join_rs2(
-        Box::pin(order_stream),
+        order_stream,
         config,
         user_key_extractor,
         order_key_extractor,
@@ -496,7 +484,7 @@ async fn test_multi_stream_join() {
                     order_event.amount
                 ))
             })
-        },
+        }
     );
 
     let results: Vec<String> = result_stream
@@ -577,7 +565,7 @@ async fn test_error_recovery_and_continuity() {
         },
     ];
 
-    let stream = futures::stream::iter(events);
+    let stream = from_iter_rs2(events);
     let result_stream =
         stream.stateful_map_rs2(config, key_extractor, |event, state_access: StateAccess| {
             Box::pin(async move {
@@ -638,7 +626,7 @@ async fn test_performance_under_load() {
         });
     }
 
-    let stream = futures::stream::iter(events);
+    let stream = from_iter_rs2(events);
     let result_stream =
         stream.stateful_map_rs2(config, key_extractor, |event, state_access: StateAccess| {
             Box::pin(async move {

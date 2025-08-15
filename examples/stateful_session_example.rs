@@ -1,6 +1,7 @@
-use futures::StreamExt;
 use rs2_stream::state::{CustomKeyExtractor, StateConfig, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
+use rs2_stream::stream::from_iter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UserEvent {
@@ -55,7 +56,7 @@ async fn main() {
     ];
 
     let session_config = StateConfig::new();
-    let session_stream = futures::stream::iter(events).stateful_session_rs2(
+    let session_stream = from_iter(events).stateful_session_rs2(
         session_config,
         CustomKeyExtractor::new(|event: &UserEvent| event.user_id.clone()),
         std::time::Duration::from_secs(60),
@@ -66,7 +67,7 @@ async fn main() {
     );
 
     let session_results: Vec<_> = session_stream
-        .collect::<Vec<_>>()
+        .collect_rs2()
         .await
         .into_iter()
         .map(|r| r.unwrap())

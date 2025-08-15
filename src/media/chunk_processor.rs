@@ -6,12 +6,17 @@
 use super::codec::MediaCodec;
 use super::types::*;
 use crate::queue::Queue;
-use crate::*;
+use crate::rs2_stream_ext::RS2StreamExt;
+use crate::media::types::MediaChunk;
+use crate::stream::Stream;
+use crate::stream::constructors::unfold;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::Instant;
+use sha2::{Digest, Sha256};
+use crate::session::{get_global_parallel_config, get_global_buffer_config};
 
 /// Errors that can occur during chunk processing
 #[derive(Debug, Clone)]
@@ -22,6 +27,8 @@ pub enum ChunkProcessingError {
     ValidationFailed(String),
     CodecError(String),
     Timeout,
+    ProcessingFailed(String),
+    InvalidChunk(String),
 }
 
 impl std::fmt::Display for ChunkProcessingError {
@@ -45,6 +52,12 @@ impl std::fmt::Display for ChunkProcessingError {
                 write!(f, "Codec error: {}", reason)
             }
             ChunkProcessingError::Timeout => write!(f, "Processing timeout"),
+            ChunkProcessingError::ProcessingFailed(reason) => {
+                write!(f, "Processing failed: {}", reason)
+            }
+            ChunkProcessingError::InvalidChunk(reason) => {
+                write!(f, "Invalid chunk: {}", reason)
+            }
         }
     }
 }
@@ -60,6 +73,8 @@ pub struct ChunkProcessorConfig {
     pub max_reorder_window: usize,
     pub enable_validation: bool,
     pub parallel_processing: usize,
+    pub enable_sequence_assignment: bool,
+    pub max_retries: usize,
 }
 
 impl Default for ChunkProcessorConfig {
@@ -71,6 +86,8 @@ impl Default for ChunkProcessorConfig {
             max_reorder_window: 32,
             enable_validation: true,
             parallel_processing: 4,
+            enable_sequence_assignment: true,
+            max_retries: 3,
         }
     }
 }
@@ -81,27 +98,25 @@ struct ReorderBuffer {
     buffer: VecDeque<MediaChunk>,
     next_expected_sequence: u64,
     last_received_time: Instant,
-    max_size: usize,
+    max_buffer_size: usize,
+    max_reorder_window: usize,
     // Track sequence numbers for O(1) duplicate detection
     sequence_numbers: std::collections::HashSet<u64>,
 }
 
 impl ReorderBuffer {
-    fn new(max_size: usize) -> Self {
+    fn new(max_buffer_size: usize, max_reorder_window: usize) -> Self {
         Self {
             buffer: VecDeque::new(),
             next_expected_sequence: 0,
             last_received_time: Instant::now(),
-            max_size,
+            max_buffer_size,
+            max_reorder_window,
             sequence_numbers: std::collections::HashSet::new(),
         }
     }
 
     fn try_insert(&mut self, chunk: MediaChunk) -> Result<Vec<MediaChunk>, ChunkProcessingError> {
-        if self.buffer.len() >= self.max_size {
-            return Err(ChunkProcessingError::BufferOverflow);
-        }
-
         self.last_received_time = Instant::now();
 
         // Check for duplicates using O(1) HashSet lookup
@@ -110,26 +125,39 @@ impl ReorderBuffer {
             return Err(ChunkProcessingError::DuplicateChunk(_seq_num));
         }
 
-        // Check for sequence gaps
-        if _seq_num > self.next_expected_sequence && !self.buffer.is_empty() {
-            // If we have a gap and the buffer is not empty, check if the gap is too large
-            // A gap is considered too large if it's more than the reorder window size
-            let max_allowed = self.next_expected_sequence + self.max_size as u64;
+        // Check for sequence gaps first (use max_reorder_window)
+        if _seq_num > self.next_expected_sequence {
+            let max_allowed = self.next_expected_sequence + self.max_reorder_window as u64;
             if _seq_num > max_allowed {
                 return Err(ChunkProcessingError::SequenceGap {
                     expected: self.next_expected_sequence,
                     received: _seq_num,
                 });
             }
-        } else if _seq_num > self.next_expected_sequence + self.max_size as u64 {
-            // Even if buffer is empty, if the gap is too large, it's an error
-            return Err(ChunkProcessingError::SequenceGap {
-                expected: self.next_expected_sequence,
-                received: _seq_num,
-            });
         }
 
-        // Insert in order
+        // If this is the next expected chunk, emit it immediately
+        if _seq_num == self.next_expected_sequence {
+            // Add to sequence numbers set
+            self.sequence_numbers.insert(_seq_num);
+            
+            // Advance the expected sequence
+            self.next_expected_sequence += 1;
+            
+            // Extract any additional ready chunks that can now be emitted
+            let mut ready_chunks = vec![chunk];
+            ready_chunks.extend(self.extract_ready_chunks()?);
+            
+            return Ok(ready_chunks);
+        }
+
+        // For out-of-order chunks, check buffer overflow (use max_buffer_size)
+        // Check if inserting this chunk would exceed the buffer size
+        if self.buffer.len() >= self.max_buffer_size {
+            return Err(ChunkProcessingError::BufferOverflow);
+        }
+
+        // Insert out-of-order chunk in sorted position
         let insert_pos = self
             .buffer
             .binary_search_by_key(&_seq_num, |c| c.sequence_number)
@@ -141,7 +169,7 @@ impl ReorderBuffer {
         // Insert chunk into buffer
         self.buffer.insert(insert_pos, chunk);
 
-        // Extract ready chunks
+        // Extract any ready chunks
         self.extract_ready_chunks()
     }
 
@@ -193,6 +221,8 @@ pub struct ChunkProcessorStats {
     pub validation_failures: u64,
     pub average_processing_time_ms: f64,
     pub buffer_utilization: f64,
+    pub processing_time: Duration,
+    pub errors: u64,
 }
 
 /// Main chunk processor
@@ -220,18 +250,18 @@ impl ChunkProcessor {
     }
 
     /// Process a stream of incoming chunks
-    pub fn process_chunk_stream(
+    pub fn process_chunks(
         &self,
-        chunk_stream: RS2Stream<MediaChunk>,
-    ) -> RS2Stream<Result<MediaChunk, ChunkProcessingError>> {
-        let processor = self.clone();
-
-        let stream = chunk_stream.par_eval_map_rs2(self.config.parallel_processing, move |chunk| {
-            let processor = processor.clone();
-            async move { processor.process_single_chunk(chunk).await }
-        });
-
-        auto_backpressure_block(stream, self.config.max_buffer_size)
+        chunk_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt + Unpin,
+    ) -> impl Stream<Item = Result<MediaChunk, ChunkProcessingError>> + Send + 'static {
+        let processor = Arc::new(self.clone());
+        
+        chunk_stream.par_eval_map_rs2(Some(self.config.parallel_processing), move |chunk| {
+            let processor = Arc::clone(&processor);
+            async move {
+                processor.process_single_chunk(chunk).await
+            }
+        })
     }
 
     /// Process a single chunk
@@ -259,7 +289,7 @@ impl ChunkProcessor {
         }
 
         // Step 2: Set sequence number if not set
-        if chunk.sequence_number == 0 {
+        if self.config.enable_sequence_assignment && chunk.sequence_number == 0 {
             chunk.sequence_number = self.generate_sequence_number(&chunk.stream_id).await;
         }
 
@@ -277,21 +307,28 @@ impl ChunkProcessor {
             vec![chunk]
         };
 
-        // Step 4: Process ready chunks
+        // Step 4: Process ready chunks and return them
+        let mut processed_chunks = Vec::new();
         for ready_chunk in ready_chunks {
             // Enqueue to output - avoid cloning when possible
-            if let Err(e) = self.output_queue.try_enqueue(ready_chunk).await {
+            if let Err(e) = self.output_queue.try_enqueue(ready_chunk.clone()).await {
                 // Queue full, update stats
                 let mut stats = self.stats.lock().await;
                 stats.chunks_dropped += 1;
                 log::debug!("Failed to enqueue chunk: {:?}", e);
             }
+            processed_chunks.push(ready_chunk);
         }
 
-        // Step 5: Update statistics
+        // Step 5: Update statistics and periodic cleanup
         {
             let mut stats = self.stats.lock().await;
             stats.chunks_processed += 1;
+            // Run cleanup every 100 chunks
+            if stats.chunks_processed % 100 == 0 {
+                log::debug!("Running periodic buffer cleanup");
+                self.cleanup_expired_buffers().await;
+            }
             // Ensure processing time is at least 0.1ms to avoid zero values in tests
             let processing_time = f64::max(0.1, start_time.elapsed().as_millis() as f64);
             stats.average_processing_time_ms = (stats.average_processing_time_ms
@@ -300,33 +337,22 @@ impl ChunkProcessor {
                 / stats.chunks_processed as f64;
         }
 
-        // Step 6: Periodic cleanup - only run occasionally to reduce overhead
-        // Use a 1% chance to run cleanup, which statistically ensures it runs
-        // regularly but not for every chunk
-        if rand::random::<f32>() < 0.01 {
-            log::debug!("Running periodic buffer cleanup");
-            self.cleanup_expired_buffers().await;
+        // Return the first processed chunk (or the original if no reordering)
+        if let Some(first_chunk) = processed_chunks.first() {
+            Ok(first_chunk.clone())
+        } else {
+            // This shouldn't happen, but return the original chunk as fallback
+            Ok(MediaChunk {
+                stream_id: original_stream_id,
+                sequence_number: original_seq_num,
+                data: Vec::new(),
+                chunk_type: ChunkType::Metadata,
+                priority: MediaPriority::Normal,
+                timestamp: Duration::from_secs(0),
+                is_final: false,
+                checksum: None,
+            })
         }
-
-        // Create a minimal result chunk with just the necessary information
-        // This is more efficient than cloning the entire chunk at the beginning
-        let stream_id_for_result = original_stream_id.clone(); // Clone to avoid ownership issues
-
-        Ok(MediaChunk {
-            stream_id: stream_id_for_result,
-            sequence_number: if original_seq_num == 0 {
-                self.generate_sequence_number(&original_stream_id).await
-            } else {
-                original_seq_num
-            },
-            // Use minimal default values for fields that aren't needed in the result
-            data: Vec::new(),
-            chunk_type: ChunkType::Metadata,
-            priority: MediaPriority::Normal,
-            timestamp: Duration::from_secs(0),
-            is_final: false,
-            checksum: None,
-        })
     }
 
     /// Validate chunk integrity and format
@@ -391,7 +417,7 @@ impl ChunkProcessor {
             if !buffers.contains_key(&stream_id) {
                 buffers.insert(
                     stream_id.clone(),
-                    ReorderBuffer::new(self.config.max_reorder_window),
+                    ReorderBuffer::new(self.config.max_buffer_size, self.config.max_reorder_window),
                 );
             }
 
@@ -480,11 +506,10 @@ impl ChunkProcessor {
     }
 
     /// Calculate checksum for validation
-    fn calculate_checksum(&self, data: &[u8]) -> String {
-        use sha2::{Digest, Sha256};
+    fn calculate_checksum(&self, data: &[u8]) -> u32 {
         let mut hasher = Sha256::new();
         hasher.update(data);
-        format!("{:x}", hasher.finalize())
+        hasher.finalize().iter().fold(0u32, |acc, &byte| acc.wrapping_add(byte as u32))
     }
 
     /// Get processing statistics
@@ -495,7 +520,7 @@ impl ChunkProcessor {
         // Calculate buffer utilization
         let buffers = self.reorder_buffers.read().await;
         let total_buffer_size: usize = buffers.values().map(|b| b.buffer.len()).sum();
-        let max_possible_size = buffers.len() * self.config.max_reorder_window;
+        let max_possible_size = buffers.len() * self.config.max_buffer_size;
 
         stats.buffer_utilization = if max_possible_size > 0 {
             total_buffer_size as f64 / max_possible_size as f64
@@ -506,37 +531,77 @@ impl ChunkProcessor {
         stats
     }
 
-    /// Create a monitoring stream for chunk processing
-    pub fn create_monitoring_stream(&self) -> RS2Stream<ChunkProcessorStats> {
-        let stats = Arc::clone(&self.stats);
-        let reorder_buffers = Arc::clone(&self.reorder_buffers);
-        let config = self.config.clone();
-
-        tick(Duration::from_secs(1), ()).par_eval_map_rs2(1, move |_| {
-            let stats = Arc::clone(&stats);
-            let reorder_buffers = Arc::clone(&reorder_buffers);
-            let config = config.clone();
-
+    /// Create monitoring stream
+    pub fn create_monitoring_stream(&self) -> impl Stream<Item = ChunkProcessorStats> + Send + 'static {
+        let processor = Arc::new(self.clone());
+        unfold((), move |_| {
+            let processor = Arc::clone(&processor);
             async move {
-                let mut current_stats = {
-                    let s = stats.lock().await;
-                    s.clone()
-                };
-
-                // Update buffer utilization
-                let buffers = reorder_buffers.read().await;
-                let total_buffer_size: usize = buffers.values().map(|b| b.buffer.len()).sum();
-                let max_possible_size = buffers.len() * config.max_reorder_window;
-
-                current_stats.buffer_utilization = if max_possible_size > 0 {
-                    total_buffer_size as f64 / max_possible_size as f64
-                } else {
-                    0.0
-                };
-
-                current_stats
+                // Wait for a monitoring interval
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                
+                // Get current stats
+                let stats = processor.get_stats().await;
+                Some((stats, ()))
             }
         })
+    }
+
+    /// Process chunks with session-aware parallel processing
+    pub fn process_chunks_with_session(
+        &self,
+        chunk_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt + Unpin,
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
+        let session_parallel = get_global_parallel_config();
+        let session_buffer = get_global_buffer_config();
+        
+        // Use session parallel processing if available, otherwise use config
+        let parallel_workers = session_parallel
+            .map(|config| config.concurrency)
+            .unwrap_or(self.config.parallel_processing);
+        
+        // Use session buffer size if available, otherwise use config
+        let buffer_size = session_buffer
+            .and_then(|config| config.max_capacity)
+            .unwrap_or(self.config.max_buffer_size);
+        
+        let processor = Arc::new(self.clone());
+        chunk_stream
+            .par_eval_map_rs2(Some(parallel_workers), move |chunk| {
+                let processor = Arc::clone(&processor);
+                async move {
+                    processor.process_single_chunk(chunk).await
+                }
+            })
+            .filter_map_rs2(|result| {
+                match result {
+                    Ok(chunk) => Some(chunk),
+                    Err(e) => {
+                        log::warn!("Chunk processing failed: {:?}", e);
+                        None
+                    }
+                }
+            })
+    }
+
+    /// Create a session-aware chunk processor with dynamic configuration
+    pub fn with_session_config(&self) -> SessionAwareChunkProcessor {
+        let session_parallel = get_global_parallel_config();
+        let session_buffer = get_global_buffer_config();
+        
+        let parallel_workers = session_parallel
+            .map(|config| config.concurrency)
+            .unwrap_or(self.config.parallel_processing);
+        
+        let buffer_size = session_buffer
+            .and_then(|config| config.max_capacity)
+            .unwrap_or(self.config.max_buffer_size);
+        
+        SessionAwareChunkProcessor {
+            base_processor: Arc::new(self.clone()),
+            session_parallel_workers: parallel_workers,
+            session_buffer_size: buffer_size,
+        }
     }
 }
 
@@ -549,5 +614,43 @@ impl Clone for ChunkProcessor {
             stats: Arc::clone(&self.stats),
             output_queue: Arc::clone(&self.output_queue),
         }
+    }
+}
+
+/// Session-aware wrapper for chunk processor
+pub struct SessionAwareChunkProcessor {
+    base_processor: Arc<ChunkProcessor>,
+    session_parallel_workers: usize,
+    session_buffer_size: usize,
+}
+
+impl SessionAwareChunkProcessor {
+    /// Process chunks using session configuration
+    pub fn process_chunks(
+        &self,
+        chunk_stream: impl Stream<Item = MediaChunk> + Send + 'static + RS2StreamExt + Unpin,
+    ) -> impl Stream<Item = MediaChunk> + Send + 'static {
+        let processor = Arc::clone(&self.base_processor);
+        chunk_stream
+            .par_eval_map_rs2(Some(self.session_parallel_workers), move |chunk| {
+                let processor = Arc::clone(&processor);
+                async move {
+                    processor.process_single_chunk(chunk).await
+                }
+            })
+            .filter_map_rs2(|result| {
+                match result {
+                    Ok(chunk) => Some(chunk),
+                    Err(e) => {
+                        log::warn!("Chunk processing failed: {:?}", e);
+                        None
+                    }
+                }
+            })
+    }
+
+    /// Get session-aware configuration
+    pub fn get_session_config(&self) -> (usize, usize) {
+        (self.session_parallel_workers, self.session_buffer_size)
     }
 }

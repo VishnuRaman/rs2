@@ -1,5 +1,5 @@
-use futures_util::stream::StreamExt;
-use rs2_stream::rs2::*;
+use rs2_stream::stream::{from_iter, empty, Stream, StreamExt};
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -17,18 +17,18 @@ async fn release_resource(path: PathBuf) {
 }
 
 // Use a resource
-fn use_resource(path: PathBuf) -> RS2Stream<String> {
+fn use_resource(path: PathBuf) -> impl Stream<Item = String> + Send + 'static {
     // Open the file and create a reader
     let file = match File::open(&path) {
         Ok(file) => file,
         Err(e) => {
             eprintln!("Error opening file: {}", e);
-            return empty();
+            return from_iter(Vec::<String>::new());
         }
     };
 
     let reader = BufReader::new(file);
-    let lines = reader.lines().filter_map(Result::ok);
+    let lines: Vec<String> = reader.lines().filter_map(Result::ok).collect();
     from_iter(lines)
 }
 
@@ -38,11 +38,11 @@ fn main() {
 
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        println!("Using bracket_rs extension method for resource management");
+        println!("Using bracket_rs2 extension method for resource management");
 
-        // Use bracket_rs extension method to ensure resource is released
+        // Use bracket_rs2 extension method to ensure resource is released
         let result = empty::<i32>()
-            .bracket_rs(
+            .bracket_rs2(
                 acquire_resource(),
                 |reader| use_resource(reader),
                 release_resource,

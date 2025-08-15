@@ -1,6 +1,6 @@
-use futures_util::stream::StreamExt;
-use rand::{thread_rng, Rng};
 use rs2_stream::rs2::*;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
+use rand::{thread_rng, Rng};
 use rs2_stream::stream_performance_metrics::HealthThresholds;
 use std::error::Error;
 use std::time::Duration;
@@ -12,7 +12,7 @@ async fn process_item(item: i32) -> Result<i32, Box<dyn Error + Send + Sync>> {
     let delay = 10 + (item % 5) * 20;
     tokio::time::sleep(Duration::from_millis(delay as u64)).await;
 
-    // Increased error probability from 5% (1/20) to 20% (1/5)
+    // Random error probability (50% for demonstration)
     if thread_rng().gen_ratio(1, 2) {
         return Err("Random processing error".into());
     }
@@ -79,38 +79,43 @@ fn main() {
 
         println!("\n=== Basic Metrics Collection Example ===");
 
-        // Create a stream of numbers
-        let numbers = from_iter(1..=20);
+        // Create a stream of numbers using the external API
+        let numbers = from_iter_rs2(1..=20);
 
         // Apply metrics collection to the stream
         let (metrics_stream, metrics) =
             numbers.with_metrics_rs2("numbers_stream".to_string(), HealthThresholds::default());
 
-        // Process the stream with enhanced metrics tracking
-        let mut results = Vec::new();
-        let mut metrics_stream = std::pin::pin!(metrics_stream);
+        // Process the stream using RS2 patterns
+        let metrics_clone = metrics.clone();
+        let results: Vec<_> = metrics_stream
+            .eval_map_rs2(move |item| {
+                let metrics = metrics_clone.clone();
+                async move {
+                    let start = std::time::Instant::now();
+                    
+                    // Simulate some processing
+                    let processed = item * 2;
+                    
+                    // Record additional metrics
+                    {
+                        let mut m = metrics.lock().await;
+                        m.record_processing_time(start.elapsed());
 
-        while let Some(item) = metrics_stream.next().await {
-            let start = std::time::Instant::now();
+                        // Simulate occasional backpressure
+                        if thread_rng().gen_ratio(1, 10) {
+                            m.record_backpressure();
+                        }
 
-            // Simulate some processing
-            let processed = item * 2;
-            results.push(processed);
-
-            // Record additional metrics
-            {
-                let mut m = metrics.lock().await;
-                m.record_processing_time(start.elapsed());
-
-                // Simulate occasional backpressure
-                if thread_rng().gen_ratio(1, 10) {
-                    m.record_backpressure();
+                        // Update queue depth (simulated)
+                        m.update_queue_depth(thread_rng().gen_range(0..=10));
+                    }
+                    
+                    processed
                 }
-
-                // Update queue depth (simulated)
-                m.update_queue_depth(thread_rng().gen_range(0..=10));
-            }
-        }
+            })
+            .collect_rs2()
+            .await;
 
         println!("Processed {} numbers", results.len());
 
@@ -121,69 +126,86 @@ fn main() {
         println!("\n=== Error-Prone Async Processing Example ===");
 
         // Create a stream of numbers that might fail during processing
-        let numbers = from_iter(1..=50);
+        let numbers = from_iter_rs2(1..=50);
         let (metrics_stream, metrics) =
             numbers.with_metrics_rs2("async_processing".to_string(), HealthThresholds::default());
 
-        let mut success_count = 0;
-        let mut error_count = 0;
-        let mut retry_count = 0;
+        // Use shared counters in Arc<Mutex<T>> to avoid borrowing issues
+        let success_count = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let error_count = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let retry_count = std::sync::Arc::new(std::sync::Mutex::new(0));
 
-        let mut metrics_stream = std::pin::pin!(metrics_stream);
+        // Process each item with retries using for_each_rs2
+        let success_clone = success_count.clone();
+        let error_clone = error_count.clone();
+        let retry_clone = retry_count.clone();
+        let metrics_clone = metrics.clone();
 
-        while let Some(item) = metrics_stream.next().await {
-            let start = std::time::Instant::now();
+        metrics_stream
+            .for_each_rs2(move |item| {
+                let success_count = success_clone.clone();
+                let error_count = error_clone.clone();
+                let retry_count = retry_clone.clone();
+                let metrics = metrics_clone.clone();
+                async move {
+                    let start = std::time::Instant::now();
 
-            // Try processing with retries
-            let mut attempts = 0;
-            let max_retries = 3;
+                    // Try processing with retries
+                    let mut attempts = 0;
+                    let max_retries = 3;
 
-            loop {
-                match process_item(item).await {
-                    Ok(_result) => {
-                        success_count += 1;
-                        {
-                            let mut m = metrics.lock().await;
-                            m.record_processing_time(start.elapsed());
-                            if attempts > 0 {
-                                m.retries += attempts; // Record total retry attempts
+                    loop {
+                        match process_item(item).await {
+                            Ok(_result) => {
+                                *success_count.lock().unwrap() += 1;
+                                {
+                                    let mut m = metrics.lock().await;
+                                    m.record_processing_time(start.elapsed());
+                                    if attempts > 0 {
+                                        m.retries += attempts; // Record total retry attempts
+                                    }
+                                }
+                                break;
                             }
-                        }
-                        break;
-                    }
-                    Err(_e) => {
-                        attempts += 1;
-                        {
-                            let mut m = metrics.lock().await;
-                            m.record_error();
-                            if attempts <= max_retries {
-                                m.record_retry();
-                            }
-                        }
+                            Err(_e) => {
+                                attempts += 1;
+                                {
+                                    let mut m = metrics.lock().await;
+                                    m.record_error();
+                                    if attempts <= max_retries {
+                                        m.record_retry();
+                                    }
+                                }
 
-                        if attempts > max_retries {
-                            error_count += 1;
-                            println!(
-                                "  ❌ Failed to process item {} after {} attempts",
-                                item, attempts
-                            );
-                            break;
-                        } else {
-                            retry_count += 1;
-                            // Exponential backoff
-                            tokio::time::sleep(Duration::from_millis(
-                                50 * 2_u64.pow(attempts as u32),
-                            ))
-                            .await;
+                                if attempts > max_retries {
+                                    *error_count.lock().unwrap() += 1;
+                                    println!(
+                                        "  ❌ Failed to process item {} after {} attempts",
+                                        item, attempts
+                                    );
+                                    break;
+                                } else {
+                                    *retry_count.lock().unwrap() += 1;
+                                    // Exponential backoff
+                                    tokio::time::sleep(Duration::from_millis(
+                                        50 * 2_u64.pow(attempts as u32),
+                                    ))
+                                    .await;
+                                }
+                            }
                         }
                     }
                 }
-            }
-        }
+            })
+            .await;
+
+        let final_success = *success_count.lock().unwrap();
+        let final_error = *error_count.lock().unwrap();
+        let final_retry = *retry_count.lock().unwrap();
 
         println!(
             "✅ Successful: {} | ❌ Failed: {} | 🔄 Total retries: {}",
-            success_count, error_count, retry_count
+            final_success, final_error, final_retry
         );
 
         let metrics_data = metrics.lock().await;
@@ -194,36 +216,35 @@ fn main() {
         // Test different transformations with enhanced metrics
 
         // 1. Filter operation
-        let (filter_stream, filter_metrics) = from_iter(1..=1000)
+        let (filter_stream, filter_metrics) = from_iter_rs2(1..=1000)
             .with_metrics_rs2("filter_operation".to_string(), HealthThresholds::default());
 
         // Clone metrics for use in the closure
-        let filter_metrics_for_closure = filter_metrics.clone();
-
+        let filter_metrics_clone = filter_metrics.clone();
         let filter_results = filter_stream
-            .filter_rs2(move |n| {
-                // Simulate backpressure during heavy filtering
-                if thread_rng().gen_ratio(1, 50) {
-                    // In a real scenario, you'd record backpressure here
-                    std::thread::sleep(Duration::from_micros(10));
-                }
+            .filter_map_async_rs2(move |n| {
+                let filter_metrics_for_closure = filter_metrics_clone.clone();
+                async move {
+                    // Simulate backpressure during heavy filtering
+                    if thread_rng().gen_ratio(1, 50) {
+                        tokio::time::sleep(Duration::from_micros(10)).await;
+                    }
 
-                // Simulate errors during filtering
-                if thread_rng().gen_ratio(1, 10) {
-                    // Record the error
-                    tokio::spawn({
-                        let metrics = filter_metrics_for_closure.clone();
-                        async move {
-                            let mut m = metrics.lock().await;
-                            m.record_error();
-                        }
-                    });
-                    return false; // Filter out this item due to "error"
-                }
+                    // Simulate errors during filtering
+                    if thread_rng().gen_ratio(1, 10) {
+                        let mut m = filter_metrics_for_closure.lock().await;
+                        m.record_error();
+                        return None; // Filter out this item due to "error"
+                    }
 
-                n % 2 == 0 // Keep only even numbers
+                    if n % 2 == 0 {
+                        Some(n) // Keep only even numbers
+                    } else {
+                        None
+                    }
+                }
             })
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
         // Manually record some backpressure events for demonstration
@@ -233,44 +254,36 @@ fn main() {
         }
 
         // 2. Map operation with timing
-        let (map_stream, map_metrics) = from_iter(1..=1000)
+        let (map_stream, map_metrics) = from_iter_rs2(1..=1000)
             .with_metrics_rs2("map_operation".to_string(), HealthThresholds::default());
 
-        // Clone metrics for use in the closure
-        let map_metrics_for_closure = map_metrics.clone();
-
+        let map_metrics_clone = map_metrics.clone();
         let map_results = map_stream
-            .map_rs2(move |n| {
-                // Simulate variable processing time
-                std::thread::sleep(Duration::from_micros(n as u64 % 100));
+            .eval_map_rs2(move |n| {
+                let map_metrics_for_closure = map_metrics_clone.clone();
+                async move {
+                    // Simulate variable processing time
+                    tokio::time::sleep(Duration::from_micros(n as u64 % 100)).await;
 
-                // Simulate errors during mapping
-                if thread_rng().gen_ratio(1, 15) {
-                    // Record the error
-                    tokio::spawn({
-                        let metrics = map_metrics_for_closure.clone();
-                        async move {
-                            let mut m = metrics.lock().await;
-                            m.record_error();
-                        }
-                    });
-                    // We still return a value since map_rs2 doesn't support filtering
-                    return n * 3;
+                    // Simulate errors during mapping
+                    if thread_rng().gen_ratio(1, 15) {
+                        let mut m = map_metrics_for_closure.lock().await;
+                        m.record_error();
+                    }
+
+                    n * 3
                 }
-
-                n * 3
             })
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
         // 3. Throttled operation
-        let (throttled_stream, throttled_metrics) = from_iter(1..=100).with_metrics_rs2(
+        let (throttled_stream, throttled_metrics) = from_iter_rs2(1..=100).with_metrics_rs2(
             "throttled_operation".to_string(),
             HealthThresholds::default(),
         );
 
         // We need to manually record errors for throttled operation
-        // since throttle_rs2 doesn't take a closure where we could add error logic
         let throttled_metrics_for_errors = throttled_metrics.clone();
 
         // Spawn a task to simulate random errors during throttled processing
@@ -287,11 +300,11 @@ fn main() {
 
         let throttled_results = throttled_stream
             .throttle_rs2(Duration::from_millis(10)) // Throttle to simulate load control
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
         // 4. Chunked operation with queue depth tracking
-        let (chunked_stream, chunked_metrics) = from_iter(1..=200)
+        let (chunked_stream, chunked_metrics) = from_iter_rs2(1..=200)
             .with_metrics_rs2("chunked_operation".to_string(), HealthThresholds::default());
 
         // Clone metrics before moving into closure
@@ -300,32 +313,26 @@ fn main() {
 
         let chunked_results = chunked_stream
             .chunk_rs2(5) // Process in chunks of 5
-            .enumerate()
-            .map_rs2(move |(chunk_idx, chunk)| {
-                // Simulate queue depth changes
-                tokio::spawn({
-                    let metrics = chunked_metrics.clone();
-                    async move {
-                        let mut m = metrics.lock().await;
-                        m.update_queue_depth(chunk_idx as u64 % 10);
+            .eval_map_rs2(move |chunk| {
+                let metrics_clone = chunked_metrics.clone();
+                let errors_clone = chunked_metrics_for_errors.clone();
+                async move {
+                    // Simulate queue depth changes
+                    {
+                        let mut m = metrics_clone.lock().await;
+                        m.update_queue_depth(chunk.len() as u64 % 10);
                     }
-                });
 
-                // Simulate errors during chunked processing
-                if thread_rng().gen_ratio(1, 8) {
-                    // Record the error
-                    tokio::spawn({
-                        let metrics = chunked_metrics_for_errors.clone();
-                        async move {
-                            let mut m = metrics.lock().await;
-                            m.record_error();
-                        }
-                    });
+                    // Simulate errors during chunked processing
+                    if thread_rng().gen_ratio(1, 8) {
+                        let mut m = errors_clone.lock().await;
+                        m.record_error();
+                    }
+
+                    chunk.len() // Return chunk size
                 }
-
-                chunk.len() // Return chunk size
             })
-            .collect::<Vec<_>>()
+            .collect_rs2()
             .await;
 
         // Print comparison
@@ -403,5 +410,14 @@ fn main() {
                 "⚠️ Issues"
             }
         );
+
+        println!("\n=== Enhanced Stream Metrics Example Complete ===");
+        println!("\n🎯 Key Features Demonstrated:");
+        println!("1. Stream metrics collection with with_metrics_rs2()");
+        println!("2. Async processing with error handling using eval_map_rs2()");
+        println!("3. Stream filtering and error handling with filter_map_rs2()");
+        println!("4. Throttled processing with throttle_rs2()");
+        println!("5. Chunked processing with chunk_rs2()");
+        println!("6. Comprehensive metrics tracking and health monitoring");
     });
 }

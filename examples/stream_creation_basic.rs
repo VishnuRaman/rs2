@@ -1,5 +1,5 @@
-use futures_util::stream::StreamExt;
 use rs2_stream::rs2::*;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use tokio::runtime::Runtime;
 
 // Define our User type for the example
@@ -15,6 +15,8 @@ struct User {
 fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
+        println!("=== RS2 Stream Creation Basic Example ===\n");
+
         // Create a stream with a single user
         let user = User {
             id: 1,
@@ -24,16 +26,19 @@ fn main() {
             role: "admin".to_string(),
         };
 
-        let single_user_stream = emit(user.clone());
-        let first_user = single_user_stream.collect::<Vec<_>>().await;
-        println!("Single user: {:?}", first_user[0].name);
+        println!("1. Single User Stream:");
+        let single_user_stream = once_stream(user.clone());
+        let first_user = single_user_stream.collect_rs2().await;
+        println!("   Single user: {} (ID: {})", first_user[0].name, first_user[0].id);
 
         // Create an empty stream
-        let empty_stream: RS2Stream<User> = empty();
-        let empty_result = empty_stream.collect::<Vec<_>>().await;
-        println!("Empty stream length: {}", empty_result.len()); // 0
+        println!("\n2. Empty User Stream:");
+        let empty_stream = empty_rs2::<User>();
+        let empty_result = empty_stream.collect_rs2().await;
+        println!("   Empty stream length: {}", empty_result.len()); // 0
 
         // Create a stream from an iterator
+        println!("\n3. Stream from Iterator:");
         let users = vec![
             User {
                 id: 1,
@@ -58,8 +63,21 @@ fn main() {
             },
         ];
 
-        let users_stream = from_iter(users);
-        let all_users = users_stream.collect::<Vec<_>>().await;
-        println!("All users: {}", all_users.len()); // 3
+        let users_stream = from_iter_rs2(users);
+        let all_users = users_stream.collect_rs2().await;
+        println!("   All users count: {}", all_users.len()); // 3
+        
+        for (i, user) in all_users.iter().enumerate() {
+            println!("   User {}: {} - {} ({})", 
+                i + 1, user.name, user.role, 
+                if user.active { "active" } else { "inactive" });
+        }
+
+        println!("\n=== Stream Creation Example Complete ===");
+        println!("\nKey Features Demonstrated:");
+        println!("1. Single item stream creation with emit_rs2()");
+        println!("2. Empty stream creation with empty_rs2::<T>()");
+        println!("3. Stream creation from iterator with from_iter_rs2()");
+        println!("4. Stream collection with collect_rs2()");
     });
 }

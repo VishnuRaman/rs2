@@ -1,5 +1,6 @@
-use futures_util::stream::StreamExt;
-use rs2_stream::rs2::*;
+use rs2_stream::stream::constructors::from_iter;
+use rs2_stream::stream::StreamExt;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use tokio::runtime::Runtime;
 
 // Define a CPU-intensive operation
@@ -28,7 +29,7 @@ fn main() {
         let start = std::time::Instant::now();
 
         let results = from_iter(numbers.clone())
-            .map_parallel_rs2(|n| {
+            .map_parallel_rs2(Some(4), |n| {
                 println!(
                     "  Computing Fibonacci for {} on thread {:?}",
                     n,

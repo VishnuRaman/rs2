@@ -1,4 +1,4 @@
-//! Core types for media streaming
+//! Media types and structures
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -20,11 +20,13 @@ pub struct UserActivity {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// Media priority levels
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MediaPriority {
-    High = 3,   // I-frames, audio, critical metadata
-    Normal = 2, // P-frames, standard video data
-    Low = 1,    // B-frames, thumbnails, preview data
+    Low,
+    Normal,
+    High,
+    Critical,
 }
 
 impl Default for MediaPriority {
@@ -33,7 +35,8 @@ impl Default for MediaPriority {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Media stream configuration
+#[derive(Debug, Clone)]
 pub struct MediaStream {
     pub id: String,
     pub user_id: u64,
@@ -42,6 +45,20 @@ pub struct MediaStream {
     pub chunk_size: usize,
     pub created_at: DateTime<Utc>,
     pub metadata: HashMap<String, String>,
+}
+
+impl Default for MediaStream {
+    fn default() -> Self {
+        Self {
+            id: "default-stream".to_string(),
+            user_id: 0,
+            content_type: MediaType::Video,
+            quality: QualityLevel::Low,
+            chunk_size: 1024,
+            created_at: Utc::now(),
+            metadata: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,7 +76,19 @@ pub enum QualityLevel {
     UltraHigh, // 1080p+, 320kbps audio
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+/// Media chunk types
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkType {
+    VideoIFrame,
+    VideoPFrame,
+    VideoBFrame,
+    Audio,
+    Metadata,
+    Thumbnail,
+}
+
+/// Media chunk structure
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaChunk {
     pub stream_id: String,
     pub sequence_number: u64,
@@ -68,25 +97,15 @@ pub struct MediaChunk {
     pub priority: MediaPriority,
     pub timestamp: Duration,
     pub is_final: bool,
-    pub checksum: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ChunkType {
-    VideoIFrame, // Key frame - high priority
-    VideoPFrame, // Predicted frame - normal priority
-    VideoBFrame, // Bidirectional frame - low priority
-    Audio,       // Audio data - high priority
-    Metadata,    // Stream metadata - high priority
-    Thumbnail,   // Preview images - low priority
+    pub checksum: Option<u32>,
 }
 
 impl ChunkType {
     pub fn default_priority(&self) -> MediaPriority {
         match self {
-            ChunkType::VideoIFrame | ChunkType::Audio | ChunkType::Metadata => MediaPriority::High,
+            ChunkType::VideoIFrame | ChunkType::Audio | ChunkType::Metadata | ChunkType::Thumbnail => MediaPriority::High,
             ChunkType::VideoPFrame => MediaPriority::Normal,
-            ChunkType::VideoBFrame | ChunkType::Thumbnail => MediaPriority::Low,
+            ChunkType::VideoBFrame => MediaPriority::Low,
         }
     }
 }
@@ -100,4 +119,33 @@ pub struct StreamMetrics {
     pub average_chunk_size: f64,
     pub buffer_utilization: f64,
     pub last_updated: DateTime<Utc>,
+}
+
+/// Media stream event types
+#[derive(Debug, Clone)]
+pub enum MediaEvent {
+    ChunkReceived(MediaChunk),
+    StreamStarted(String),
+    StreamEnded(String),
+    Error(String),
+}
+
+/// Media quality metrics
+#[derive(Debug, Clone)]
+pub struct MediaQuality {
+    pub bitrate: u64,
+    pub framerate: f64,
+    pub resolution: (u32, u32),
+    pub quality_score: f64,
+}
+
+impl Default for MediaQuality {
+    fn default() -> Self {
+        Self {
+            bitrate: 1000000,
+            framerate: 30.0,
+            resolution: (1920, 1080),
+            quality_score: 0.95,
+        }
+    }
 }

@@ -1,13 +1,12 @@
-use rs2_stream::rs2::*;
+use rs2_stream::rs2_stream_ext::RS2StreamExt;
 use rs2_stream::state::{KeyExtractor, StateConfig, StateError};
 use rs2_stream::state::stream_ext::StatefulStreamExt;
+use rs2_stream::resource_manager::ResourceConfig;
 use serde::{Deserialize, Serialize};
-use futures_util::{StreamExt, stream::iter};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use futures_core::Stream;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UserEvent {
@@ -171,12 +170,12 @@ impl KeyExtractor<UserEvent> for EventTypeExtractor {
 }
 
 // Helper function to create a stream with correct trait bounds
-fn stream_from_vec<T: Send + Sync + Clone + 'static>(v: Vec<T>) -> impl Stream<Item = T> + Send + Sync + Unpin + 'static {
+fn stream_from_vec<T: Send + Sync + Clone + 'static>(v: Vec<T>) -> impl rs2_stream::stream::Stream<Item = T> + Send + Sync + Unpin + 'static {
     struct VecStream<T> {
         data: VecDeque<T>,
     }
     
-    impl<T: Send + Sync + Clone + 'static> Stream for VecStream<T> {
+    impl<T: Send + Sync + Clone + 'static> rs2_stream::stream::Stream for VecStream<T> {
         type Item = T;
         fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<T>> {
             Poll::Ready(self.data.pop_front())
@@ -198,6 +197,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_size(10000)
         .ttl(Duration::from_secs(3600)); // 1 hour TTL
 
+    // Initialize resource configuration
+    let resource_config = ResourceConfig::default();
+
     // Generate sample data
     let events = generate_user_events();
     println!("📈 Generated {} user events for processing", events.len());
@@ -218,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 event
             },
         )
-        .collect()
+        .collect_rs2()
         .await;
     let session_stream: Vec<UserEvent> = session_results.into_iter().filter_map(Result::ok).collect();
 
@@ -232,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .stateful_reduce_rs2(
             state_config.clone(),
             UserIdExtractor,
-            UserMetrics {
+            Some(UserMetrics {
                 user_id: String::new(),
                 total_sessions: 0,
                 total_page_views: 0,
@@ -240,8 +242,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 last_seen: 0,
                 favorite_pages: Vec::new(),
                 event_counts: HashMap::new(),
-            },
-            |mut metrics, event, _state_access| {
+            }),
+            |mut metrics: UserMetrics, event, _state_access| {
                 Box::pin(async move {
                     metrics.user_id = event.user_id.clone();
                     metrics.last_seen = event.timestamp;
@@ -256,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             },
         )
-        .collect()
+        .collect_rs2()
         .await;
     let user_metrics: Vec<UserMetrics> = user_metrics_results.into_iter().filter_map(Result::ok).collect();
 
@@ -276,7 +278,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .stateful_group_by_rs2(
             state_config.clone(),
             PageUrlExtractor,
-            |page_url, events, _state_access| {
+            None, // group_timeout
+            None, // max_group_size
+            |page_url, events: Vec<UserEvent>, _state_access| {
                 Box::pin(async move {
                     let view_count = events.len() as u32;
                     let unique_users = events.iter()
@@ -293,7 +297,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             },
         )
-        .collect()
+        .collect_rs2()
         .await;
     let page_analytics: Vec<PageView> = page_analytics_results.into_iter().filter_map(Result::ok).collect();
 
@@ -331,7 +335,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             },
         )
-        .collect()
+        .collect_rs2()
         .await;
     let patterns: Vec<Option<String>> = patterns_results.into_iter().filter_map(Result::ok).collect();
 
@@ -359,7 +363,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             },
         )
-        .collect()
+        .collect_rs2()
         .await;
     let filtered_errors: Vec<UserEvent> = error_alerts_results.into_iter().filter_map(Result::ok).collect();
     let error_alerts: Vec<Result<UserEvent, StateError>> = stream_from_vec(filtered_errors)
@@ -370,7 +374,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Duration::from_secs(300),
             |event| event,
         )
-        .collect()
+        .collect_rs2()
         .await;
 
     println!("   ✅ Monitored {} error events with throttling", error_alerts.len());
@@ -424,8 +428,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                 })
             },
+            resource_config.clone(),
         )
-        .collect()
+        .collect_rs2()
         .await;
     let real_time_metrics: Vec<RealTimeMetrics> = real_time_metrics_results.into_iter().filter_map(Result::ok).collect();
 
@@ -451,7 +456,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Duration::from_secs(60), // 1 minute TTL for deduplication
             |event| event,
         )
-        .collect()
+        .collect_rs2()
         .await;
     let deduplicated_events: Vec<UserEvent> = deduplicated_events_results.into_iter().filter_map(Result::ok).collect();
 
@@ -473,16 +478,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             },
         )
-        .collect()
+        .collect_rs2()
         .await;
     let filtered_analytics: Vec<UserEvent> = analytics_pipeline_filter_results.into_iter().filter_map(Result::ok).collect();
     let analytics_pipeline_group_results: Vec<Result<Vec<Alert>, StateError>> = stream_from_vec(filtered_analytics)
         .stateful_group_by_advanced_rs2(
             state_config.clone(),
             UserIdExtractor,
-            Some(10),
             Some(Duration::from_secs(300)),
-            true,
+            Some(10),
             |user_id, user_events, _state_access| {
                 Box::pin(async move {
                     let error_count = user_events.iter()
@@ -520,7 +524,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
             },
         )
-        .collect()
+        .collect_rs2()
         .await;
     let analytics_pipeline: Vec<Alert> = analytics_pipeline_group_results
         .into_iter()

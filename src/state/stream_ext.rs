@@ -1,26 +1,20 @@
-use crate::*;
-use crate::resource_manager::{get_global_resource_manager, ResourceManager};
-use async_stream::stream;
-use futures_core::Stream;
-use futures_util::pin_mut;
-use futures_util::stream::StreamExt;
+use crate::resource_manager::{ResourceConfig, ResourceManager};
+use crate::stream::Stream;
+use std::task::{Context, Poll, Waker, RawWaker, RawWakerVTable};
+use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::collections::HashSet;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time::sleep;
 use crate::state::traits::KeyExtractor;
 use crate::state::{StateConfig, StateError, StateStorage};
+use std::future::Future;
+use crate::stream::core::StreamExt as CoreStreamExt;
+use std::collections::VecDeque;
 
 // Memory management constants
-const MAX_HASHMAP_KEYS: usize = 10_000;
-const MAX_GROUP_SIZE: usize = 10_000; // Max items per group
-const MAX_PATTERN_SIZE: usize = 1_000; // Max items per pattern
-const CLEANUP_INTERVAL: u64 = 1000; // Cleanup every 1000 items (increased from 100)
-const RESOURCE_TRACKING_INTERVAL: u64 = 100; // Track resources every 100 items
-const DEFAULT_BUFFER_SIZE: usize = 1024;
+const MAX_BUFFER_SIZE: usize = 10_000; // Max items per buffer
+const MAX_WINDOW_KEYS: usize = 1_000; // Max keys for windowing
 
 // LRU eviction helper
 fn evict_oldest_entries<K, V>(map: &mut HashMap<K, V>, max_keys: usize)
@@ -82,84 +76,420 @@ struct RightItemWithTime<U> {
     key: String,
 }
 
+// Custom stream implementations to replace async_stream::stream
+
+/// Stateful map stream combinator
+pin_project_lite::pin_project! {
+    pub struct StatefulMap<S, F, R, T> {
+        #[pin]
+        stream: S,
+        f: F,
+        storage: Arc<dyn StateStorage + Send + Sync>,
+        key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+        current_future: Option<Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>>>,
+        _phantom: std::marker::PhantomData<(R, T)>,
+    }
+}
+
+impl<S, F, R, T> StatefulMap<S, F, R, T>
+where
+    S: Stream<Item = T> + Unpin,
+    T: Unpin,
+    F: FnMut(T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+    R: Unpin,
+{
+    fn new(stream: S, f: F, storage: Arc<dyn StateStorage + Send + Sync>, key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>) -> Self {
+        Self {
+            stream,
+            f,
+            storage,
+            key_extractor,
+            current_future: None,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<S, F, R, T> Stream for StatefulMap<S, F, R, T>
+where
+    S: Stream<Item = T> + Unpin,
+    T: Unpin,
+    F: FnMut(T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+    R: Unpin,
+{
+    type Item = Result<R, StateError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        
+        // First, poll the current future if we have one
+        if let Some(mut future) = this.current_future.take() {
+            match future.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    return Poll::Ready(Some(result));
+                }
+                Poll::Pending => {
+                    *this.current_future = Some(future);
+                    return Poll::Pending;
+                }
+            }
+        }
+        
+        // If no current future, poll the stream for the next item
+        match this.stream.as_mut().poll_next(cx) {
+            Poll::Ready(Some(item)) => {
+                let key = this.key_extractor.extract_key(&item);
+                let state_access = StateAccess::new(this.storage.clone(), key);
+                let future = (this.f)(item, state_access);
+                *this.current_future = Some(future);
+                
+                // Poll the future immediately
+                if let Some(mut future) = this.current_future.take() {
+                    match future.as_mut().poll(cx) {
+                        Poll::Ready(result) => {
+                            Poll::Ready(Some(result))
+                        }
+                        Poll::Pending => {
+                            *this.current_future = Some(future);
+                            Poll::Pending
+                        }
+                    }
+                } else {
+                    Poll::Pending
+                }
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// Stateful filter stream combinator
+pin_project_lite::pin_project! {
+    pub struct StatefulFilter<S, F, T> {
+        #[pin]
+        stream: S,
+        f: F,
+        storage: Arc<dyn StateStorage + Send + Sync>,
+        key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+        current_future: Option<Pin<Box<dyn Future<Output = Result<bool, StateError>> + Send>>>,
+        current_item: Option<T>,
+    }
+}
+
+impl<S, F, T> StatefulFilter<S, F, T>
+where
+    S: Stream<Item = T> + Unpin,
+    T: Unpin,
+    F: FnMut(&T, StateAccess) -> Pin<Box<dyn Future<Output = Result<bool, StateError>> + Send>> + Send + Sync + 'static,
+{
+    fn new(stream: S, f: F, storage: Arc<dyn StateStorage + Send + Sync>, key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>) -> Self {
+        Self {
+            stream,
+            f,
+            storage,
+            key_extractor,
+            current_future: None,
+            current_item: None,
+        }
+    }
+}
+
+impl<S, F, T> Stream for StatefulFilter<S, F, T>
+where
+    S: Stream<Item = T> + Unpin,
+    T: Unpin,
+    F: FnMut(&T, StateAccess) -> Pin<Box<dyn Future<Output = Result<bool, StateError>> + Send>> + Send + Sync + 'static,
+{
+    type Item = Result<T, StateError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            let mut this = self.as_mut().project();
+            
+            // First, poll the current future if we have one
+            if let Some(mut future) = this.current_future.take() {
+                match future.as_mut().poll(cx) {
+                    Poll::Ready(Ok(should_include)) => {
+                        let item = this.current_item.take().unwrap();
+                        if should_include {
+                            return Poll::Ready(Some(Ok(item)));
+                        } else {
+                            // Continue to next item by continuing the loop
+                            continue;
+                        }
+                    }
+                    Poll::Ready(Err(e)) => {
+                        this.current_item.take(); // Clear the item
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                    Poll::Pending => {
+                        *this.current_future = Some(future);
+                        return Poll::Pending;
+                    }
+                }
+            } else {
+                // If no current future, poll the stream for the next item
+                match this.stream.as_mut().poll_next(cx) {
+                    Poll::Ready(Some(item)) => {
+                        let key = this.key_extractor.extract_key(&item);
+                        let state_access = StateAccess::new(this.storage.clone(), key);
+                        let future = (this.f)(&item, state_access);
+                        *this.current_future = Some(future);
+                        *this.current_item = Some(item);
+                        
+                        // Poll the future immediately
+                        if let Some(mut future) = this.current_future.take() {
+                            match future.as_mut().poll(cx) {
+                                Poll::Ready(Ok(should_include)) => {
+                                    let item = this.current_item.take().unwrap();
+                                    if should_include {
+                                        return Poll::Ready(Some(Ok(item)));
+                                    } else {
+                                        // Continue to next item by continuing the loop
+                                        continue;
+                                    }
+                                }
+                                Poll::Ready(Err(e)) => {
+                                    this.current_item.take(); // Clear the item
+                                    return Poll::Ready(Some(Err(e)));
+                                }
+                                Poll::Pending => {
+                                    *this.current_future = Some(future);
+                                    return Poll::Pending;
+                                }
+                            }
+                        } else {
+                            return Poll::Pending;
+                        }
+                    }
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+        }
+    }
+}
+
+pin_project_lite::pin_project! {
+    pub struct StatefulWindow<S, F, T, R> {
+        #[pin]
+        stream: S,
+        f: F,
+        storage: Arc<dyn StateStorage + Send + Sync>,
+        key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+        window_size: usize,
+        window_buffers: HashMap<String, Vec<T>>,
+        current_future: Option<Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>>>,
+        result_queue: VecDeque<Result<R, StateError>>,
+        resource_manager: Arc<ResourceManager>,
+        _phantom: std::marker::PhantomData<(R, T)>,
+    }
+}
+
+impl<S, F, T, R> StatefulWindow<S, F, T, R>
+where
+    S: Stream<Item = T> + Unpin,
+    T: Unpin,
+    F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+    R: Unpin + 'static,
+{
+    fn new(
+        stream: S,
+        config: StateConfig,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        window_size: usize,
+        f: F,
+        resource_manager: Arc<ResourceManager>,
+    ) -> Self {
+        Self {
+            stream,
+            f,
+            storage: config.create_storage_arc(),
+            key_extractor: Arc::new(key_extractor),
+            window_size,
+            window_buffers: HashMap::new(),
+            current_future: None,
+            result_queue: VecDeque::new(),
+            resource_manager,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<S, F, T, R> Stream for StatefulWindow<S, F, T, R>
+where
+    S: Stream<Item = T> + Unpin,
+    T: Unpin,
+    F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+    R: Unpin + 'static,
+{
+    type Item = Result<R, StateError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        
+        // First, emit any queued results
+        if let Some(result) = this.result_queue.pop_front() {
+            println!("StatefulWindow: emitting queued result");
+            return Poll::Ready(Some(result));
+        }
+        
+        // If we have a future in progress, poll it
+        if let Some(mut future) = this.current_future.take() {
+            match future.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    println!("StatefulWindow: window future ready, emitting result");
+                    return Poll::Ready(Some(result));
+                }
+                Poll::Pending => {
+                    *this.current_future = Some(future);
+                    return Poll::Pending;
+                }
+            }
+        }
+        
+        // Poll the source stream and process items
+        loop {
+            match this.stream.as_mut().poll_next(cx) {
+                Poll::Ready(Some(item)) => {
+                    let key = this.key_extractor.extract_key(&item);
+                    
+                    // Track resource usage when creating new buffer
+                    let is_new_buffer = !this.window_buffers.contains_key(&key);
+                    if is_new_buffer {
+                        if this.window_buffers.len() >= MAX_WINDOW_KEYS {
+                            // Track buffer overflow
+                            tokio::spawn({
+                                let rm = this.resource_manager.clone();
+                                async move {
+                                    track_resource_batch(&rm, 0, 0, 1).await;
+                                }
+                            });
+                            // Drop oldest key to make room
+                            if let Some(oldest_key) = this.window_buffers.keys().next().cloned() {
+                                this.window_buffers.remove(&oldest_key);
+                            }
+                        }
+                        // Track new buffer allocation
+                        tokio::spawn({
+                            let rm = this.resource_manager.clone();
+                            async move {
+                                track_resource_batch(&rm, 1, 0, 0).await;
+                            }
+                        });
+                    }
+                    
+                    let buffer = this.window_buffers.entry(key.clone()).or_insert_with(Vec::new);
+                    buffer.push(item);
+                    
+                    // Check for buffer overflow
+                    if buffer.len() > MAX_BUFFER_SIZE {
+                        // Track buffer overflow
+                        tokio::spawn({
+                            let rm = this.resource_manager.clone();
+                            async move {
+                                track_resource_batch(&rm, 0, 0, 1).await;
+                            }
+                        });
+                        // Drop oldest items to maintain size limit
+                        buffer.drain(0..buffer.len() - MAX_BUFFER_SIZE);
+                    }
+                    
+                    if buffer.len() >= *this.window_size {
+                        let items: Vec<T> = buffer.drain(..*this.window_size).collect();
+                        let state_access = StateAccess::new(this.storage.clone(), key.clone());
+                        let future = (this.f)(items, state_access);
+                        println!("StatefulWindow: emitting window for key {}", key);
+                        *this.current_future = Some(Box::pin(future));
+                        // Poll the future immediately to completion
+                        let pinned = this.current_future.as_mut().unwrap();
+                        match pinned.as_mut().poll(cx) {
+                            Poll::Ready(result) => {
+                                *this.current_future = None;
+                                return Poll::Ready(Some(result));
+                            }
+                            Poll::Pending => {
+                                return Poll::Pending;
+                            }
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                Poll::Ready(None) => {
+                    // Source stream is exhausted, emit only full windows (no partial windows)
+                    if !this.window_buffers.is_empty() {
+                        let buffer_count = this.window_buffers.len();
+                        for (key, mut buffer) in this.window_buffers.drain() {
+                            if buffer.len() >= *this.window_size {
+                                let items: Vec<T> = buffer.drain(..*this.window_size).collect();
+                                let state_access = StateAccess::new(this.storage.clone(), key.clone());
+                                let future = (this.f)(items, state_access);
+                                *this.current_future = Some(Box::pin(future));
+                                // Poll the future to completion synchronously
+                                let waker = noop_waker();
+                                let mut cx = Context::from_waker(&waker);
+                                let pinned = this.current_future.as_mut().unwrap();
+                                match pinned.as_mut().poll(&mut cx) {
+                                    Poll::Ready(result) => {
+                                        this.result_queue.push_back(result);
+                                    }
+                                    Poll::Pending => {
+                                        this.result_queue.push_back(Err(StateError::Validation("Window future did not complete synchronously at end of stream".to_string())));
+                                    }
+                                }
+                                *this.current_future = None;
+                            }
+                        }
+                        
+                        // Track buffer deallocations
+                        tokio::spawn({
+                            let rm = this.resource_manager.clone();
+                            async move {
+                                track_resource_batch(&rm, 0, buffer_count as u64, 0).await;
+                            }
+                        });
+                        
+                        if let Some(result) = this.result_queue.pop_front() {
+                            return Poll::Ready(Some(result));
+                        }
+                    }
+                    return Poll::Ready(None);
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
 /// Extension trait for adding stateful operations to streams
 pub trait StatefulStreamExt<T>: Stream<Item = T> + Send + Sync + Sized + Unpin + 'static
 where
     Self: 'static,
-    T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + 'static,
+    T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Unpin + 'static,
 {
     /// Apply a stateful map operation
     fn stateful_map_rs2<F, R>(
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<R, StateError>> + Send>>
+        f: F,
+    ) -> StatefulMap<Self, F, R, T>
     where
         F: FnMut(
                 T,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
             + 'static,
-        R: Send + Sync + 'static,
-        Self: Sized,
+        R: Send + Sync + Unpin + 'static,
+        Self: Sized + Unpin,
     {
         let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
-
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut state: HashMap<String, ()> = HashMap::new();
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-
-                // Periodic cleanup and resource tracking
-                item_count += 1;
-                if item_count % CLEANUP_INTERVAL == 0 {
-                    let before_len = state.len();
-                    evict_oldest_entries(&mut state, MAX_HASHMAP_KEYS);
-                    let after_len = state.len();
-                    if before_len > after_len {
-                        pending_deallocations += (before_len - after_len) as u64;
-                        pending_buffer_overflows += 1;
-                    }
-                }
-
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
-                }
-
-                let is_new_key = !state.contains_key(&key);
-                state.entry(key.clone()).or_insert(());
-                if is_new_key {
-                    pending_allocations += 1;
-                }
-
-                let state_access = StateAccess::new(storage.clone(), key);
-                match f(item, state_access).await {
-                    Ok(result) => yield Ok(result),
-                    Err(e) => yield Err(e),
-                }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-            }
-        })
+        StatefulMap::new(self, f, storage, Arc::new(key_extractor))
     }
 
     /// Apply a stateful filter operation
@@ -167,71 +497,21 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<T, StateError>> + Send>>
+        f: F
+    ) -> StatefulFilter<Self, F, T>
     where
         F: FnMut(
                 &T,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<bool, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<bool, StateError>> + Send>,
             > + Send
             + Sync
             + 'static,
-        Self: Sized,
+        Self: Sized + Unpin,
     {
         let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
-
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut seen_keys: HashSet<String> = HashSet::new();
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-
-                // Optimized cleanup - only when necessary
-                item_count += 1;
-                if item_count % CLEANUP_INTERVAL == 0 && seen_keys.len() > MAX_HASHMAP_KEYS {
-                    // More efficient cleanup - clear all and let it rebuild
-                    let old_size = seen_keys.len();
-                    seen_keys.clear();
-                    pending_allocations = pending_allocations.saturating_sub(old_size as u64);
-                }
-
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    if pending_allocations > 0 {
-                        resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                        pending_allocations = 0;
-                    }
-                }
-
-                // Optimized key insertion - avoid double lookup
-                let is_new_key = seen_keys.insert(key.clone());
-                if is_new_key {
-                    pending_allocations += 1;
-                }
-
-                let state_access = StateAccess::new(storage.clone(), key);
-                match f(&item, state_access).await {
-                    Ok(should_emit) => {
-                        if should_emit {
-                            yield Ok(item);
-                        }
-                    }
-                    Err(e) => yield Err(e),
-                }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
-            }
-        })
+        StatefulFilter::new(self, f, storage, Arc::new(key_extractor))
     }
 
     /// Apply a stateful fold operation
@@ -240,75 +520,56 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         initial: R,
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<R, StateError>> + Send>>
+        f: F
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
                 R,
                 T,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
             + 'static,
         R: Send + Sync + Clone + 'static,
-        Self: Sized,
+        Self: Sized + Unpin,
     {
-        let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
-
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut accumulators: HashMap<String, R> = HashMap::new();
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-
-                // Periodic cleanup to prevent memory leaks
-                item_count += 1;
-                if item_count % CLEANUP_INTERVAL == 0 {
-                    let before_len = accumulators.len();
-                    evict_oldest_entries(&mut accumulators, MAX_HASHMAP_KEYS);
-                    let after_len = accumulators.len();
-                    if before_len > after_len {
-                        pending_deallocations += (before_len - after_len) as u64;
-                        pending_buffer_overflows += 1;
+        use crate::stream::constructors::unfold;
+        use crate::stream::core::StreamExt as CoreStreamExt;
+        use std::sync::Arc;
+        struct FoldState<S, R, F, T> {
+            stream: S,
+            aggregates: HashMap<String, R>,
+            storage: Arc<dyn StateStorage + Send + Sync>,
+            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+            f: F,
+            initial: R,
+        }
+        let state = FoldState {
+            stream: self,
+            aggregates: HashMap::new(),
+            storage: config.create_storage_arc(),
+            key_extractor: Arc::new(key_extractor),
+            f,
+            initial,
+        };
+        unfold(state, |mut state| async move {
+            let next = CoreStreamExt::next(&mut state.stream).await;
+            match next {
+                Some(item) => {
+                    let key = state.key_extractor.extract_key(&item);
+                    let current_acc = state.aggregates.entry(key.clone()).or_insert_with(|| state.initial.clone());
+                    let state_access = StateAccess::new(state.storage.clone(), key.clone());
+                    match (state.f)(current_acc.clone(), item, state_access).await {
+                        Ok(new_acc) => {
+                            *current_acc = new_acc.clone();
+                            Some((Ok(new_acc), state))
+                        }
+                        Err(e) => Some((Err(e), state)),
                     }
                 }
-
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
-                }
-
-                let is_new_key = !accumulators.contains_key(&key);
-                let acc = accumulators.entry(key.clone()).or_insert_with(|| initial.clone());
-                if is_new_key {
-                    pending_allocations += 1;
-                }
-                let state_access = StateAccess::new(storage.clone(), key);
-
-                match f(acc.clone(), item, state_access).await {
-                    Ok(new_acc) => {
-                        *acc = new_acc.clone();
-                        yield Ok(new_acc);
-                    }
-                    Err(e) => yield Err(e),
-                }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
+                None => None,
             }
         })
     }
@@ -318,76 +579,61 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        initial: R,
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<R, StateError>> + Send>>
+        initial: Option<R>,
+        f: F
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
                 R,
                 T,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
             + 'static,
         R: Send + Sync + Clone + 'static,
-        Self: Sized,
+        Self: Sized + Unpin,
     {
-        let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
-
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut accumulators: HashMap<String, R> = HashMap::new();
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-
-                // Periodic cleanup to prevent memory leaks
-                item_count += 1;
-                if item_count % CLEANUP_INTERVAL == 0 {
-                    let before_len = accumulators.len();
-                    evict_oldest_entries(&mut accumulators, MAX_HASHMAP_KEYS);
-                    let after_len = accumulators.len();
-                    if before_len > after_len {
-                        pending_deallocations += (before_len - after_len) as u64;
-                        pending_buffer_overflows += 1;
+        use crate::stream::constructors::unfold;
+        use crate::stream::core::StreamExt as CoreStreamExt;
+        use std::sync::Arc;
+        struct ReduceState<S, R, F, T> {
+            stream: S,
+            accs: HashMap<String, R>,
+            storage: Arc<dyn StateStorage + Send + Sync>,
+            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+            f: F,
+        }
+        let state = ReduceState {
+            stream: self,
+            accs: HashMap::new(),
+            storage: config.create_storage_arc(),
+            key_extractor: Arc::new(key_extractor),
+            f,
+        };
+        let initial_clone = initial.clone();
+        unfold(state, move |mut state| {
+            let initial = initial_clone.clone();
+            async move {
+                let next = CoreStreamExt::next(&mut state.stream).await;
+                match next {
+                    Some(item) => {
+                        let key = state.key_extractor.extract_key(&item);
+                        let acc = state.accs.entry(key.clone()).or_insert_with(|| {
+                            initial.clone().expect("No initial accumulator provided and cannot infer from first item")
+                        });
+                        let state_access = StateAccess::new(state.storage.clone(), key.clone());
+                        match (state.f)(acc.clone(), item, state_access).await {
+                            Ok(new_acc) => {
+                                *acc = new_acc.clone();
+                                Some((Ok(new_acc), state))
+                            }
+                            Err(e) => Some((Err(e), state)),
+                        }
                     }
+                    None => None,
                 }
-
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
-                }
-
-                let is_new_key = !accumulators.contains_key(&key);
-                let acc = accumulators.entry(key.clone()).or_insert_with(|| initial.clone());
-                if is_new_key {
-                    pending_allocations += 1;
-                }
-                let state_access = StateAccess::new(storage.clone(), key);
-
-                match f(acc.clone(), item, state_access).await {
-                    Ok(new_acc) => {
-                        *acc = new_acc.clone();
-                        yield Ok(new_acc);
-                    }
-                    Err(e) => yield Err(e),
-                }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
             }
         })
     }
@@ -397,22 +643,36 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<R, StateError>> + Send>>
+        group_timeout: Option<Duration>,
+        max_group_size: Option<usize>,
+        f: F
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
                 String,
                 Vec<T>,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
-            + 'static,
+            + 'static
+            + Unpin,
         R: Send + Sync + 'static,
-        Self: Sized,
+        Self: Sized + Unpin,
     {
-        self.stateful_group_by_advanced_rs2(config, key_extractor, None, None, false, f)
+        use crate::stream::group_by::StatefulGroupByStream;
+        let storage = config.create_storage_arc();
+        let state_access = StateAccess::new(storage.clone(), String::new());
+        
+        StatefulGroupByStream::new(
+            self,
+            f,
+            key_extractor,
+            max_group_size.unwrap_or(100),
+            group_timeout.unwrap_or(Duration::from_secs(60)),
+            state_access,
+        )
     }
 
     /// Apply a stateful group by operation with advanced configuration
@@ -420,167 +680,36 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        max_group_size: Option<usize>, // Emit when group reaches this size
-        group_timeout: Option<std::time::Duration>, // Emit group after this timeout
-        emit_on_key_change: bool,      // Emit previous group when key changes
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<R, StateError>> + Send>>
+        group_timeout: Option<Duration>,
+        max_group_size: Option<usize>,
+        f: F
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
         F: FnMut(
                 String,
                 Vec<T>,
                 StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<R, StateError>> + Send>,
             > + Send
             + Sync
-            + 'static,
+            + 'static
+            + Unpin,
         R: Send + Sync + 'static,
-        Self: Sized,
+        Self: Sized + Unpin,
     {
+        use crate::stream::group_by::StatefulGroupByStream;
         let storage = config.create_storage_arc();
-        let timeout_ms = group_timeout.map(|d| d.as_millis() as u64);
-        let max_group_size = max_group_size.unwrap_or(MAX_GROUP_SIZE);
-        let resource_manager = get_global_resource_manager();
-
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut groups: HashMap<String, Vec<T>> = HashMap::new();
-            let mut group_timestamps: HashMap<String, u64> = HashMap::new();
-            let mut last_key: Option<String> = None;
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-                let now = unix_timestamp_millis();
-
-                // Periodic cleanup to prevent memory leaks
-                item_count += 1;
-                if item_count % CLEANUP_INTERVAL == 0 {
-                    let before_groups = groups.len();
-                    let before_timestamps = group_timestamps.len();
-                    evict_oldest_entries(&mut groups, MAX_HASHMAP_KEYS);
-                    evict_oldest_entries(&mut group_timestamps, MAX_HASHMAP_KEYS);
-                    let after_groups = groups.len();
-                    let after_timestamps = group_timestamps.len();
-                    if before_groups > after_groups || before_timestamps > after_timestamps {
-                        pending_deallocations += (before_groups + before_timestamps - after_groups - after_timestamps) as u64;
-                        pending_buffer_overflows += 1;
-                    }
-                }
-
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
-                }
-
-                // Check if we need to emit the previous group due to key change
-                if emit_on_key_change {
-                    if let Some(ref last_key_val) = last_key {
-                        if last_key_val != &key {
-                            // Key changed, emit the previous group
-                            if let Some(group_items) = groups.remove(last_key_val) {
-                                pending_deallocations += group_items.len() as u64;
-                                let state_access = StateAccess::new(storage.clone(), last_key_val.clone());
-                                match f(last_key_val.clone(), group_items, state_access).await {
-                                    Ok(result) => yield Ok(result),
-                                    Err(e) => yield Err(e),
-                                }
-                            }
-                            group_timestamps.remove(last_key_val);
-                        }
-                    }
-                }
-
-                // Optimized timeout check - only check current key instead of all groups
-                if let (Some(timeout), Some(&group_start)) = (timeout_ms, group_timestamps.get(&key)) {
-                    if now - group_start > timeout {
-                        if let Some(group_items) = groups.remove(&key) {
-                            pending_deallocations += group_items.len() as u64;
-                            let state_access = StateAccess::new(storage.clone(), key.clone());
-                            match f(key.clone(), group_items, state_access).await {
-                                Ok(result) => yield Ok(result),
-                                Err(e) => yield Err(e),
-                            }
-                        }
-                        group_timestamps.remove(&key);
-                    }
-                }
-
-                // Add item to current group
-                let is_new_group = !groups.contains_key(&key);
-                let group = groups.entry(key.clone()).or_insert_with(Vec::new);
-                if is_new_group {
-                    pending_allocations += 1;
-                }
-                group_timestamps.entry(key.clone()).or_insert(now);
-                group.push(item);
-                pending_allocations += 1;
-
-                // Check if we should emit this group due to size limit
-                if group.len() >= max_group_size {
-                    if let Some(group_items) = groups.remove(&key) {
-                        pending_deallocations += group_items.len() as u64;
-                        let state_access = StateAccess::new(storage.clone(), key.clone());
-                        match f(key.clone(), group_items, state_access).await {
-                            Ok(result) => yield Ok(result),
-                            Err(e) => yield Err(e),
-                        }
-                    }
-                    group_timestamps.remove(&key);
-                }
-
-                last_key = Some(key);
-            }
-
-            // Final cleanup - check for any remaining groups that have timed out
-            let now = unix_timestamp_millis();
-            let mut expired_keys = Vec::new();
-
-            if let Some(timeout) = timeout_ms {
-                for (key, &group_start) in &group_timestamps {
-                    if now - group_start > timeout {
-                        expired_keys.push(key.clone());
-                    }
-                }
-            }
-
-            // Emit expired groups
-            for key in expired_keys {
-                let key_clone = key.clone();
-                if let Some(group_items) = groups.remove(&key_clone) {
-                    pending_deallocations += group_items.len() as u64;
-                    let state_access = StateAccess::new(storage.clone(), key_clone.clone());
-                    match f(key_clone.clone(), group_items, state_access).await {
-                        Ok(result) => yield Ok(result),
-                        Err(e) => yield Err(e),
-                    }
-                }
-                group_timestamps.remove(&key_clone);
-            }
-
-            // Emit any remaining groups at stream end
-            for (key, group_items) in groups {
-                pending_deallocations += group_items.len() as u64;
-                let state_access = StateAccess::new(storage.clone(), key.clone());
-                match f(key, group_items, state_access).await {
-                    Ok(result) => yield Ok(result),
-                    Err(e) => yield Err(e),
-                }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-            }
-        })
+        let state_access = StateAccess::new(storage.clone(), String::new());
+        
+        StatefulGroupByStream::new(
+            self,
+            f,
+            key_extractor,
+            max_group_size.unwrap_or(100),
+            group_timeout.unwrap_or(Duration::from_secs(60)),
+            state_access,
+        )
     }
 
     /// Apply a stateful deduplication operation
@@ -588,78 +717,28 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        ttl: std::time::Duration,
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<T, StateError>> + Send>>
+        ttl: Duration,
+        f: F
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
         F: FnMut(T) -> T + Send + Sync + 'static,
-        Self: Sized,
+        Self: Sized + Unpin,
     {
+        use crate::stream::deduplicate::StatefulDeduplicateStream;
+        use crate::stream::core::StreamExt;
+        use std::sync::Arc;
+        
         let storage = config.create_storage_arc();
-        let ttl_ms = ttl.as_millis() as u64;
-        let resource_manager = get_global_resource_manager();
-
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-                let state_access = StateAccess::new(storage.clone(), key.clone());
-
-                let now = unix_timestamp_millis();
-                let state_bytes = match state_access.get().await {
-                    Some(bytes) => bytes,
-                    None => Vec::new(),
-                };
-
-                let last_seen: u64 = if state_bytes.is_empty() {
-                    0
-                } else {
-                    match serde_json::from_slice(&state_bytes) {
-                        Ok(timestamp) => timestamp,
-                        Err(_) => 0,
-                    }
-                };
-
-                if now - last_seen > ttl_ms {
-                    // Track memory allocation for new state entry
-                    pending_allocations += 1;
-                    
-                    // Batch resource tracking
-                    item_count += 1;
-                    if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                        if pending_allocations > 0 {
-                            resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                            pending_allocations = 0;
-                        }
-                    }
-                    
-                    // Handle serialization error gracefully
-                    match serde_json::to_vec(&now) {
-                        Ok(timestamp_bytes) => {
-                            if let Err(e) = state_access.set(&timestamp_bytes).await {
-                                yield Err(StateError::Storage(format!("Failed to set state for deduplication: {}", e)));
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            yield Err(StateError::Serialization(e));
-                            continue;
-                        }
-                    }
-
-                    yield Ok(f(item));
-                }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
-            }
-        })
+        let key_extractor = Arc::new(key_extractor);
+        
+        StatefulDeduplicateStream::new(
+            self,
+            f,
+            key_extractor,
+            ttl,
+            storage,
+        )
+        .map(|item| Ok(item))
     }
 
     /// Apply a stateful throttle operation
@@ -668,132 +747,29 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         rate_limit: u32,
-        window_duration: std::time::Duration,
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<T, StateError>> + Send>>
+        window_duration: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
         F: FnMut(T) -> T + Send + Sync + 'static,
-        Self: Sized,
+        Self: Sized + Unpin,
     {
+        use crate::stream::stateful_throttle::StatefulThrottleStream;
+        use crate::stream::core::StreamExt;
+        use std::sync::Arc;
+        
         let storage = config.create_storage_arc();
-        let window_ms = window_duration.as_millis() as u64;
-        let resource_manager = get_global_resource_manager();
-
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-                let state_access = StateAccess::new(storage.clone(), key.clone());
-
-                let now = unix_timestamp_millis();
-
-                // Get current throttle state from storage
-                let state_bytes = match state_access.get().await {
-                    Some(bytes) => bytes,
-                    None => Vec::new(),
-                };
-
-                let mut throttle_state: ThrottleState = if state_bytes.is_empty() {
-                    // Track memory allocation for new throttle state
-                    pending_allocations += 1;
-                    ThrottleState { count: 0, window_start: now }
-                } else {
-                    match serde_json::from_slice(&state_bytes) {
-                        Ok(state) => state,
-                        Err(_) => ThrottleState { count: 0, window_start: now },
-                    }
-                };
-
-                // If window expired, reset
-                if now - throttle_state.window_start > window_ms {
-                    throttle_state.count = 0;
-                    throttle_state.window_start = now;
-                }
-
-                if throttle_state.count < rate_limit {
-                    throttle_state.count += 1;
-
-                    // Update state in storage
-                    match serde_json::to_vec(&throttle_state) {
-                        Ok(state_bytes) => {
-                            if let Err(e) = state_access.set(&state_bytes).await {
-                                yield Err(StateError::Storage(format!("Failed to set throttle state: {}", e)));
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            yield Err(StateError::Serialization(e));
-                            continue;
-                        }
-                    }
-
-                    yield Ok(f(item));
-                } else {
-                    // Track buffer overflow when rate limiting
-                    pending_buffer_overflows += 1;
-                    
-                    // Optimized sleep - calculate remaining time more efficiently
-                    let elapsed_ms = now.saturating_sub(throttle_state.window_start);
-                    let remaining = if elapsed_ms >= window_ms {
-                        Duration::from_millis(0)
-                    } else {
-                        Duration::from_millis(window_ms - elapsed_ms)
-                    };
-
-                    // Only sleep if necessary and for a reasonable duration
-                    if remaining > Duration::from_millis(0) && remaining < Duration::from_secs(1) {
-                        sleep(remaining).await;
-                    }
-
-                    // After sleep, reset window and count
-                    let now2 = unix_timestamp_millis();
-                    throttle_state.count = 1;
-                    throttle_state.window_start = now2;
-
-                    // Update state in storage
-                    match serde_json::to_vec(&throttle_state) {
-                        Ok(state_bytes) => {
-                            if let Err(e) = state_access.set(&state_bytes).await {
-                                yield Err(StateError::Storage(format!("Failed to set throttle state: {}", e)));
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            yield Err(StateError::Serialization(e));
-                            continue;
-                        }
-                    }
-
-                    yield Ok(f(item));
-                }
-
-                // Batch resource tracking - less frequent for throttle
-                item_count += 1;
-                if item_count % (RESOURCE_TRACKING_INTERVAL * 2) == 0 {
-                    if pending_allocations > 0 {
-                        resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                        pending_allocations = 0;
-                    }
-                    for _ in 0..pending_buffer_overflows {
-                        resource_manager.track_buffer_overflow().await.ok();
-                    }
-                    pending_buffer_overflows = 0;
-                }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
-            }
-            for _ in 0..pending_buffer_overflows {
-                resource_manager.track_buffer_overflow().await.ok();
-            }
-        })
+        let key_extractor = Arc::new(key_extractor);
+        
+        StatefulThrottleStream::new(
+            self,
+            f,
+            storage,
+            key_extractor,
+            rate_limit,
+            window_duration,
+        )
+        .map(|item| Ok(item))
     }
 
     /// Apply a stateful session operation
@@ -801,77 +777,54 @@ where
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
-        session_timeout: std::time::Duration,
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<T, StateError>> + Send>>
+        session_timeout: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
     where
         F: FnMut(T, bool) -> T + Send + Sync + 'static,
-        Self: Sized,
+        Self: Sized + Unpin,
     {
-        let storage = config.create_storage_arc();
-        let timeout_ms = session_timeout.as_millis() as u64;
-        let resource_manager = get_global_resource_manager();
-
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-                let state_access = StateAccess::new(storage.clone(), key.clone());
-
-                let now = unix_timestamp_millis();
-                let state_bytes = match state_access.get().await {
-                    Some(bytes) => bytes,
-                    None => Vec::new(),
-                };
-
-                let mut state: SessionState = if state_bytes.is_empty() {
-                    // Track memory allocation for new session state
-                    pending_allocations += 1;
-                    SessionState { last_activity: now, is_new_session: true }
-                } else {
-                    match serde_json::from_slice(&state_bytes) {
-                        Ok(session_state) => session_state,
-                        Err(_) => SessionState { last_activity: now, is_new_session: true },
-                    }
-                };
-
-                let is_new_session = now - state.last_activity > timeout_ms;
-                state.last_activity = now;
-                state.is_new_session = is_new_session;
-
-                // Handle serialization and state setting errors gracefully
-                match serde_json::to_vec(&state) {
-                    Ok(state_bytes) => {
-                        if let Err(e) = state_access.set(&state_bytes).await {
-                            yield Err(StateError::Storage(format!("Failed to set session state: {}", e)));
-                            continue;
-                        }
-                    }
-                    Err(e) => {
-                        yield Err(StateError::Serialization(e));
-                        continue;
-                    }
+        use crate::stream::constructors::unfold;
+        use crate::stream::core::StreamExt as CoreStreamExt;
+        use std::sync::Arc;
+        struct SessionStateStruct<S, F, T> {
+            stream: S,
+            session_states: HashMap<String, SessionState>,
+            storage: Arc<dyn StateStorage + Send + Sync>,
+            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+            f: F,
+            session_timeout: Duration,
+        }
+        let state = SessionStateStruct {
+            stream: self,
+            session_states: HashMap::new(),
+            storage: config.create_storage_arc(),
+            key_extractor: Arc::new(key_extractor),
+            f,
+            session_timeout,
+        };
+        unfold(state, |mut state| async move {
+            let next = CoreStreamExt::next(&mut state.stream).await;
+            match next {
+                Some(item) => {
+                    let key = state.key_extractor.extract_key(&item);
+                    let now = unix_timestamp_millis();
+                    let session_state = state.session_states.entry(key.clone()).or_insert(SessionState {
+                        last_activity: now,
+                        is_new_session: true,
+                    });
+                    let is_new_session = if now - session_state.last_activity > state.session_timeout.as_millis() as u64 {
+                        session_state.is_new_session = true;
+                        true
+                    } else {
+                        session_state.is_new_session = false;
+                        false
+                    };
+                    session_state.last_activity = now;
+                    let transformed = (state.f)(item, is_new_session);
+                    Some((Ok(transformed), state))
                 }
-
-                // Batch resource tracking
-                item_count += 1;
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    if pending_allocations > 0 {
-                        resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                        pending_allocations = 0;
-                    }
-                }
-
-                yield Ok(f(item, is_new_session));
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
+                None => None,
             }
         })
     }
@@ -882,305 +835,112 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         pattern_size: usize,
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<Option<String>, StateError>> + Send>>
+        f: F,
+    ) -> impl Stream<Item = Result<Option<String>, StateError>> + Send + 'static
     where
-        F: FnMut(
-                Vec<T>,
-                StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<Option<String>, StateError>> + Send>,
-            > + Send
-            + Sync
-            + 'static,
-        Self: Sized,
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<Option<String>, StateError>> + Send>> + Send + Sync + 'static,
+        Self: Sized + Unpin,
     {
-        let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
-
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut patterns: HashMap<String, Vec<T>> = HashMap::new();
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-
-                // Periodic cleanup to prevent memory leaks
-                item_count += 1;
-                if item_count % CLEANUP_INTERVAL == 0 {
-                    let before_len = patterns.len();
-                    evict_oldest_entries(&mut patterns, MAX_HASHMAP_KEYS);
-                    let after_len = patterns.len();
-                    if before_len > after_len {
-                        pending_deallocations += (before_len - after_len) as u64;
-                        pending_buffer_overflows += 1;
-                    }
-                }
-
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
-                }
-
-                let is_new_pattern = !patterns.contains_key(&key);
-                let pattern = patterns.entry(key.clone()).or_insert_with(Vec::new);
-                if is_new_pattern {
-                    pending_allocations += 1;
-                }
-                pattern.push(item);
-                pending_allocations += 1;
-
-                // Limit pattern buffer size to prevent memory overflow
-                if pattern.len() > MAX_PATTERN_SIZE {
-                    let drained = pattern.len() - MAX_PATTERN_SIZE;
-                    pattern.drain(0..drained);
-                    pending_deallocations += drained as u64;
-                    pending_buffer_overflows += 1;
-                }
-
-                if pattern.len() >= pattern_size {
-                    let pattern_items = pattern.drain(..pattern_size).collect::<Vec<_>>();
-                    pending_deallocations += pattern_size as u64;
-                    let state_access = StateAccess::new(storage.clone(), key.clone());
-                    match f(pattern_items, state_access).await {
-                        Ok(result) => {
-                            if let Some(pattern_str) = result {
-                                yield Ok(Some(pattern_str));
-                            }
+        use crate::stream::constructors::unfold;
+        use crate::stream::core::StreamExt as CoreStreamExt;
+        use std::sync::Arc;
+        struct PatternStateStruct<S, F, T> {
+            stream: S,
+            pattern_buffers: HashMap<String, Vec<T>>,
+            storage: Arc<dyn StateStorage + Send + Sync>,
+            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+            f: F,
+            pattern_size: usize,
+        }
+        let state = PatternStateStruct {
+            stream: self,
+            pattern_buffers: HashMap::new(),
+            storage: config.create_storage_arc(),
+            key_extractor: Arc::new(key_extractor),
+            f,
+            pattern_size,
+        };
+        unfold(state, |mut state| async move {
+            let next = CoreStreamExt::next(&mut state.stream).await;
+            match next {
+                Some(item) => {
+                    let key = state.key_extractor.extract_key(&item);
+                    let buffer = state.pattern_buffers.entry(key.clone()).or_insert_with(Vec::new);
+                    buffer.push(item);
+                    if buffer.len() >= state.pattern_size {
+                        let items: Vec<T> = buffer.drain(..state.pattern_size).collect();
+                        let state_access = StateAccess::new(state.storage.clone(), key.clone());
+                        match (state.f)(items, state_access).await {
+                            Ok(pattern) => Some((Ok(pattern), state)),
+                            Err(e) => Some((Err(e), state)),
                         }
-                        Err(e) => yield Err(e),
+                    } else {
+                        Some((Ok(None), state))
                     }
                 }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
+                None => None,
             }
         })
     }
 
-    /// Join two streams based on keys with time-based windows (true streaming join)
+    /// Join two streams based on keys with time-based windows
     fn stateful_join_rs2<U, F, R>(
         self,
-        other: Pin<Box<dyn Stream<Item = U> + Send>>,
+        other: impl Stream<Item = U> + Send + Unpin + 'static,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         other_key_extractor: impl KeyExtractor<U> + Send + Sync + 'static,
-        window_duration: std::time::Duration,
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<R, StateError>> + Send>>
+        window_duration: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
-        F: FnMut(
-                T,
-                U,
-                StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
-            > + Send
-            + Sync
-            + 'static,
+        F: FnMut(T, U, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
         U: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + 'static,
         R: Send + Sync + 'static,
-        Self: Sized,
+        Self: Sized + Unpin,
     {
+        use crate::stream::join::StatefulJoinStream;
+        use std::sync::Arc;
+        
+        let key_extractor = Arc::new(key_extractor);
+        let other_key_extractor = Arc::new(other_key_extractor);
+        
         let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
-        Box::pin(stream! {
-            let left_stream = self;
-            let right_stream = other;
-            futures::pin_mut!(left_stream);
-            futures::pin_mut!(right_stream);
-            let mut left_buffer: HashMap<String, Vec<LeftItemWithTime<T>>> = HashMap::new();
-            let mut right_buffer: HashMap<String, Vec<RightItemWithTime<U>>> = HashMap::new();
-            let window_ms = window_duration.as_millis() as u64;
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
-
-            loop {
-                tokio::select! {
-                    left_item = left_stream.next() => {
-                        if let Some(item) = left_item {
-                            let key = key_extractor.extract_key(&item);
-                            let now = unix_timestamp_millis();
-
-                            // Periodic cleanup to prevent memory leaks
-                            item_count += 1;
-                            if item_count % CLEANUP_INTERVAL == 0 {
-                                let before_left = left_buffer.len();
-                                let before_right = right_buffer.len();
-                                evict_oldest_entries(&mut left_buffer, MAX_HASHMAP_KEYS);
-                                evict_oldest_entries(&mut right_buffer, MAX_HASHMAP_KEYS);
-                                let after_left = left_buffer.len();
-                                let after_right = right_buffer.len();
-                                if before_left > after_left || before_right > after_right {
-                                    pending_deallocations += (before_left + before_right - after_left - after_right) as u64;
-                                    pending_buffer_overflows += 1;
-                                }
-                            }
-
-                            // Batch resource tracking
-                            if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                                pending_allocations = 0;
-                                pending_deallocations = 0;
-                                pending_buffer_overflows = 0;
-                            }
-
-                            // Clean up old left items
-                            let before = left_buffer.entry(key.clone()).or_default().len();
-                            left_buffer.entry(key.clone()).or_default().retain(|x| now - x.timestamp <= window_ms);
-                            let after = left_buffer.entry(key.clone()).or_default().len();
-                            if before > after {
-                                pending_deallocations += (before - after) as u64;
-                            }
-
-                            // Add new left item
-                            let left_entry = LeftItemWithTime { item: item.clone(), timestamp: now, key: key.clone() };
-                            let is_new_key = !left_buffer.contains_key(&key);
-                            let left_buf = left_buffer.entry(key.clone()).or_default();
-                            if is_new_key {
-                                pending_allocations += 1;
-                            }
-                            left_buf.push(left_entry.clone());
-                            pending_allocations += 1;
-
-                            // Evict oldest if buffer is full
-                            let max_size = config.max_size.unwrap_or(DEFAULT_BUFFER_SIZE);
-                            if left_buf.len() > max_size {
-                                let removed = left_buf.len() - max_size;
-                                left_buf.drain(0..removed);
-                                pending_deallocations += removed as u64;
-                                pending_buffer_overflows += 1;
-                            }
-
-                            // Join with right items in window
-                            if let Some(rights) = right_buffer.get(&key) {
-                                for right in rights.iter().filter(|r| now - r.timestamp <= window_ms) {
-                                    let state_access = StateAccess::new(storage.clone(), key.clone());
-                                    match f(item.clone(), right.item.clone(), state_access).await {
-                                        Ok(result) => yield Ok(result),
-                                        Err(e) => yield Err(e),
-                                    }
-                                }
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    right_item = right_stream.next() => {
-                        if let Some(item) = right_item {
-                            let key = other_key_extractor.extract_key(&item);
-                            let now = unix_timestamp_millis();
-                            // Periodic cleanup to prevent memory leaks
-                            item_count += 1;
-                            if item_count % CLEANUP_INTERVAL == 0 {
-                                let before_left = left_buffer.len();
-                                let before_right = right_buffer.len();
-                                evict_oldest_entries(&mut left_buffer, MAX_HASHMAP_KEYS);
-                                evict_oldest_entries(&mut right_buffer, MAX_HASHMAP_KEYS);
-                                let after_left = left_buffer.len();
-                                let after_right = right_buffer.len();
-                                if before_left > after_left || before_right > after_right {
-                                    pending_deallocations += (before_left + before_right - after_left - after_right) as u64;
-                                    pending_buffer_overflows += 1;
-                                }
-                            }
-
-                            // Batch resource tracking
-                            if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                                pending_allocations = 0;
-                                pending_deallocations = 0;
-                                pending_buffer_overflows = 0;
-                            }
-
-                            // Clean up old right items
-                            let before = right_buffer.entry(key.clone()).or_default().len();
-                            right_buffer.entry(key.clone()).or_default().retain(|x| now - x.timestamp <= window_ms);
-                            let after = right_buffer.entry(key.clone()).or_default().len();
-                            if before > after {
-                                pending_deallocations += (before - after) as u64;
-                            }
-                            // Clean up old left items
-                            let before = left_buffer.entry(key.clone()).or_default().len();
-                            left_buffer.entry(key.clone()).or_default().retain(|x| now - x.timestamp <= window_ms);
-                            let after = left_buffer.entry(key.clone()).or_default().len();
-                            if before > after {
-                                pending_deallocations += (before - after) as u64;
-                            }
-                            // Add new right item
-                            let right_entry = RightItemWithTime { item: item.clone(), timestamp: now, key: key.clone() };
-                            let is_new_key = !right_buffer.contains_key(&key);
-                            let right_buf = right_buffer.entry(key.clone()).or_default();
-                            if is_new_key {
-                                pending_allocations += 1;
-                            }
-                            right_buf.push(right_entry.clone());
-                            pending_allocations += 1;
-                            // Evict oldest if buffer is full
-                            let max_size = config.max_size.unwrap_or(DEFAULT_BUFFER_SIZE);
-                            if right_buf.len() > max_size {
-                                let removed = right_buf.len() - max_size;
-                                right_buf.drain(0..removed);
-                                pending_deallocations += removed as u64;
-                                pending_buffer_overflows += 1;
-                            }
-                            // Join with left items in window
-                            if let Some(lefts) = left_buffer.get(&key) {
-                                for left in lefts.iter().filter(|l| now - l.timestamp <= window_ms) {
-                                    let state_access = StateAccess::new(storage.clone(), key.clone());
-                                    match f(left.item.clone(), item.clone(), state_access).await {
-                                        Ok(result) => yield Ok(result),
-                                        Err(e) => yield Err(e),
-                                    }
-                                }
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-            }
-        })
+        
+        StatefulJoinStream::new(
+            self,
+            other,
+            f,
+            storage,
+            key_extractor,
+            other_key_extractor,
+            window_duration,
+        )
     }
 
-    /// Apply a stateful window operation (tumbling window, no partial emission)
+    /// Apply a stateful window operation
     fn stateful_window_rs2<F, R>(
         self,
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         window_size: usize,
         f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<R, StateError>> + Send>>
+        resource_config: ResourceConfig,
+    ) -> StatefulWindow<Self, F, T, R>
     where
-        F: FnMut(
-                Vec<T>,
-                StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
-            > + Send
-            + Sync
-            + 'static,
-        R: Send + Sync + 'static,
-        Self: Sized,
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Unpin + 'static,
+        Self: Sized + Unpin,
     {
-        self.stateful_window_rs2_advanced(config, key_extractor, window_size, None, false, f)
+        let resource_manager = Arc::new(ResourceManager::with_config(resource_config));
+        StatefulWindow::new(
+            self,
+            config,
+            key_extractor,
+            window_size,
+            f,
+            resource_manager,
+        )
     }
 
     /// Apply a stateful window operation with sliding window support
@@ -1189,118 +949,421 @@ where
         config: StateConfig,
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         window_size: usize,
-        slide_size: Option<usize>, // None for tumbling, Some(n) for sliding
-        emit_partial: bool,        // Whether to emit partial windows at stream end
-        mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<R, StateError>> + Send>>
+        slide_size: Option<usize>,
+        emit_partial: bool,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
     where
-        F: FnMut(
-                Vec<T>,
-                StateAccess,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = Result<R, StateError>> + Send>,
-            > + Send
-            + Sync
-            + 'static,
-        R: Send + Sync + 'static,
-        Self: Sized,
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static + Unpin,
+        Self: Sized + Unpin,
     {
+        use crate::stream::window::StatefulWindowStream;
+        use std::sync::Arc;
+        
         let storage = config.create_storage_arc();
-        let slide_size = slide_size.unwrap_or(window_size); // Default to tumbling window
-        let resource_manager = get_global_resource_manager();
+        let key_extractor = Arc::new(key_extractor);
+        let slide_size = slide_size.unwrap_or(1);
+        
+        StatefulWindowStream::new(
+            self,
+            storage,
+            key_extractor,
+            f,
+            window_size,
+            slide_size,
+            emit_partial,
+        )
+    }
 
-        Box::pin(stream! {
-            let stream = self;
-            futures::pin_mut!(stream);
-            let mut windows: HashMap<String, Vec<T>> = HashMap::new();
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-
-            while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
-                let is_new_window = !windows.contains_key(&key);
-                let window = windows.entry(key.clone()).or_insert_with(Vec::new);
-                if is_new_window {
-                    pending_allocations += 1;
-                }
-
-                window.push(item);
-                pending_allocations += 1;
-
-                // Batch resource tracking
-                item_count += 1;
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    if pending_allocations > 0 {
-                        resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                        pending_allocations = 0;
-                    }
-                    if pending_deallocations > 0 {
-                        resource_manager.track_memory_deallocation(pending_deallocations).await;
-                        pending_deallocations = 0;
-                    }
-                }
-
-                // Emit window when it reaches the required size
-                if window.len() >= window_size {
-                    let window_items = if slide_size >= window_size {
-                        // Tumbling window - take all items and clear the window
-                        let items = window.drain(..).collect::<Vec<_>>();
-                        pending_deallocations += items.len() as u64;
-                        items
-                    } else {
-                        // Sliding window - take window_size items, keep the sliding portion
-                        let items = window.drain(..window_size).collect::<Vec<_>>();
-                        pending_deallocations += window_size as u64;
-
-                        // Calculate how many items to keep for the next window
-                        let keep_count = window_size.saturating_sub(slide_size);
-                        if keep_count > 0 && items.len() >= slide_size {
-                            // Put back the items that should remain for the sliding window
-                            let to_keep = items[slide_size..].to_vec();
-                            let to_keep_len = to_keep.len();
-                            window.splice(0..0, to_keep);
-                            pending_allocations += to_keep_len as u64;
+    /// Apply a stateful aggregate operation
+    fn stateful_aggregate_rs2<F, R>(
+        self,
+        config: StateConfig,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        initial: R,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(R, T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Clone + 'static,
+        Self: Sized + Unpin,
+    {
+        use crate::stream::constructors::unfold;
+        use crate::stream::core::StreamExt as CoreStreamExt;
+        use std::sync::Arc;
+        struct AggStateStruct<S, F, T, R> {
+            stream: S,
+            aggregates: HashMap<String, R>,
+            storage: Arc<dyn StateStorage + Send + Sync>,
+            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+            f: F,
+            initial: R,
+        }
+        let state = AggStateStruct {
+            stream: self,
+            aggregates: HashMap::new(),
+            storage: config.create_storage_arc(),
+            key_extractor: Arc::new(key_extractor),
+            f,
+            initial,
+        };
+        unfold(state, |mut state| async move {
+            let next = CoreStreamExt::next(&mut state.stream).await;
+            match next {
+                Some(item) => {
+                    let key = state.key_extractor.extract_key(&item);
+                    let current_agg = state.aggregates.entry(key.clone()).or_insert_with(|| state.initial.clone());
+                    let state_access = StateAccess::new(state.storage.clone(), key.clone());
+                    match (state.f)(current_agg.clone(), item, state_access).await {
+                        Ok(new_agg) => {
+                            *current_agg = new_agg.clone();
+                            Some((Ok(new_agg), state))
                         }
-
-                        items
-                    };
-
-                    let state_access = StateAccess::new(storage.clone(), key.clone());
-                    match f(window_items, state_access).await {
-                        Ok(result) => yield Ok(result),
-                        Err(e) => yield Err(e),
+                        Err(e) => Some((Err(e), state)),
                     }
                 }
-            }
-
-            // Emit remaining partial windows if requested
-            if emit_partial {
-                for (key, window) in windows {
-                    if !window.is_empty() {
-                        pending_deallocations += window.len() as u64;
-                        let state_access = StateAccess::new(storage.clone(), key.clone());
-                        match f(window, state_access).await {
-                            Ok(result) => yield Ok(result),
-                            Err(e) => yield Err(e),
-                        }
-                    }
-                }
-            }
-
-            // Final resource tracking
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
-            }
-            if pending_deallocations > 0 {
-                resource_manager.track_memory_deallocation(pending_deallocations).await;
+                None => None,
             }
         })
     }
-}
 
-/// State access for managing persistent state
-#[derive(Clone)]
+    /// Apply a stateful time window operation
+    fn stateful_time_window_rs2<F, R>(
+        self,
+        config: StateConfig,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        window_duration: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        use crate::stream::constructors::unfold;
+        use crate::stream::core::StreamExt as CoreStreamExt;
+        use std::sync::Arc;
+        struct TimeWindowStateStruct<S, F, T> {
+            stream: S,
+            time_windows: HashMap<String, (Vec<T>, std::time::Instant)>,
+            storage: Arc<dyn StateStorage + Send + Sync>,
+            key_extractor: Arc<dyn KeyExtractor<T> + Send + Sync>,
+            f: F,
+            window_duration: Duration,
+        }
+        let state = TimeWindowStateStruct {
+            stream: self,
+            time_windows: HashMap::new(),
+            storage: config.create_storage_arc(),
+            key_extractor: Arc::new(key_extractor),
+            f,
+            window_duration,
+        };
+        unfold(state, |mut state| async move {
+            let next = CoreStreamExt::next(&mut state.stream).await;
+            match next {
+                Some(item) => {
+                    let key = state.key_extractor.extract_key(&item);
+                    let now = std::time::Instant::now();
+                    let (buffer, window_start) = state.time_windows.entry(key.clone()).or_insert_with(|| {
+                        (Vec::new(), now)
+                    });
+                    if now.duration_since(*window_start) > state.window_duration {
+                        if !buffer.is_empty() {
+                            let items = buffer.drain(..).collect();
+                            let state_access = StateAccess::new(state.storage.clone(), key.clone());
+                            match (state.f)(items, state_access).await {
+                                Ok(result) => return Some((Ok(result), state)),
+                                Err(e) => return Some((Err(e), state)),
+                            }
+                        }
+                        *window_start = now;
+                    }
+                    buffer.push(item);
+                    // Continue collecting - return None to continue to next item
+                    None
+                }
+                None => {
+                    // Emit remaining groups
+                    let mut results = Vec::new();
+                    for (key, (buffer, _)) in state.time_windows.drain() {
+                        if !buffer.is_empty() {
+                            let items = buffer;
+                            let state_access = StateAccess::new(state.storage.clone(), key.clone());
+                            match (state.f)(items, state_access).await {
+                                Ok(result) => results.push(Ok(result)),
+                                Err(e) => results.push(Err(e)),
+                            }
+                        }
+                    }
+                    
+                    if let Some(result) = results.pop() {
+                        Some((result, state))
+                    } else {
+                        None
+                    }
+                }
+            }
+        })
+    }
+
+    /// Stateful map with session-aware configuration
+    fn stateful_map_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Unpin + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_map_rs2(config, key_extractor, f)
+    }
+
+    /// Stateful filter with session-aware configuration
+    fn stateful_filter_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
+    where
+        F: FnMut(&T, StateAccess) -> Pin<Box<dyn Future<Output = Result<bool, StateError>> + Send>> + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_filter_rs2(config, key_extractor, f)
+    }
+
+    /// Stateful aggregate with session-aware configuration
+    fn stateful_aggregate_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        initial: R,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(R, T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Clone + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_aggregate_rs2(config, key_extractor, initial, f)
+    }
+
+    /// Stateful group by with session-aware configuration
+    fn stateful_group_by_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(String, Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_group_by_rs2(config, key_extractor, None, None, f)
+    }
+
+    /// Stateful fold with session-aware configuration
+    fn stateful_fold_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        initial: R,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(R, T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Clone + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_fold_rs2(config, key_extractor, initial, f)
+    }
+
+    /// Stateful reduce with session-aware configuration
+    fn stateful_reduce_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        initial: Option<R>,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(R, T, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Clone + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_reduce_rs2(config, key_extractor, initial, f)
+    }
+
+    /// Stateful group by advanced with session-aware configuration
+    fn stateful_group_by_advanced_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        group_timeout: Option<Duration>,
+        max_group_size: Option<usize>,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(String, Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_group_by_advanced_rs2(config, key_extractor, group_timeout, max_group_size, f)
+    }
+
+    /// Stateful deduplicate with session-aware configuration
+    fn stateful_deduplicate_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        ttl: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
+    where
+        F: FnMut(T) -> T + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_deduplicate_rs2(config, key_extractor, ttl, f)
+    }
+
+    /// Stateful throttle with session-aware configuration
+    fn stateful_throttle_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        rate_limit: u32,
+        window_duration: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
+    where
+        F: FnMut(T) -> T + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_throttle_rs2(config, key_extractor, rate_limit, window_duration, f)
+    }
+
+    /// Stateful session with session-aware configuration
+    fn stateful_session_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        session_timeout: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<T, StateError>> + Send + 'static
+    where
+        F: FnMut(T, bool) -> T + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_session_rs2(config, key_extractor, session_timeout, f)
+    }
+
+    /// Stateful pattern with session-aware configuration
+    fn stateful_pattern_with_session_rs2<F>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        pattern_size: usize,
+        f: F,
+    ) -> impl Stream<Item = Result<Option<String>, StateError>> + Send + 'static
+    where
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<Option<String>, StateError>> + Send>> + Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_pattern_rs2(config, key_extractor, pattern_size, f)
+    }
+
+    /// Stateful join with session-aware configuration
+    fn stateful_join_with_session_rs2<U, F, R>(
+        self,
+        other: impl Stream<Item = U> + Send + Unpin + 'static,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        other_key_extractor: impl KeyExtractor<U> + Send + Sync + 'static,
+        window_duration: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(T, U, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        U: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + 'static,
+        R: Send + Sync + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_join_rs2(other, config, key_extractor, other_key_extractor, window_duration, f)
+    }
+
+    /// Stateful window with session-aware configuration
+    fn stateful_window_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        window_size: usize,
+        f: F,
+        resource_config: ResourceConfig,
+    ) -> StatefulWindow<Self, F, T, R>
+    where
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static,
+        R: Send + Sync + Unpin + 'static,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_window_rs2(config, key_extractor, window_size, f, resource_config)
+    }
+
+    /// Stateful window advanced with session-aware configuration
+    fn stateful_window_advanced_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        window_size: usize,
+        slide_size: Option<usize>,
+        emit_partial: bool,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static + Unpin,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_window_rs2_advanced(config, key_extractor, window_size, slide_size, emit_partial, f)
+    }
+
+    /// Stateful time window with session-aware configuration
+    fn stateful_time_window_with_session_rs2<F, R>(
+        self,
+        key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
+        window_duration: Duration,
+        f: F,
+    ) -> impl Stream<Item = Result<R, StateError>> + Send + 'static
+    where
+        F: FnMut(Vec<T>, StateAccess) -> Pin<Box<dyn Future<Output = Result<R, StateError>> + Send>> + Send + Sync + 'static + Unpin,
+        R: Send + Sync + 'static + Unpin,
+        Self: Sized + Unpin,
+    {
+        let config = crate::session::get_global_state_config()
+            .unwrap_or_else(StateConfig::default);
+        self.stateful_time_window_rs2(config, key_extractor, window_duration, f)
+    }
+} 
+
 pub struct StateAccess {
     storage: Arc<dyn StateStorage + Send + Sync>,
     key: String,
@@ -1318,6 +1381,19 @@ impl StateAccess {
     pub async fn set(&self, value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.storage.set(&self.key, value).await
     }
+
+    pub fn get_storage(&self) -> Arc<dyn StateStorage + Send + Sync> {
+        self.storage.clone()
+    }
+}
+
+impl Clone for StateAccess {
+    fn clone(&self) -> Self {
+        StateAccess {
+            storage: self.storage.clone(),
+            key: self.key.clone(),
+        }
+    }
 }
 
 fn unix_timestamp_millis() -> u64 {
@@ -1327,11 +1403,26 @@ fn unix_timestamp_millis() -> u64 {
         .as_millis() as u64
 }
 
-// Blanket implementation for all streams that meet the trait bounds
+fn noop_waker() -> Waker {
+    // This creates a no-op waker that does nothing when woken
+    // It's used in contexts where we need a waker but don't actually want to wake anything
+    fn noop(_: *const ()) {}
+    fn clone(_: *const ()) -> RawWaker { noop_raw_waker() }
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+    fn noop_raw_waker() -> RawWaker {
+        RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+    // SAFETY: This is safe because:
+    // 1. The RawWaker is created with a null pointer and a valid VTable
+    // 2. The VTable functions are all no-ops that don't access the data pointer
+    // 3. The waker is only used in contexts where it won't be woken
+    unsafe { Waker::from_raw(noop_raw_waker()) }
+} 
+
+// Blanket implementation for StatefulStreamExt
 impl<T, S> StatefulStreamExt<T> for S
 where
-    S: Stream<Item = T> + Send + Sync + Unpin + 'static,
-    T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + 'static,
+    S: Stream<Item = T> + Send + Sync + Sized + Unpin + 'static,
+    T: Send + Sync + Clone + Serialize + for<'de> Deserialize<'de> + Unpin + 'static,
 {
-}
-
+} 
