@@ -15,10 +15,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-use crate::error::StreamResult;
-use crate::schema_validation::SchemaError;
+use crate::error::{StreamError, StreamResult};
 use crate::schema_validation::SchemaValidator;
-use crate::stream_configuration::{BufferConfig, GrowthStrategy};
+use crate::stream_configuration::BufferConfig;
 use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
 use crate::{
     auto_backpressure, batch_process, bracket, chunk, debounce, distinct_until_changed,
@@ -506,75 +505,81 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         B: Default + Extend<Self::Item> + Send + 'static,
         Self::Item: Send + 'static,
     {
-        self.collect_with_config_rs2(BufferConfig::default())
+        let mut stream = self.boxed();
+        async move {
+            let mut collection = B::default();
+            while let Some(item) = stream.next().await {
+                collection.extend(std::iter::once(item));
+            }
+            collection
+        }
     }
 
-    /// Collect all items from the stream into a collection with custom buffer configuration
+    /// Collect at most `max_items` items, failing if the stream yields more
     ///
-    /// This combinator collects all items from the stream into a collection of type B.
-    /// It returns a Future that resolves to the collection.
-    /// The buffer configuration allows for optimized memory allocation and growth strategies.
-    // Enhanced version that uses all BufferConfig fields
-    fn collect_with_config_rs2<B>(self, config: BufferConfig) -> impl Future<Output = B>
+    /// Use this instead of [`collect_rs2`] when you need a hard bound on memory
+    /// and want to be *told* when the stream exceeded it, rather than silently
+    /// receiving a truncated result.
+    ///
+    /// # Examples
+    /// ```
+    /// use rs2_stream::rs2::*;
+    /// use futures_util::stream::StreamExt;
+    ///
+    /// # async fn example() {
+    /// let ok = from_iter(0..5).try_collect_bounded_rs2::<Vec<_>>(10).await;
+    /// assert!(ok.is_ok());
+    ///
+    /// let too_many = from_iter(0..100).try_collect_bounded_rs2::<Vec<_>>(10).await;
+    /// assert!(too_many.is_err());
+    /// # }
+    /// ```
+    fn try_collect_bounded_rs2<B>(self, max_items: usize) -> impl Future<Output = StreamResult<B>>
     where
         B: Default + Extend<Self::Item> + Send + 'static,
         Self::Item: Send + 'static,
     {
         let mut stream = self.boxed();
         async move {
-            if std::any::TypeId::of::<B>() == std::any::TypeId::of::<Vec<Self::Item>>() {
-                // Create Vec with smart capacity management
-                let mut vec = Vec::with_capacity(config.initial_capacity);
-                let mut items_collected = 0;
-
-                while let Some(item) = stream.next().await {
-                    // Check max_capacity limit
-                    if let Some(max_cap) = config.max_capacity {
-                        if items_collected >= max_cap {
-                            break; // Respect size limit
-                        }
-                    }
-
-                    // Apply growth strategy when needed
-                    if vec.len() == vec.capacity() {
-                        let new_capacity = match config.growth_strategy {
-                            GrowthStrategy::Linear(step) => vec.capacity() + step,
-                            GrowthStrategy::Exponential(factor) => {
-                                (vec.capacity() as f64 * factor) as usize
-                            }
-                            GrowthStrategy::Fixed => vec.capacity(), // No growth
-                        };
-
-                        let capped_capacity = if let Some(max_cap) = config.max_capacity {
-                            new_capacity.min(max_cap)
-                        } else {
-                            new_capacity
-                        };
-
-                        vec.reserve(capped_capacity - vec.capacity());
-                    }
-
-                    vec.push(item);
-                    items_collected += 1;
+            let mut collection = B::default();
+            let mut count = 0usize;
+            while let Some(item) = stream.next().await {
+                if count == max_items {
+                    return Err(StreamError::Custom(format!(
+                        "stream yielded more than the {} item limit passed to try_collect_bounded_rs2",
+                        max_items
+                    )));
                 }
-
-                // Safe transmute back to B
-                let result = unsafe {
-                    let ptr = &vec as *const Vec<Self::Item> as *const B;
-                    let result = std::ptr::read(ptr);
-                    std::mem::forget(vec);
-                    result
-                };
-                result
-            } else {
-                // Fallback for other collection types
-                let mut collection = B::default();
-                while let Some(item) = stream.next().await {
-                    collection.extend(std::iter::once(item));
-                }
-                collection
+                collection.extend(std::iter::once(item));
+                count += 1;
             }
+            Ok(collection)
         }
+    }
+
+    /// Collect all items from the stream into a collection with custom buffer configuration
+    ///
+    /// # Deprecated
+    ///
+    /// The previous implementation treated [`BufferConfig::max_capacity`] as an
+    /// item-count limit and silently truncated the stream once it was reached
+    /// (1,048,576 items by default). That made it unsafe as a general "collect
+    /// everything" call. `BufferConfig` cannot be applied through the generic
+    /// `Extend` bound, so it is now ignored entirely and this method simply
+    /// forwards to [`collect_rs2`].
+    ///
+    /// Use [`collect_rs2`] to collect everything, or
+    /// [`try_collect_bounded_rs2`] if you want an explicit, *erroring* bound.
+    #[deprecated(
+        since = "0.4.0",
+        note = "BufferConfig is ignored; use collect_rs2 or try_collect_bounded_rs2"
+    )]
+    fn collect_with_config_rs2<B>(self, _config: BufferConfig) -> impl Future<Output = B>
+    where
+        B: Default + Extend<Self::Item> + Send + 'static,
+        Self::Item: Send + 'static,
+    {
+        self.collect_rs2()
     }
 
     /// Create a sliding window of elements from the stream

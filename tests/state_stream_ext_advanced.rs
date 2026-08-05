@@ -392,7 +392,7 @@ async fn test_stateful_throttle() {
 
     let stream = DelayedStream { data, index: 0 };
 
-    let result_stream = stream.stateful_throttle_rs2(
+    let result_stream = stream.stateful_throttle_drop_rs2(
         config,
         key_extractor,
         1,                                     // Rate limit: 1 item per 100ms window
@@ -684,7 +684,7 @@ async fn test_stateful_throttle_real_time() {
         index: 0,
     };
 
-    let result_stream = delayed_stream.stateful_throttle_rs2(
+    let result_stream = delayed_stream.stateful_throttle_drop_rs2(
         config,
         key_extractor,
         max_per_interval,
@@ -733,19 +733,21 @@ async fn test_stateful_throttle_real_time() {
     assert!(per_key.contains_key(&1), "Should have results for key 1");
     assert!(per_key.contains_key(&2), "Should have results for key 2");
 
-    // Verify that the total processing time is reasonable (should be at least throttle_interval * number_of_keys)
-    if !results.is_empty() {
-        let total_time = results
-            .last()
-            .unwrap()
-            .1
-            .duration_since(results.first().unwrap().1);
-        let min_expected_time = Duration::from_millis(throttle_interval_ms * 2); // At least 2 throttle intervals
+    // This previously asserted that the run took at least two throttle
+    // intervals, which only held because the throttle slept inline. That
+    // delaying variant was removed: it stalled the whole stream, not just the
+    // throttled key. Under shedding semantics the guarantee is about *counts*,
+    // not elapsed time — the source emits everything inside a single window, so
+    // each key may admit at most `max_per_interval` items and the rest are
+    // dropped.
+    for (id, times) in &per_key {
         assert!(
-            total_time >= min_expected_time,
-            "Total processing time too short: {:?} < {:?}",
-            total_time,
-            min_expected_time
+            times.len() <= max_per_interval as usize,
+            "Key {}: admitted {} items in one {}ms window, limit is {}",
+            id,
+            times.len(),
+            throttle_interval_ms,
+            max_per_interval
         );
     }
 }
@@ -1323,7 +1325,7 @@ async fn test_stateful_throttle_with_multiple_keys() {
         item
     }));
 
-    let result_stream = stream.stateful_throttle_rs2(
+    let result_stream = stream.stateful_throttle_drop_rs2(
         config,
         key_extractor,
         max_per_interval,

@@ -204,26 +204,31 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
                         // Use broadcast to fan out to multiple sinks
                         let (tx, _) = broadcast::channel(self.config.buffer_size);
 
-                        // Spawn task to feed the broadcast channel
-                        let tx_clone = tx.clone();
-                        tokio::spawn(async move {
-                            let mut stream = s;
-                            while let Some(item) = stream.next().await {
-                                if tx_clone.send(item).is_err() {
-                                    break; // All receivers dropped
-                                }
-                            }
-                        });
-
-                        // Run all sinks concurrently
+                        // Subscribe every sink BEFORE the feeder starts, otherwise
+                        // items sent in the gap are lost and the very first `send`
+                        // fails for want of receivers.
                         let mut handles = Vec::new();
                         for sink_func in sinks {
                             let mut rx = tx.subscribe();
 
-                            // Create a stream from the broadcast receiver
+                            // Create a stream from the broadcast receiver.
+                            // `Lagged` means this sink fell behind by more than
+                            // buffer_size; drop what was missed and keep going
+                            // rather than silently ending the stream.
                             let sink_stream = stream! {
-                                while let Ok(item) = rx.recv().await {
-                                    yield item;
+                                loop {
+                                    match rx.recv().await {
+                                        Ok(item) => yield item,
+                                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                            log::warn!(
+                                                "pipeline branch sink lagged; {} items dropped \
+                                                 (raise PipelineConfig::buffer_size)",
+                                                skipped
+                                            );
+                                            continue;
+                                        }
+                                        Err(broadcast::error::RecvError::Closed) => break,
+                                    }
                                 }
                             }
                             .boxed();
@@ -233,11 +238,27 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
                             }));
                         }
 
+                        // Feed the broadcast channel. Moving `tx` in means it is
+                        // dropped when the source is exhausted, which closes the
+                        // channel and lets the sinks finish.
+                        let feeder = tokio::spawn(async move {
+                            let mut stream = s;
+                            while let Some(item) = stream.next().await {
+                                if tx.send(item).is_err() {
+                                    break; // All receivers dropped
+                                }
+                            }
+                        });
+
                         // Wait for all sinks to complete
                         for handle in handles {
                             if let Err(e) = handle.await {
                                 return Err(PipelineError::RuntimeError(Box::new(e)));
                             }
+                        }
+
+                        if let Err(e) = feeder.await {
+                            return Err(PipelineError::RuntimeError(Box::new(e)));
                         }
                     }
                 }

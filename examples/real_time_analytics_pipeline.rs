@@ -363,7 +363,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
     let filtered_errors: Vec<UserEvent> = error_alerts_results.into_iter().filter_map(Result::ok).collect();
     let error_alerts: Vec<Result<UserEvent, StateError>> = stream_from_vec(filtered_errors)
-        .stateful_throttle_rs2(
+        .stateful_throttle_drop_rs2(
             state_config.clone(),
             UserIdExtractor,
             5,

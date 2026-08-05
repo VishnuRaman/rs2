@@ -9,7 +9,7 @@ use futures_core::Stream;
 use futures_util::pin_mut;
 use futures_util::{
     future,
-    stream::{self, BoxStream, FuturesUnordered, StreamExt},
+    stream::{self, BoxStream, StreamExt},
     SinkExt,
 };
 use std::future::Future;
@@ -813,24 +813,30 @@ where
 }
 
 /// Merge two streams into one interleaved output
-pub fn merge<O, S1, S2>(s1: S1, mut s2: S2) -> RS2Stream<O>
+///
+/// Both streams are polled concurrently and items are emitted as soon as either
+/// side produces one. The merged stream completes once *both* inputs are exhausted.
+///
+/// # Examples
+/// ```
+/// use rs2_stream::rs2::*;
+/// use futures_util::stream::StreamExt;
+///
+/// # async fn example() {
+/// // Both sides make progress concurrently rather than one draining before the other.
+/// let a = from_iter(vec![1, 2, 3]);
+/// let b = from_iter(vec![10, 20, 30]);
+/// let merged = merge(a, b).collect::<Vec<_>>().await;
+/// assert_eq!(merged.len(), 6);
+/// # }
+/// ```
+pub fn merge<O, S1, S2>(s1: S1, s2: S2) -> RS2Stream<O>
 where
     S1: Stream<Item = O> + Send + 'static,
-    S2: Stream<Item = O> + Send + 'static + Unpin,
+    S2: Stream<Item = O> + Send + 'static,
     O: Send + 'static,
 {
-    let chained = s1
-        .map(Some)
-        .chain(stream! { while let Some(x) = s2.next().await { yield Some(x) } });
-    stream! {
-        pin_mut!(chained);
-        while let Some(item) = chained.next().await {
-            if let Some(x) = item {
-                yield x;
-            }
-        }
-    }
-        .boxed()
+    stream::select(s1.boxed(), s2.boxed()).boxed()
 }
 
 
@@ -1317,32 +1323,35 @@ where
 // ================================
 
 /// Parallel evaluation preserving order (parEvalMap) with automatic backpressure
-pub fn par_eval_map<I, O, Fut, F>(s: RS2Stream<I>, concurrency: usize, mut f: F) -> RS2Stream<O>
+///
+/// Up to `concurrency` futures run at once, but results are emitted in the same
+/// order as the corresponding inputs arrived. Use [`par_eval_map_unordered`] if
+/// you would rather have results as soon as they are ready.
+///
+/// A `concurrency` of 0 is treated as 1.
+///
+/// # Examples
+/// ```
+/// use rs2_stream::rs2::*;
+/// use futures_util::stream::StreamExt;
+///
+/// # async fn example() {
+/// let s = from_iter(vec![3u64, 1, 2]);
+/// // Slower items do not overtake faster ones.
+/// let out = par_eval_map(s, 4, |x| async move { x }).collect::<Vec<_>>().await;
+/// assert_eq!(out, vec![3, 1, 2]);
+/// # }
+/// ```
+pub fn par_eval_map<I, O, Fut, F>(s: RS2Stream<I>, concurrency: usize, f: F) -> RS2Stream<O>
 where
     F: FnMut(I) -> Fut + Send + 'static,
     Fut: Future<Output = O> + Send + 'static,
     O: Send + 'static,
     I: Send + 'static,
 {
+    let concurrency = concurrency.max(1);
     let buffered_stream = auto_backpressure_block(s, concurrency * 2);
-
-    stream! {
-        let mut in_flight = FuturesUnordered::new();
-        pin_mut!(buffered_stream);
-
-        while let Some(item) = buffered_stream.next().await {
-            in_flight.push(f(item));
-            if in_flight.len() >= concurrency {
-                if let Some(res) = in_flight.next().await {
-                    yield res;
-                }
-            }
-        }
-        while let Some(res) = in_flight.next().await {
-            yield res;
-        }
-    }
-        .boxed()
+    buffered_stream.map(f).buffered(concurrency).boxed()
 }
 
 /// Parallel evaluation unordered (parEvalMapUnordered) with automatic backpressure
@@ -1357,6 +1366,7 @@ where
     O: Send + 'static,
     I: Send + 'static,
 {
+    let concurrency = concurrency.max(1);
     let buffered_stream = auto_backpressure_block(s, concurrency * 2);
     buffered_stream.map(f).buffer_unordered(concurrency).boxed()
 }
@@ -1422,7 +1432,74 @@ where
 // Resource Management
 // ================================
 
+/// Guard that guarantees a bracket's release runs exactly once.
+///
+/// On normal stream completion the release future is awaited via
+/// [`ReleaseGuard::release_now`]. If the stream is instead dropped early —
+/// `take(n)`, a `break`, an error, or the consumer simply going away — `Drop`
+/// spawns the release future onto the current Tokio runtime.
+struct ReleaseGuard<A, R, FRel>
+where
+    FRel: FnOnce(A) -> R + Send + 'static,
+    R: Future<Output = ()> + Send + 'static,
+    A: Send + 'static,
+{
+    resource: Option<A>,
+    release: Option<FRel>,
+}
+
+impl<A, R, FRel> ReleaseGuard<A, R, FRel>
+where
+    FRel: FnOnce(A) -> R + Send + 'static,
+    R: Future<Output = ()> + Send + 'static,
+    A: Send + 'static,
+{
+    fn new(resource: A, release: FRel) -> Self {
+        Self {
+            resource: Some(resource),
+            release: Some(release),
+        }
+    }
+
+    /// Await the release future now. Disarms the `Drop` fallback.
+    async fn release_now(mut self) {
+        if let (Some(resource), Some(release)) = (self.resource.take(), self.release.take()) {
+            release(resource).await;
+        }
+    }
+}
+
+impl<A, R, FRel> Drop for ReleaseGuard<A, R, FRel>
+where
+    FRel: FnOnce(A) -> R + Send + 'static,
+    R: Future<Output = ()> + Send + 'static,
+    A: Send + 'static,
+{
+    fn drop(&mut self) {
+        if let (Some(resource), Some(release)) = (self.resource.take(), self.release.take()) {
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(release(resource));
+                }
+                Err(_) => {
+                    log::warn!(
+                        "bracket: stream dropped outside a Tokio runtime; release was not run"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Bracket for simple resource handling
+///
+/// `release` is guaranteed to run whether the stream finishes normally or is
+/// terminated early (for example by `take_rs2`, an error, or the consumer
+/// dropping the stream).
+///
+/// Note that on the early-termination path the release future is *spawned*
+/// rather than awaited, because `Drop` cannot await. It therefore completes
+/// asynchronously, shortly after the stream is dropped.
 pub fn bracket<A, O, St, FAcq, FUse, FRel, R>(
     acquire: FAcq,
     use_fn: FUse,
@@ -1439,17 +1516,97 @@ where
 {
     stream! {
         let resource = acquire.await;
-        let stream = use_fn(resource.clone());
+        let guard = ReleaseGuard::new(resource.clone(), release);
+
+        let stream = use_fn(resource);
         pin_mut!(stream);
         while let Some(item) = stream.next().await {
             yield item;
         }
-        release(resource).await;
+
+        guard.release_now().await;
     }
         .boxed()
 }
 
+/// Guard for [`bracket_case`], carrying the [`ExitCase`] observed so far.
+///
+/// `error` is updated as the stream runs, so whichever path ends the stream —
+/// normal completion, an `Err` item, or an early drop — release sees the
+/// correct exit case.
+struct ReleaseCaseGuard<A, E, R, FRel>
+where
+    FRel: FnOnce(A, ExitCase<E>) -> R + Send + 'static,
+    R: Future<Output = ()> + Send + 'static,
+    A: Send + 'static,
+    E: Send + 'static,
+{
+    resource: Option<A>,
+    release: Option<FRel>,
+    error: Option<E>,
+}
+
+impl<A, E, R, FRel> ReleaseCaseGuard<A, E, R, FRel>
+where
+    FRel: FnOnce(A, ExitCase<E>) -> R + Send + 'static,
+    R: Future<Output = ()> + Send + 'static,
+    A: Send + 'static,
+    E: Send + 'static,
+{
+    fn new(resource: A, release: FRel) -> Self {
+        Self {
+            resource: Some(resource),
+            release: Some(release),
+            error: None,
+        }
+    }
+
+    fn exit_case(error: Option<E>) -> ExitCase<E> {
+        match error {
+            Some(e) => ExitCase::Errored(e),
+            None => ExitCase::Completed,
+        }
+    }
+
+    /// Await the release future now. Disarms the `Drop` fallback.
+    async fn release_now(mut self) {
+        if let (Some(resource), Some(release)) = (self.resource.take(), self.release.take()) {
+            let case = Self::exit_case(self.error.take());
+            release(resource, case).await;
+        }
+    }
+}
+
+impl<A, E, R, FRel> Drop for ReleaseCaseGuard<A, E, R, FRel>
+where
+    FRel: FnOnce(A, ExitCase<E>) -> R + Send + 'static,
+    R: Future<Output = ()> + Send + 'static,
+    A: Send + 'static,
+    E: Send + 'static,
+{
+    fn drop(&mut self) {
+        if let (Some(resource), Some(release)) = (self.resource.take(), self.release.take()) {
+            let case = Self::exit_case(self.error.take());
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(release(resource, case));
+                }
+                Err(_) => {
+                    log::warn!(
+                        "bracket_case: stream dropped outside a Tokio runtime; release was not run"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// BracketCase with exit case semantics for streams of Result<O,E>
+///
+/// Like [`bracket`], release is guaranteed to run on both the normal and the
+/// early-termination path. The [`ExitCase`] reflects what actually happened:
+/// `ExitCase::Errored(e)` if the stream yielded an `Err` (the most recent one),
+/// otherwise `ExitCase::Completed`.
 pub fn bracket_case<A, O, E, St, FAcq, FUse, FRel, R>(
     acquire: FAcq,
     use_fn: FUse,
@@ -1467,12 +1624,18 @@ where
 {
     stream! {
         let resource = acquire.await;
-        let stream = use_fn(resource.clone());
+        let mut guard = ReleaseCaseGuard::new(resource.clone(), release);
+
+        let stream = use_fn(resource);
         pin_mut!(stream);
         while let Some(item) = stream.next().await {
+            if let Err(ref e) = item {
+                guard.error = Some(e.clone());
+            }
             yield item;
         }
-        release(resource, ExitCase::Completed).await;
+
+        guard.release_now().await;
     }
         .boxed()
 }

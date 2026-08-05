@@ -710,23 +710,44 @@ fn test_collect_rs2_empty_stream() {
 }
 
 #[test]
+#[allow(deprecated)] // exercising the deprecated shim until it is removed
 fn test_collect_with_config_rs2() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Create a stream of numbers
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
-        // Create a custom buffer configuration with a small initial capacity
+        // BufferConfig is now ignored; the point of this test is that the
+        // deprecated shim still collects everything.
         let config = BufferConfig {
             initial_capacity: 2,
             max_capacity: Some(10),
             growth_strategy: GrowthStrategy::Exponential(2.0),
         };
 
-        // Collect into a Vec with custom buffer configuration
         let result = stream.collect_with_config_rs2::<Vec<_>>(config).await;
 
         // Check that all items were collected correctly
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+    });
+}
+
+#[test]
+#[allow(deprecated)]
+fn test_collect_with_config_rs2_no_longer_truncates() {
+    // max_capacity used to cap the item count and silently drop the rest.
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let config = BufferConfig {
+            initial_capacity: 2,
+            max_capacity: Some(3),
+            growth_strategy: GrowthStrategy::Exponential(2.0),
+        };
+
+        let result = from_iter(vec![1, 2, 3, 4, 5])
+            .collect_with_config_rs2::<Vec<_>>(config)
+            .await;
+
         assert_eq!(result, vec![1, 2, 3, 4, 5]);
     });
 }
@@ -1139,9 +1160,15 @@ fn test_bracket_case_extension_with_error() {
         assert!(*acquired.lock().unwrap());
         assert!(*released.lock().unwrap());
 
-        // Verify exit case was Completed (even with an error in the stream)
+        // Verify the exit case reflects the error the stream yielded.
+        // This previously asserted "Completed" — bracket_case hardcoded
+        // ExitCase::Completed and never reported errors at all.
         let case = exit_case.lock().unwrap().clone().unwrap();
-        assert!(case.contains("Completed"));
+        assert!(
+            case.contains("Errored"),
+            "expected Errored exit case, got {}",
+            case
+        );
     });
 }
 

@@ -128,8 +128,14 @@ fn test_bracket_case_error() {
         assert!(*acquired.lock().unwrap());
         assert!(*released.lock().unwrap());
 
-        // Verify exit case was Completed (even with an error in the rs2_stream)
+        // Verify the exit case reflects the error the rs2_stream yielded.
+        // This previously asserted "Completed" — bracket_case hardcoded
+        // ExitCase::Completed and never reported errors at all.
         let case = exit_case.lock().unwrap().clone().unwrap();
-        assert!(case.contains("Completed"));
+        assert!(
+            case.contains("Errored"),
+            "expected Errored exit case, got {}",
+            case
+        );
     });
 }

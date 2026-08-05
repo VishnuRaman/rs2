@@ -8,7 +8,6 @@ use futures_core::Stream;
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
 use crate::resource_manager::get_global_resource_manager;
 
@@ -131,6 +130,16 @@ where
 // Stream Joins with Time Windows
 // ================================
 
+/// Whether two event times fall within `window` of each other, in either direction.
+fn within_window(a: SystemTime, b: SystemTime, window: Duration) -> bool {
+    let diff = if a > b {
+        a.duration_since(b).unwrap_or_default()
+    } else {
+        b.duration_since(a).unwrap_or_default()
+    };
+    diff <= window
+}
+
 /// Configuration for time-windowed joins
 #[derive(Debug, Clone)]
 pub struct TimeJoinConfig {
@@ -176,54 +185,62 @@ where
         let mut buffer1: Vec<(T1, SystemTime)> = Vec::new();
         let mut buffer2: Vec<(T2, SystemTime)> = Vec::new();
         let mut watermark = SystemTime::UNIX_EPOCH;
-        let mut yielded: HashSet<(u128, u128)> = HashSet::new();
-        let s1 = stream1.map(|e| Either::Left(e));
-        let s2 = stream2.map(|e| Either::Right(e));
+
+        let s1 = stream1.map(Either::Left);
+        let s2 = stream2.map(Either::Right);
         let merged = merge(s1, s2);
         pin_mut!(merged);
+
         while let Some(either) = merged.next().await {
+            // Each arriving event is joined against the *opposite* buffer only.
+            // Every pair is therefore considered exactly once, which removes the
+            // need for a dedup set (the old one grew without bound and collided
+            // whenever two events shared a nanosecond timestamp) and drops the
+            // per-event cost from O(n^2) to O(n).
             match either {
                 Either::Left(e1) => {
                     let t1 = timestamp_fn1(&e1);
                     if t1 > watermark { watermark = t1; }
+
+                    for (e2, t2) in &buffer2 {
+                        if within_window(t1, *t2, config.window_size) {
+                            let key_match = match key_selector {
+                                Some((ref fk1, ref fk2)) => fk1(&e1) == fk2(e2),
+                                None => true,
+                            };
+                            if key_match {
+                                yield join_fn(e1.clone(), e2.clone());
+                            }
+                        }
+                    }
+
                     buffer1.push((e1, t1));
                 }
                 Either::Right(e2) => {
                     let t2 = timestamp_fn2(&e2);
                     if t2 > watermark { watermark = t2; }
-                    buffer2.push((e2, t2));
-                }
-            }
-            // Clean old events
-            let min_time = watermark - config.window_size;
-            buffer1.retain(|(_, t)| *t >= min_time);
-            buffer2.retain(|(_, t)| *t >= min_time);
-            // Perform joins
-            for (e1, t1) in &buffer1 {
-                for (e2, t2) in &buffer2 {
-                    let diff = if t1 > t2 {
-                        t1.duration_since(*t2).unwrap_or_default()
-                    } else {
-                        t2.duration_since(*t1).unwrap_or_default()
-                    };
-                    if diff <= config.window_size {
-                        let key_match = if let Some((ref fk1, ref fk2)) = key_selector {
-                            fk1(e1) == fk2(e2)
-                        } else {
-                            true
-                        };
-                        if key_match {
-                            // Deduplicate by timestamps
-                            let t1n = t1.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
-                            let t2n = t2.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
-                            let key = (t1n, t2n);
-                            if !yielded.contains(&key) {
-                                yielded.insert(key);
+
+                    for (e1, t1) in &buffer1 {
+                        if within_window(*t1, t2, config.window_size) {
+                            let key_match = match key_selector {
+                                Some((ref fk1, ref fk2)) => fk1(e1) == fk2(&e2),
+                                None => true,
+                            };
+                            if key_match {
                                 yield join_fn(e1.clone(), e2.clone());
                             }
                         }
                     }
+
+                    buffer2.push((e2, t2));
                 }
+            }
+
+            // Evict events that have fallen behind the watermark.
+            // `checked_sub` because the watermark can sit near the epoch.
+            if let Some(min_time) = watermark.checked_sub(config.window_size) {
+                buffer1.retain(|(_, t)| *t >= min_time);
+                buffer2.retain(|(_, t)| *t >= min_time);
             }
         }
     }
