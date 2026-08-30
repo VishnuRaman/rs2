@@ -484,6 +484,97 @@ fn id_key_selector() -> Option<(IdKey, IdKey)> {
 }
 
 #[tokio::test]
+async fn time_window_join_scales_linearly() {
+    // The join used to scan the whole opposite buffer per event, and prune the
+    // buffers on every event as well — two independent O(n) costs per item.
+    // Measured at n=4000: 518ms before the hash index, 15ms after.
+    async fn run(n: u32) -> Duration {
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let left: Vec<(u32, SystemTime)> = (0..n)
+            .map(|i| (i, base + Duration::from_millis(i as u64)))
+            .collect();
+        let right = left.clone();
+
+        let start = Instant::now();
+        let out = join_with_time_window(
+            from_iter(left),
+            from_iter(right),
+            TimeJoinConfig {
+                window_size: Duration::from_secs(600),
+                watermark_delay: Duration::from_secs(0),
+            },
+            |e: &(u32, SystemTime)| e.1,
+            |e: &(u32, SystemTime)| e.1,
+            |a, b| (a, b),
+            id_key_selector(),
+        )
+        .collect::<Vec<_>>()
+        .await;
+        assert_eq!(out.len(), n as usize, "one match per distinct key");
+        start.elapsed()
+    }
+
+    let elapsed = run(4000).await;
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "join is still scanning the whole buffer: 4000 events took {:?}",
+        elapsed
+    );
+}
+
+#[tokio::test]
+async fn time_window_join_cross_join_still_works() {
+    // With no key selector every pair must be considered, so bucketing must not
+    // partition the buffers.
+    let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let left = from_iter(vec![(1u32, base), (2u32, base)]);
+    let right = from_iter(vec![(9u32, base), (8u32, base)]);
+
+    let out = join_with_time_window(
+        left,
+        right,
+        TimeJoinConfig {
+            window_size: Duration::from_secs(600),
+            watermark_delay: Duration::from_secs(0),
+        },
+        |e: &(u32, SystemTime)| e.1,
+        |e: &(u32, SystemTime)| e.1,
+        |a, b| (a, b),
+        None::<(IdKey, IdKey)>,
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert_eq!(out.len(), 4, "2x2 cross join must yield 4 pairs: {:?}", out);
+}
+
+#[tokio::test]
+async fn time_window_join_does_not_match_across_different_keys() {
+    // Guards the hash-bucket index: distinct keys must never join, and the
+    // equality check must still gate any hash collision.
+    let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let left: Vec<(u32, SystemTime)> = (0..200).map(|i| (i, base)).collect();
+    let right: Vec<(u32, SystemTime)> = (200..400).map(|i| (i, base)).collect();
+
+    let out = join_with_time_window(
+        from_iter(left),
+        from_iter(right),
+        TimeJoinConfig {
+            window_size: Duration::from_secs(600),
+            watermark_delay: Duration::from_secs(0),
+        },
+        |e: &(u32, SystemTime)| e.1,
+        |e: &(u32, SystemTime)| e.1,
+        |a, b| (a, b),
+        id_key_selector(),
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    assert!(out.is_empty(), "no keys overlap, expected no joins: {:?}", out.len());
+}
+
+#[tokio::test]
 async fn time_window_join_does_not_duplicate_pairs() {
     let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
 
@@ -513,4 +604,114 @@ async fn time_window_join_does_not_duplicate_pairs() {
         "both left events must join the right event: {:?}",
         out.len()
     );
+}
+
+// ---------------------------------------------------------------------------
+// 3b. collect_vec_with_config_rs2 honours BufferConfig without truncating
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn collect_vec_with_config_honours_initial_capacity() {
+    use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
+
+    let config = BufferConfig {
+        initial_capacity: 4096,
+        max_capacity: None,
+        growth_strategy: GrowthStrategy::Exponential(2.0),
+    };
+    let out = from_iter(0..10u32)
+        .collect_vec_with_config_rs2(config)
+        .await
+        .expect("growing strategy never errors");
+
+    assert_eq!(out, (0..10).collect::<Vec<_>>());
+    assert!(
+        out.capacity() >= 4096,
+        "initial_capacity was ignored: capacity {}",
+        out.capacity()
+    );
+}
+
+#[tokio::test]
+async fn collect_vec_with_config_never_truncates() {
+    use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
+
+    // max_capacity is a reservation ceiling, not an item limit. The old
+    // implementation dropped everything past it.
+    let config = BufferConfig {
+        initial_capacity: 8,
+        max_capacity: Some(16),
+        growth_strategy: GrowthStrategy::Exponential(1.5),
+    };
+    let out = from_iter(0..5000u32)
+        .collect_vec_with_config_rs2(config)
+        .await
+        .expect("growing strategy never errors");
+
+    assert_eq!(out.len(), 5000, "max_capacity must not truncate the stream");
+}
+
+#[tokio::test]
+async fn collect_vec_with_config_survives_shrinking_growth_factor() {
+    use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
+
+    // Exponential(f) with f < 1 made the old code compute a target below the
+    // current capacity and underflow on the subtraction.
+    let config = BufferConfig {
+        initial_capacity: 64,
+        max_capacity: None,
+        growth_strategy: GrowthStrategy::Exponential(0.5),
+    };
+    let out = from_iter(0..1000u32)
+        .collect_vec_with_config_rs2(config)
+        .await
+        .expect("growing strategy never errors");
+    assert_eq!(out.len(), 1000);
+}
+
+#[tokio::test]
+async fn collect_vec_with_config_handles_fixed_and_linear() {
+    use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
+
+    let config = BufferConfig {
+        initial_capacity: 16,
+        max_capacity: None,
+        growth_strategy: GrowthStrategy::Linear(32),
+    };
+    let out = from_iter(0..2000u32)
+        .collect_vec_with_config_rs2(config)
+        .await
+        .expect("Linear grows");
+    assert_eq!(out.len(), 2000, "Linear lost items");
+}
+
+#[tokio::test]
+async fn collect_vec_with_config_fixed_errors_instead_of_truncating() {
+    use rs2_stream::stream_configuration::{BufferConfig, GrowthStrategy};
+
+    // `Fixed` is documented as "fixed size, don't grow". A user setting it
+    // expects a cap, and the only honest way to enforce a cap without dropping
+    // data is to fail.
+    let config = BufferConfig {
+        initial_capacity: 16,
+        max_capacity: None,
+        growth_strategy: GrowthStrategy::Fixed,
+    };
+    let result = from_iter(0..2000u32).collect_vec_with_config_rs2(config).await;
+    assert!(
+        result.is_err(),
+        "Fixed must report the overflow, not silently grow or truncate"
+    );
+
+    // Within the fixed size it succeeds and does not over-allocate.
+    let config = BufferConfig {
+        initial_capacity: 16,
+        max_capacity: None,
+        growth_strategy: GrowthStrategy::Fixed,
+    };
+    let out = from_iter(0..16u32)
+        .collect_vec_with_config_rs2(config)
+        .await
+        .expect("exactly at the fixed size");
+    assert_eq!(out.len(), 16);
 }

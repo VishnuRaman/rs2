@@ -27,16 +27,20 @@ impl MediaStreamingService {
     }
 
     /// Start streaming from a file
+    ///
+    /// Returns the underlying `io::Error` if the file cannot be opened. This
+    /// previously panicked, taking down the caller for an ordinary missing-file
+    /// condition.
     pub async fn start_file_stream(
         &self,
         file_path: PathBuf,
         stream_config: MediaStream,
-    ) -> RS2Stream<MediaChunk> {
-        let file = self.acquire_file_resource(file_path).await;
+    ) -> Result<RS2Stream<MediaChunk>, std::io::Error> {
+        let file = self.acquire_file_resource(file_path).await?;
         let chunk_queue = Arc::clone(&self.chunk_queue);
         let metrics = Arc::clone(&self.metrics);
 
-        self.create_chunk_stream(file, stream_config, chunk_queue, metrics)
+        Ok(self.create_chunk_stream(file, stream_config, chunk_queue, metrics))
     }
 
     /// Start streaming from live input (camera, microphone, etc.)
@@ -112,10 +116,8 @@ impl MediaStreamingService {
         )
     }
 
-    async fn acquire_file_resource(&self, path: PathBuf) -> File {
-        File::open(&path)
-            .await
-            .unwrap_or_else(|e| panic!("Failed to open media file {:?}: {}", path, e))
+    async fn acquire_file_resource(&self, path: PathBuf) -> Result<File, std::io::Error> {
+        File::open(&path).await
     }
 
     fn create_chunk_stream(

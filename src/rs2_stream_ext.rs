@@ -1,9 +1,6 @@
-use async_stream::stream;
-use async_trait;
 use futures_core::Stream;
 use futures_util::future;
-use futures_util::pin_mut;
-use futures_util::stream::{BoxStream, StreamExt};
+use futures_util::stream::StreamExt;
 use log;
 use num_cpus;
 use serde;
@@ -17,7 +14,7 @@ use tokio::sync::Mutex;
 
 use crate::error::{StreamError, StreamResult};
 use crate::schema_validation::SchemaValidator;
-use crate::stream_configuration::BufferConfig;
+use crate::stream_configuration::{BufferConfig, GrowthStrategy};
 use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
 use crate::{
     auto_backpressure, batch_process, bracket, chunk, debounce, distinct_until_changed,
@@ -557,22 +554,91 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         }
     }
 
+    /// Collect into a `Vec`, sizing it from `config`
+    ///
+    /// Honours [`BufferConfig`] as the allocation policy its fields describe:
+    ///
+    /// - `initial_capacity` — reserved up front. Worth ~20% on a large collect
+    ///   versus starting empty.
+    /// - `growth_strategy` — how much to reserve each time the buffer fills.
+    /// - `max_capacity` — a ceiling on *reservation* for the growing
+    ///   strategies. It never truncates the stream.
+    ///
+    /// # Errors
+    ///
+    /// [`GrowthStrategy::Fixed`] means what it says: the buffer is fixed at
+    /// `initial_capacity` and does not grow. A stream with more items than that
+    /// returns [`StreamError::Custom`] rather than silently dropping the
+    /// remainder — which is exactly what the previous implementation did, via
+    /// `max_capacity`, past 1,048,576 items.
+    ///
+    /// The growing strategies never return an error, so
+    /// `.expect("Linear never errors")` is safe there if you prefer.
+    /// See also [`try_collect_bounded_rs2`] for a bound stated directly rather
+    /// than derived from a buffer config.
+    fn collect_vec_with_config_rs2(
+        self,
+        config: BufferConfig,
+    ) -> impl Future<Output = StreamResult<Vec<Self::Item>>>
+    where
+        Self::Item: Send + 'static,
+    {
+        let mut stream = self.boxed();
+        async move {
+            let fixed = matches!(config.growth_strategy, GrowthStrategy::Fixed);
+            let ceiling = config.max_capacity.unwrap_or(usize::MAX);
+            let mut buffer = Vec::with_capacity(config.initial_capacity.min(ceiling));
+
+            while let Some(item) = stream.next().await {
+                if fixed && buffer.len() == config.initial_capacity {
+                    return Err(StreamError::Custom(format!(
+                        "GrowthStrategy::Fixed buffer of {} items overflowed; \
+                         use Linear/Exponential to grow, or try_collect_bounded_rs2",
+                        config.initial_capacity
+                    )));
+                }
+
+                if buffer.len() == buffer.capacity() {
+                    let current = buffer.capacity();
+                    let target = match config.growth_strategy {
+                        GrowthStrategy::Linear(step) => current.saturating_add(step),
+                        GrowthStrategy::Exponential(factor) => {
+                            // `saturating_sub` below guards factor <= 1.0, which
+                            // previously underflowed and panicked.
+                            ((current as f64) * factor) as usize
+                        }
+                        GrowthStrategy::Fixed => current,
+                    };
+                    let target = target.min(ceiling);
+                    // Zero when the strategy asks for no growth beyond the
+                    // ceiling; `Vec` then grows on its own.
+                    buffer.reserve(target.saturating_sub(current));
+                }
+                buffer.push(item);
+            }
+
+            Ok(buffer)
+        }
+    }
+
     /// Collect all items from the stream into a collection with custom buffer configuration
     ///
     /// # Deprecated
     ///
     /// The previous implementation treated [`BufferConfig::max_capacity`] as an
     /// item-count limit and silently truncated the stream once it was reached
-    /// (1,048,576 items by default). That made it unsafe as a general "collect
-    /// everything" call. `BufferConfig` cannot be applied through the generic
-    /// `Extend` bound, so it is now ignored entirely and this method simply
-    /// forwards to [`collect_rs2`].
+    /// (1,048,576 items by default).
     ///
-    /// Use [`collect_rs2`] to collect everything, or
-    /// [`try_collect_bounded_rs2`] if you want an explicit, *erroring* bound.
+    /// A `BufferConfig` cannot be applied through the generic `Extend` bound —
+    /// there is no stable way to reserve capacity in an arbitrary collection —
+    /// so this method ignores it and forwards to [`collect_rs2`].
+    ///
+    /// Use [`collect_vec_with_config_rs2`] if you want the config honoured,
+    /// [`collect_rs2`] to collect everything, or [`try_collect_bounded_rs2`]
+    /// for an explicit, *erroring* bound.
     #[deprecated(
         since = "0.4.0",
-        note = "BufferConfig is ignored; use collect_rs2 or try_collect_bounded_rs2"
+        note = "BufferConfig cannot be honoured for a generic collection; use collect_vec_with_config_rs2"
     )]
     fn collect_with_config_rs2<B>(self, _config: BufferConfig) -> impl Future<Output = B>
     where

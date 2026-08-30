@@ -9,7 +9,6 @@ use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
-use crate::resource_manager::get_global_resource_manager;
 
 // ================================
 // Time-based Windowed Aggregations
@@ -74,7 +73,6 @@ where
     stream! {
         let mut windows: HashMap<u64, TimeWindow<T>> = HashMap::new();
         let mut watermark = SystemTime::UNIX_EPOCH;
-        let resource_manager = get_global_resource_manager();
         pin_mut!(stream);
 
         while let Some(event) = stream.next().await {
@@ -83,35 +81,34 @@ where
                 watermark = event_time;
             }
 
-            // Calculate window boundaries
+            // Calculate window boundaries.
+            // Bucket in milliseconds: `as_secs()` truncated sub-second windows
+            // to zero and panicked on the division.
             let since_epoch = event_time.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-            let window_size_secs = config.window_size.as_secs();
-            let window_start_secs = (since_epoch.as_secs() / window_size_secs) * window_size_secs;
-            let window_start = SystemTime::UNIX_EPOCH + Duration::from_secs(window_start_secs);
+            let window_size_ms = config.window_size.as_millis().max(1) as u64;
+            let window_start_ms = (since_epoch.as_millis() as u64 / window_size_ms) * window_size_ms;
+            let window_start = SystemTime::UNIX_EPOCH + Duration::from_millis(window_start_ms);
             let window_end = window_start + config.window_size;
-            let window_id = window_start_secs;
+            let window_id = window_start_ms;
 
             // Add event to appropriate window
-            let is_new_window = !windows.contains_key(&window_id);
-            let window = windows.entry(window_id).or_insert_with(|| {
-                TimeWindow::new(window_start, window_end)
-            });
-            if is_new_window {
-                resource_manager.track_memory_allocation(1).await.ok();
-            }
-            window.add_event(event);
-            resource_manager.track_memory_allocation(1).await.ok();
+            windows
+                .entry(window_id)
+                .or_insert_with(|| TimeWindow::new(window_start, window_end))
+                .add_event(event);
 
             // Emit completed windows
             let mut to_remove = Vec::new();
             for (id, window) in &windows {
-                if window.is_complete(watermark - config.watermark_delay) {
+                // `checked_sub`: the watermark starts at the epoch, so subtracting
+                // the delay can underflow before any event has arrived.
+                let cutoff = watermark.checked_sub(config.watermark_delay).unwrap_or(SystemTime::UNIX_EPOCH);
+                if window.is_complete(cutoff) {
                     to_remove.push(*id);
                 }
             }
             for id in to_remove {
                 if let Some(window) = windows.remove(&id) {
-                    resource_manager.track_memory_deallocation(window.events.len() as u64).await;
                     yield window;
                 }
             }
@@ -119,7 +116,6 @@ where
 
         // Emit remaining windows
         for (_, window) in windows {
-            resource_manager.track_memory_deallocation(window.events.len() as u64).await;
             yield window;
         }
     }
@@ -181,10 +177,44 @@ where
         Left(L),
         Right(R),
     }
+
+    /// Bucket key for the join index.
+    ///
+    /// Indexing on the *hash* of the join key rather than the key itself keeps
+    /// the public bounds unchanged (`K: Eq + Hash` already), since the key never
+    /// has to be stored. Hash collisions only widen the candidate set — the
+    /// existing `fk1(e1) == fk2(e2)` check still decides every match.
+    fn bucket_of<K: std::hash::Hash>(key: &K) -> u64 {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Drop buffered events that have fallen behind the watermark.
+    fn prune<V>(buffer: &mut HashMap<u64, Vec<(V, SystemTime)>>, min_time: SystemTime) {
+        buffer.retain(|_, items| {
+            items.retain(|(_, t)| *t >= min_time);
+            !items.is_empty()
+        });
+    }
+
+    /// Events between watermark-eviction passes.
+    ///
+    /// Pruning used to run on every event, which was O(n) per event and
+    /// quadratic overall on its own. Correctness does not depend on it —
+    /// `within_window` still gates every pair — so it is pure memory hygiene and
+    /// safe to amortise.
+    const EVICT_INTERVAL: u32 = 256;
+
     stream! {
-        let mut buffer1: Vec<(T1, SystemTime)> = Vec::new();
-        let mut buffer2: Vec<(T2, SystemTime)> = Vec::new();
+        // Bucketed by join-key hash. The unkeyed (cross join) case puts
+        // everything in bucket 0, which is the correct behaviour there: every
+        // pair genuinely has to be considered.
+        let mut buffer1: HashMap<u64, Vec<(T1, SystemTime)>> = HashMap::new();
+        let mut buffer2: HashMap<u64, Vec<(T2, SystemTime)>> = HashMap::new();
         let mut watermark = SystemTime::UNIX_EPOCH;
+        let mut since_evict: u32 = 0;
 
         let s1 = stream1.map(Either::Left);
         let s2 = stream2.map(Either::Right);
@@ -192,55 +222,70 @@ where
         pin_mut!(merged);
 
         while let Some(either) = merged.next().await {
-            // Each arriving event is joined against the *opposite* buffer only.
-            // Every pair is therefore considered exactly once, which removes the
-            // need for a dedup set (the old one grew without bound and collided
-            // whenever two events shared a nanosecond timestamp) and drops the
-            // per-event cost from O(n^2) to O(n).
+            // Each arriving event is joined against the *opposite* buffer only,
+            // so every pair is considered exactly once. With the hash index that
+            // is one bucket rather than the whole buffer.
             match either {
                 Either::Left(e1) => {
                     let t1 = timestamp_fn1(&e1);
                     if t1 > watermark { watermark = t1; }
 
-                    for (e2, t2) in &buffer2 {
-                        if within_window(t1, *t2, config.window_size) {
-                            let key_match = match key_selector {
-                                Some((ref fk1, ref fk2)) => fk1(&e1) == fk2(e2),
-                                None => true,
-                            };
-                            if key_match {
-                                yield join_fn(e1.clone(), e2.clone());
+                    let bucket = match key_selector {
+                        Some((ref fk1, _)) => bucket_of(&fk1(&e1)),
+                        None => 0,
+                    };
+
+                    if let Some(candidates) = buffer2.get(&bucket) {
+                        for (e2, t2) in candidates {
+                            if within_window(t1, *t2, config.window_size) {
+                                let key_match = match key_selector {
+                                    Some((ref fk1, ref fk2)) => fk1(&e1) == fk2(e2),
+                                    None => true,
+                                };
+                                if key_match {
+                                    yield join_fn(e1.clone(), e2.clone());
+                                }
                             }
                         }
                     }
 
-                    buffer1.push((e1, t1));
+                    buffer1.entry(bucket).or_default().push((e1, t1));
                 }
                 Either::Right(e2) => {
                     let t2 = timestamp_fn2(&e2);
                     if t2 > watermark { watermark = t2; }
 
-                    for (e1, t1) in &buffer1 {
-                        if within_window(*t1, t2, config.window_size) {
-                            let key_match = match key_selector {
-                                Some((ref fk1, ref fk2)) => fk1(e1) == fk2(&e2),
-                                None => true,
-                            };
-                            if key_match {
-                                yield join_fn(e1.clone(), e2.clone());
+                    let bucket = match key_selector {
+                        Some((_, ref fk2)) => bucket_of(&fk2(&e2)),
+                        None => 0,
+                    };
+
+                    if let Some(candidates) = buffer1.get(&bucket) {
+                        for (e1, t1) in candidates {
+                            if within_window(*t1, t2, config.window_size) {
+                                let key_match = match key_selector {
+                                    Some((ref fk1, ref fk2)) => fk1(e1) == fk2(&e2),
+                                    None => true,
+                                };
+                                if key_match {
+                                    yield join_fn(e1.clone(), e2.clone());
+                                }
                             }
                         }
                     }
 
-                    buffer2.push((e2, t2));
+                    buffer2.entry(bucket).or_default().push((e2, t2));
                 }
             }
 
-            // Evict events that have fallen behind the watermark.
-            // `checked_sub` because the watermark can sit near the epoch.
-            if let Some(min_time) = watermark.checked_sub(config.window_size) {
-                buffer1.retain(|(_, t)| *t >= min_time);
-                buffer2.retain(|(_, t)| *t >= min_time);
+            since_evict += 1;
+            if since_evict >= EVICT_INTERVAL {
+                since_evict = 0;
+                // `checked_sub`: the watermark can sit near the epoch.
+                if let Some(min_time) = watermark.checked_sub(config.window_size) {
+                    prune(&mut buffer1, min_time);
+                    prune(&mut buffer2, min_time);
+                }
             }
         }
     }

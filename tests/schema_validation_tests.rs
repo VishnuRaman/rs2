@@ -11,7 +11,7 @@ async fn test_valid_json_passes_schema() {
         },
         "required": ["id", "value"]
     });
-    let validator = JsonSchemaValidator::new("test-schema", schema);
+    let validator = JsonSchemaValidator::try_new("test-schema", schema).expect("valid schema");
     let valid = json!({"id": "abc", "value": 42});
     let result = validator
         .validate(&serde_json::to_vec(&valid).unwrap())
@@ -29,7 +29,7 @@ async fn test_invalid_json_fails_schema() {
         },
         "required": ["id", "value"]
     });
-    let validator = JsonSchemaValidator::new("test-schema", schema);
+    let validator = JsonSchemaValidator::try_new("test-schema", schema).expect("valid schema");
     let invalid = json!({"id": "abc"}); // missing 'value'
     let result = validator
         .validate(&serde_json::to_vec(&invalid).unwrap())
@@ -47,7 +47,7 @@ async fn test_wrong_type_fails_schema() {
         },
         "required": ["id", "value"]
     });
-    let validator = JsonSchemaValidator::new("test-schema", schema);
+    let validator = JsonSchemaValidator::try_new("test-schema", schema).expect("valid schema");
     let wrong_type = json!({"id": "abc", "value": "not-an-integer"});
     let result = validator
         .validate(&serde_json::to_vec(&wrong_type).unwrap())
@@ -64,7 +64,7 @@ async fn test_parse_error() {
         },
         "required": ["id"]
     });
-    let validator = JsonSchemaValidator::new("test-schema", schema);
+    let validator = JsonSchemaValidator::try_new("test-schema", schema).expect("valid schema");
     let not_json = b"not a json";
     let result = validator.validate(not_json).await;
     assert!(matches!(result, Err(SchemaError::ParseError(_))));
@@ -73,6 +73,6 @@ async fn test_parse_error() {
 #[tokio::test]
 async fn test_get_schema_id() {
     let schema = json!({"type": "object"});
-    let validator = JsonSchemaValidator::new("my-schema-id", schema);
+    let validator = JsonSchemaValidator::try_new("my-schema-id", schema).expect("valid schema");
     assert_eq!(validator.get_schema_id(), "my-schema-id");
 }

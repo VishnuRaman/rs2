@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tokio::{spawn, time::sleep};
 use tokio::sync::Mutex;
 
-use crate::error::{StreamError, StreamResult, RetryPolicy};
+use crate::error::{StreamError, StreamResult};
 use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
 
 /// A boxed, heap-allocated Rust Stream analogous to RS2's Stream[F, O]
@@ -602,57 +602,117 @@ where
         .boxed()
 }
 
-/// Automatic backpressure that drops oldest items when buffer is full
-pub fn auto_backpressure_drop_oldest<O>(s: RS2Stream<O>, buffer_size: usize) -> RS2Stream<O>
+/// Shared buffer behind the dropping backpressure strategies.
+///
+/// `Notify` replaces an earlier 1ms polling sleep (which cost up to a
+/// millisecond of latency per item), and `consumer_alive` gives the producer
+/// task a shutdown signal — without one it ran forever against an infinite
+/// source after the consumer went away.
+struct DropBuffer<O> {
+    items: Mutex<std::collections::VecDeque<O>>,
+    ready: tokio::sync::Notify,
+    source_done: std::sync::atomic::AtomicBool,
+    consumer_alive: std::sync::atomic::AtomicBool,
+}
+
+impl<O> DropBuffer<O> {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            items: Mutex::new(std::collections::VecDeque::new()),
+            ready: tokio::sync::Notify::new(),
+            source_done: std::sync::atomic::AtomicBool::new(false),
+            consumer_alive: std::sync::atomic::AtomicBool::new(true),
+        })
+    }
+}
+
+/// Marks the buffer as consumer-gone when the output stream is dropped.
+struct ConsumerGuard<O>(Arc<DropBuffer<O>>);
+
+impl<O> Drop for ConsumerGuard<O> {
+    fn drop(&mut self) {
+        self.0
+            .consumer_alive
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.0.ready.notify_waiters();
+    }
+}
+
+/// Body shared by the drop-oldest and drop-newest strategies.
+fn auto_backpressure_dropping<O>(
+    s: RS2Stream<O>,
+    buffer_size: usize,
+    drop_oldest: bool,
+) -> RS2Stream<O>
 where
     O: Send + 'static,
 {
-    use std::collections::VecDeque;
+    use std::sync::atomic::Ordering;
 
-    let buffer = Arc::new(Mutex::new(VecDeque::<O>::new()));
-    let buffer_clone = Arc::clone(&buffer);
-    let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+    let buffer = DropBuffer::new();
+    let producer = Arc::clone(&buffer);
 
     spawn(async move {
         pin_mut!(s);
         while let Some(item) = s.next().await {
-            let mut buf = buffer_clone.lock().await;
-
-            if buf.len() >= buffer_size {
-                buf.pop_front();
+            if !producer.consumer_alive.load(Ordering::Acquire) {
+                break; // Consumer went away; stop draining the source.
             }
-
-            buf.push_back(item);
+            {
+                let mut buf = producer.items.lock().await;
+                if buf.len() >= buffer_size {
+                    if drop_oldest {
+                        buf.pop_front();
+                        buf.push_back(item);
+                    }
+                    // drop_newest: discard `item` by simply not pushing it.
+                } else {
+                    buf.push_back(item);
+                }
+            }
+            producer.ready.notify_one();
         }
 
-        let _ = done_tx.send(()).await;
+        producer.source_done.store(true, Ordering::Release);
+        producer.ready.notify_waiters();
     });
 
     stream! {
-        let mut source_done = false;
+        let _guard = ConsumerGuard(Arc::clone(&buffer));
 
         loop {
-            if let Ok(_) = done_rx.try_recv() {
-                source_done = true;
-            }
-
             let item = {
-                let mut buf = buffer.lock().await;
+                let mut buf = buffer.items.lock().await;
                 buf.pop_front()
             };
 
             match item {
                 Some(item) => yield item,
                 None => {
-                    if source_done {
-                        break;
+                    if buffer.source_done.load(Ordering::Acquire) {
+                        // Re-check under the lock: the producer may have pushed
+                        // between our pop and reading the flag.
+                        let leftover = { buffer.items.lock().await.pop_front() };
+                        match leftover {
+                            Some(item) => yield item,
+                            None => break,
+                        }
+                    } else {
+                        buffer.ready.notified().await;
                     }
-                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
             }
         }
     }
-        .boxed()
+    .boxed()
+}
+
+/// Automatic backpressure that drops oldest items when buffer is full
+pub fn auto_backpressure_drop_oldest<O>(s: RS2Stream<O>, buffer_size: usize) -> RS2Stream<O>
+where
+    O: Send + 'static,
+{
+    auto_backpressure_dropping(s, buffer_size, true)
 }
 
 /// Automatic backpressure that drops newest items when buffer is full
@@ -660,50 +720,7 @@ pub fn auto_backpressure_drop_newest<O>(s: RS2Stream<O>, buffer_size: usize) -> 
 where
     O: Send + 'static,
 {
-    use std::collections::VecDeque;
-
-    let buffer = Arc::new(Mutex::new(VecDeque::<O>::new()));
-    let buffer_clone = Arc::clone(&buffer);
-    let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
-
-    spawn(async move {
-        pin_mut!(s);
-        while let Some(item) = s.next().await {
-            let mut buf = buffer_clone.lock().await;
-
-            if buf.len() < buffer_size {
-                buf.push_back(item);
-            }
-        }
-
-        let _ = done_tx.send(()).await;
-    });
-
-    stream! {
-        let mut source_done = false;
-
-        loop {
-            if let Ok(_) = done_rx.try_recv() {
-                source_done = true;
-            }
-
-            let item = {
-                let mut buf = buffer.lock().await;
-                buf.pop_front()
-            };
-
-            match item {
-                Some(item) => yield item,
-                None => {
-                    if source_done {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            }
-        }
-    }
-        .boxed()
+    auto_backpressure_dropping(s, buffer_size, false)
 }
 
 /// Automatic backpressure that errors when buffer is full
@@ -948,76 +965,40 @@ where
     O: Send + 'static,
 {
     stream! {
+        // `fuse` makes it safe if either side is polled again after completing.
+        // The previous implementation did an unconditional `await` on one side
+        // and then re-polled the same stream inside a `select!` — polling a
+        // stream after it had returned `None`, and starving the other side
+        // whenever the awaited one was slow.
+        let s1 = s1.fuse();
+        let s2 = s2.fuse();
         pin_mut!(s1);
         pin_mut!(s2);
 
         let mut s1_done = false;
         let mut s2_done = false;
 
-        let mut using_s1 = true;
-
-        loop {
-            if s1_done {
-                match s2.next().await {
-                    Some(item) => yield item,
-                    None => break,
-                }
-                continue;
-            }
-
-            if s2_done {
-                match s1.next().await {
-                    Some(item) => yield item,
-                    None => break,
-                }
-                continue;
-            }
-
-            if using_s1 {
-                match s1.next().await {
-                    Some(item) => {
-                        yield item;
-                    },
-                    None => {
-                        s1_done = true;
-                    }
-                }
-            } else {
-                match s2.next().await {
-                    Some(item) => {
-                        yield item;
-                    },
-                    None => {
-                        s2_done = true;
-                    }
-                }
-            }
-
+        while !(s1_done && s2_done) {
             tokio::select! {
+                // `biased` makes the tie-break deterministic: when both sides
+                // have an item ready, `s1` wins. Without it `select!` chooses at
+                // random and the output order is unpredictable. This only
+                // decides ties — if `s1` is pending, `s2` is still polled, so a
+                // slow `s1` cannot starve a ready `s2`.
                 biased;
 
-                maybe_item = s1.next() => {
+                maybe_item = s1.next(), if !s1_done => {
                     match maybe_item {
-                        Some(item) => {
-                            yield item;
-                            using_s1 = true;
-                        },
-                        None => {
-                            s1_done = true;
-                        }
+                        Some(item) => yield item,
+                        None => s1_done = true,
                     }
                 },
-                maybe_item = s2.next() => {
+                maybe_item = s2.next(), if !s2_done => {
                     match maybe_item {
-                        Some(item) => {
-                            yield item;
-                            using_s1 = false;
-                        },
-                        None => {
-                            s2_done = true;
-                        }
+                        Some(item) => yield item,
+                        None => s2_done = true,
                     }
-                }
+                },
             }
         }
     }

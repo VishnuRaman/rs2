@@ -59,7 +59,6 @@ rand = "0.8.5"
 thiserror = "1.0.69"
 base64 = "0.21.7"
 jsonschema = "0.30.0"
-lazy_static = "1.4"
 
 
 

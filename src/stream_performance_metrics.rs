@@ -1,38 +1,9 @@
-//! Performance optimization utilities for RStream
+//! Performance metrics for RStream
 //!
-//! This module provides buffering strategies, metrics collection,
-//! and performance monitoring tools.
+//! Metrics collection and health thresholds for stream operations.
+//! Buffer configuration lives in [`crate::stream_configuration`].
 
 use std::time::{Duration, Instant};
-
-/// Buffer configuration for optimal performance
-#[derive(Debug, Clone)]
-pub struct BufferConfig {
-    pub initial_capacity: usize,
-    pub max_capacity: Option<usize>,
-    pub growth_strategy: GrowthStrategy,
-}
-
-impl Default for BufferConfig {
-    fn default() -> Self {
-        Self {
-            initial_capacity: 8192,
-            max_capacity: Some(1048576),
-            growth_strategy: GrowthStrategy::Exponential(1.5),
-        }
-    }
-}
-
-/// Strategy for growing buffers
-#[derive(Debug, Clone)]
-pub enum GrowthStrategy {
-    /// Grow linearly by fixed amount
-    Linear(usize),
-    /// Grow exponentially by multiplier
-    Exponential(f64),
-    /// Fixed size, don't grow
-    Fixed,
-}
 
 #[derive(Debug, Clone)]
 pub struct HealthThresholds {

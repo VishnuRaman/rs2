@@ -49,9 +49,9 @@ async fn run_example() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create validators
-    let user_validator = JsonSchemaValidator::new("user_events", user_schema);
-    let order_validator = JsonSchemaValidator::new("order_events", order_schema);
-    let sensor_validator = JsonSchemaValidator::new("sensor_data", sensor_schema);
+    let user_validator = JsonSchemaValidator::try_new("user_events", user_schema).expect("valid schema");
+    let order_validator = JsonSchemaValidator::try_new("order_events", order_schema).expect("valid schema");
+    let sensor_validator = JsonSchemaValidator::try_new("sensor_data", sensor_schema).expect("valid schema");
 
     println!("✅ Created validators for:");
     println!("   - User Events (ID: {})", user_validator.get_schema_id());

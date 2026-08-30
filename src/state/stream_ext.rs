@@ -1,17 +1,11 @@
-use crate::*;
-use crate::resource_manager::{get_global_resource_manager, ResourceManager};
 use async_stream::stream;
 use futures_core::Stream;
-use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::collections::HashSet;
-use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time::sleep;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use crate::state::traits::KeyExtractor;
 use crate::state::{StateConfig, StateError, StateStorage};
 
@@ -20,79 +14,99 @@ const MAX_HASHMAP_KEYS: usize = 10_000;
 const MAX_GROUP_SIZE: usize = 10_000; // Max items per group
 const MAX_PATTERN_SIZE: usize = 1_000; // Max items per pattern
 const CLEANUP_INTERVAL: u64 = 1000; // Cleanup every 1000 items (increased from 100)
-const RESOURCE_TRACKING_INTERVAL: u64 = 100; // Track resources every 100 items
 const DEFAULT_BUFFER_SIZE: usize = 1024;
 
-/// Evict the oldest keys until `map` holds at most `max_keys` entries.
+/// Tracks key recency so eviction can drop the least-recently-*used* key.
 ///
-/// "Oldest" means first-inserted: `order` records keys in insertion order and is
-/// drained from the front. It may contain keys that were already removed by
-/// other means (a group being emitted, say); those are skipped.
+/// History: the original sorted key names and dropped the lexicographically
+/// smallest, evicting arbitrary live keys and silently resetting their
+/// accumulators. A FIFO replacement bounded memory correctly but still evicted a
+/// long-lived hot key ahead of a recently-created idle one. This is LRU.
 ///
-/// This replaces an earlier version that sorted keys lexicographically and
-/// dropped the smallest, which evicted arbitrary *live* keys and silently reset
-/// their accumulators.
+/// `touch` runs on every item, so it is kept allocation-free for keys already
+/// present — only a first sighting allocates. Finding victims is an O(n) select
+/// rather than a sorted index, which costs nothing in the common case because
+/// eviction only runs every `CLEANUP_INTERVAL` items and only above the cap.
+#[derive(Default)]
+struct KeyRecency {
+    tick: u64,
+    last_seen: HashMap<String, u64>,
+}
+
+impl KeyRecency {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a sighting of `key`, making it the most recently used.
+    fn touch(&mut self, key: &str) {
+        self.tick += 1;
+        match self.last_seen.get_mut(key) {
+            Some(slot) => *slot = self.tick,
+            None => {
+                self.last_seen.insert(key.to_string(), self.tick);
+            }
+        }
+    }
+
+    /// Forget `key` entirely (it was removed from the map by other means).
+    fn forget(&mut self, key: &str) {
+        self.last_seen.remove(key);
+    }
+
+    /// The `count` least-recently-used keys.
+    fn least_recent(&self, count: usize) -> Vec<String> {
+        if count == 0 {
+            return Vec::new();
+        }
+        let mut entries: Vec<(u64, &String)> =
+            self.last_seen.iter().map(|(k, t)| (*t, k)).collect();
+        if count >= entries.len() {
+            return entries.into_iter().map(|(_, k)| k.clone()).collect();
+        }
+        entries.select_nth_unstable_by_key(count, |(t, _)| *t);
+        entries[..count].iter().map(|(_, k)| (*k).clone()).collect()
+    }
+}
+
+/// Evict least-recently-used keys until `map` holds at most `max_keys` entries.
+///
+/// Callers that remove keys by other means should call [`KeyRecency::forget`],
+/// but the index tolerates stale entries: if a pass selects only tombstones and
+/// the map is still over the cap, it prunes and retries once. That keeps the
+/// common path free of the O(n) prune.
 ///
 /// Returns the number of entries actually removed.
 fn evict_oldest_entries<V>(
     map: &mut HashMap<String, V>,
-    order: &mut VecDeque<String>,
+    recency: &mut KeyRecency,
     max_keys: usize,
 ) -> usize {
     let mut removed = 0;
-    while map.len() > max_keys {
-        match order.pop_front() {
-            Some(key) => {
-                if map.remove(&key).is_some() {
-                    removed += 1;
-                }
-            }
-            // Nothing left to evict from; the map is only reachable via `order`,
-            // so this should not happen, but never spin.
-            None => break,
-        }
-    }
 
-    // Cheap path: drop leading tombstones.
-    while let Some(front) = order.front() {
-        if map.contains_key(front) {
+    for attempt in 0..2 {
+        if map.len() <= max_keys {
             break;
         }
-        order.pop_front();
+        if attempt == 1 {
+            // First pass did not free enough — the index holds tombstones.
+            recency.last_seen.retain(|k, _| map.contains_key(k));
+        }
+        let excess = map.len() - max_keys;
+        for key in recency.least_recent(excess) {
+            if map.remove(&key).is_some() {
+                removed += 1;
+            }
+            recency.forget(&key);
+        }
     }
 
-    // Front-pruning alone is not enough. Callers such as `stateful_group_by`
-    // remove keys mid-stream when a group is emitted, and a key that reappears
-    // is pushed again — so tombstones and duplicates accumulate in the middle
-    // while the map itself stays small. Without this rebuild, an alternating
-    // key pattern grows `order` by one entry per item indefinitely.
-    //
-    // Retain keeps the *first* occurrence of each key, which is the correct
-    // age for FIFO ordering.
-    if order.len() > map.len().saturating_mul(2).saturating_add(64) {
-        let mut seen: HashSet<String> = HashSet::with_capacity(map.len());
-        order.retain(|k| map.contains_key(k) && seen.insert(k.clone()));
+    // Keep the index from outgrowing the map when callers drop keys silently.
+    if recency.last_seen.len() > map.len().saturating_mul(2).saturating_add(64) {
+        recency.last_seen.retain(|k, _| map.contains_key(k));
     }
 
     removed
-}
-
-// Optimized resource tracking - batch operations
-async fn track_resource_batch(
-    resource_manager: &Arc<ResourceManager>,
-    allocations: u64,
-    deallocations: u64,
-    buffer_overflows: u64,
-) {
-    if allocations > 0 {
-        resource_manager.track_memory_allocation(allocations).await.ok();
-    }
-    if deallocations > 0 {
-        resource_manager.track_memory_deallocation(deallocations).await;
-    }
-    for _ in 0..buffer_overflows {
-        resource_manager.track_buffer_overflow().await.ok();
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -173,17 +187,13 @@ where
         Self: Sized,
     {
         let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
             let mut state: HashMap<String, ()> = HashMap::new();
-            let mut state_order: VecDeque<String> = VecDeque::new();
+            let mut state_order = KeyRecency::new();
             let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
@@ -191,27 +201,11 @@ where
                 // Periodic cleanup and resource tracking
                 item_count += 1;
                 if item_count % CLEANUP_INTERVAL == 0 {
-                    let evicted = evict_oldest_entries(&mut state, &mut state_order, MAX_HASHMAP_KEYS);
-                    if evicted > 0 {
-                        pending_deallocations += evicted as u64;
-                        pending_buffer_overflows += 1;
-                    }
+                    evict_oldest_entries(&mut state, &mut state_order, MAX_HASHMAP_KEYS);
                 }
 
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
-                }
-
-                let is_new_key = !state.contains_key(&key);
+                state_order.touch(&key);
                 state.entry(key.clone()).or_insert(());
-                if is_new_key {
-                    state_order.push_back(key.clone());
-                    pending_allocations += 1;
-                }
 
                 let state_access = StateAccess::new(storage.clone(), key);
                 match f(item, state_access).await {
@@ -220,10 +214,6 @@ where
                 }
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-            }
         })
     }
 
@@ -246,40 +236,17 @@ where
         Self: Sized,
     {
         let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
-            let mut seen_keys: HashSet<String> = HashSet::new();
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
 
-                // Optimized cleanup - only when necessary
-                item_count += 1;
-                if item_count % CLEANUP_INTERVAL == 0 && seen_keys.len() > MAX_HASHMAP_KEYS {
-                    // More efficient cleanup - clear all and let it rebuild
-                    let old_size = seen_keys.len();
-                    seen_keys.clear();
-                    pending_allocations = pending_allocations.saturating_sub(old_size as u64);
-                }
-
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    if pending_allocations > 0 {
-                        resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                        pending_allocations = 0;
-                    }
-                }
-
-                // Optimized key insertion - avoid double lookup
-                let is_new_key = seen_keys.insert(key.clone());
-                if is_new_key {
-                    pending_allocations += 1;
-                }
+                // No per-key bookkeeping here: the filter's state lives in
+                // `storage`, keyed per item. A `seen_keys` set used to be
+                // maintained purely to feed a resource counter that no longer
+                // exists, costing a String clone and a hash insert per item.
 
                 let state_access = StateAccess::new(storage.clone(), key);
                 match f(&item, state_access).await {
@@ -292,10 +259,6 @@ where
                 }
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
-            }
         })
     }
 
@@ -321,17 +284,13 @@ where
         Self: Sized,
     {
         let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
             let mut accumulators: HashMap<String, R> = HashMap::new();
-            let mut accumulator_order: VecDeque<String> = VecDeque::new();
+            let mut accumulator_order = KeyRecency::new();
             let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
@@ -339,26 +298,10 @@ where
                 // Periodic cleanup to prevent memory leaks
                 item_count += 1;
                 if item_count % CLEANUP_INTERVAL == 0 {
-                    let evicted = evict_oldest_entries(&mut accumulators, &mut accumulator_order, MAX_HASHMAP_KEYS);
-                    if evicted > 0 {
-                        pending_deallocations += evicted as u64;
-                        pending_buffer_overflows += 1;
-                    }
+                    evict_oldest_entries(&mut accumulators, &mut accumulator_order, MAX_HASHMAP_KEYS);
                 }
 
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
-                }
-
-                let is_new_key = !accumulators.contains_key(&key);
-                if is_new_key {
-                    accumulator_order.push_back(key.clone());
-                    pending_allocations += 1;
-                }
+                accumulator_order.touch(&key);
                 let acc = accumulators.entry(key.clone()).or_insert_with(|| initial.clone());
                 let state_access = StateAccess::new(storage.clone(), key);
 
@@ -371,10 +314,6 @@ where
                 }
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-            }
         })
     }
 
@@ -400,17 +339,13 @@ where
         Self: Sized,
     {
         let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
             let mut accumulators: HashMap<String, R> = HashMap::new();
-            let mut accumulator_order: VecDeque<String> = VecDeque::new();
+            let mut accumulator_order = KeyRecency::new();
             let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
@@ -418,26 +353,10 @@ where
                 // Periodic cleanup to prevent memory leaks
                 item_count += 1;
                 if item_count % CLEANUP_INTERVAL == 0 {
-                    let evicted = evict_oldest_entries(&mut accumulators, &mut accumulator_order, MAX_HASHMAP_KEYS);
-                    if evicted > 0 {
-                        pending_deallocations += evicted as u64;
-                        pending_buffer_overflows += 1;
-                    }
+                    evict_oldest_entries(&mut accumulators, &mut accumulator_order, MAX_HASHMAP_KEYS);
                 }
 
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
-                }
-
-                let is_new_key = !accumulators.contains_key(&key);
-                if is_new_key {
-                    accumulator_order.push_back(key.clone());
-                    pending_allocations += 1;
-                }
+                accumulator_order.touch(&key);
                 let acc = accumulators.entry(key.clone()).or_insert_with(|| initial.clone());
                 let state_access = StateAccess::new(storage.clone(), key);
 
@@ -450,10 +369,6 @@ where
                 }
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-            }
         })
     }
 
@@ -506,19 +421,15 @@ where
         let storage = config.create_storage_arc();
         let timeout_ms = group_timeout.map(|d| d.as_millis() as u64);
         let max_group_size = max_group_size.unwrap_or(MAX_GROUP_SIZE);
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
             let mut groups: HashMap<String, Vec<T>> = HashMap::new();
             let mut group_timestamps: HashMap<String, u64> = HashMap::new();
-            let mut group_order: VecDeque<String> = VecDeque::new();
+            let mut group_order = KeyRecency::new();
             let mut last_key: Option<String> = None;
             let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
@@ -527,23 +438,10 @@ where
                 // Periodic cleanup to prevent memory leaks
                 item_count += 1;
                 if item_count % CLEANUP_INTERVAL == 0 {
-                    // `groups` and `group_timestamps` share a key space, so evict
-                    // `groups` by age and keep the timestamps in step.
-                    let mut evict_order = group_order.clone();
-                    let evicted_groups = evict_oldest_entries(&mut groups, &mut group_order, MAX_HASHMAP_KEYS);
-                    let evicted_timestamps = evict_oldest_entries(&mut group_timestamps, &mut evict_order, MAX_HASHMAP_KEYS);
-                    if evicted_groups > 0 || evicted_timestamps > 0 {
-                        pending_deallocations += (evicted_groups + evicted_timestamps) as u64;
-                        pending_buffer_overflows += 1;
-                    }
-                }
-
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
+                    // `groups` and `group_timestamps` share a key space: evict
+                    // `groups` by recency, then drop any timestamp left orphaned.
+                    evict_oldest_entries(&mut groups, &mut group_order, MAX_HASHMAP_KEYS);
+                    group_timestamps.retain(|k, _| groups.contains_key(k));
                 }
 
                 // Check if we need to emit the previous group due to key change
@@ -552,7 +450,6 @@ where
                         if last_key_val != &key {
                             // Key changed, emit the previous group
                             if let Some(group_items) = groups.remove(last_key_val) {
-                                pending_deallocations += group_items.len() as u64;
                                 let state_access = StateAccess::new(storage.clone(), last_key_val.clone());
                                 match f(last_key_val.clone(), group_items, state_access).await {
                                     Ok(result) => yield Ok(result),
@@ -566,9 +463,8 @@ where
 
                 // Optimized timeout check - only check current key instead of all groups
                 if let (Some(timeout), Some(&group_start)) = (timeout_ms, group_timestamps.get(&key)) {
-                    if now - group_start > timeout {
+                    if now.saturating_sub(group_start) > timeout {
                         if let Some(group_items) = groups.remove(&key) {
-                            pending_deallocations += group_items.len() as u64;
                             let state_access = StateAccess::new(storage.clone(), key.clone());
                             match f(key.clone(), group_items, state_access).await {
                                 Ok(result) => yield Ok(result),
@@ -580,20 +476,14 @@ where
                 }
 
                 // Add item to current group
-                let is_new_group = !groups.contains_key(&key);
-                if is_new_group {
-                    group_order.push_back(key.clone());
-                    pending_allocations += 1;
-                }
+                group_order.touch(&key);
                 let group = groups.entry(key.clone()).or_insert_with(Vec::new);
                 group_timestamps.entry(key.clone()).or_insert(now);
                 group.push(item);
-                pending_allocations += 1;
 
                 // Check if we should emit this group due to size limit
                 if group.len() >= max_group_size {
                     if let Some(group_items) = groups.remove(&key) {
-                        pending_deallocations += group_items.len() as u64;
                         let state_access = StateAccess::new(storage.clone(), key.clone());
                         match f(key.clone(), group_items, state_access).await {
                             Ok(result) => yield Ok(result),
@@ -612,7 +502,7 @@ where
 
             if let Some(timeout) = timeout_ms {
                 for (key, &group_start) in &group_timestamps {
-                    if now - group_start > timeout {
+                    if now.saturating_sub(group_start) > timeout {
                         expired_keys.push(key.clone());
                     }
                 }
@@ -622,7 +512,6 @@ where
             for key in expired_keys {
                 let key_clone = key.clone();
                 if let Some(group_items) = groups.remove(&key_clone) {
-                    pending_deallocations += group_items.len() as u64;
                     let state_access = StateAccess::new(storage.clone(), key_clone.clone());
                     match f(key_clone.clone(), group_items, state_access).await {
                         Ok(result) => yield Ok(result),
@@ -634,7 +523,6 @@ where
 
             // Emit any remaining groups at stream end
             for (key, group_items) in groups {
-                pending_deallocations += group_items.len() as u64;
                 let state_access = StateAccess::new(storage.clone(), key.clone());
                 match f(key, group_items, state_access).await {
                     Ok(result) => yield Ok(result),
@@ -642,10 +530,6 @@ where
                 }
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-            }
         })
     }
 
@@ -663,13 +547,10 @@ where
     {
         let storage = config.create_storage_arc();
         let ttl_ms = ttl.as_millis() as u64;
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
@@ -690,18 +571,8 @@ where
                     }
                 };
 
-                if now - last_seen > ttl_ms {
-                    // Track memory allocation for new state entry
-                    pending_allocations += 1;
+                if now.saturating_sub(last_seen) > ttl_ms {
                     
-                    // Batch resource tracking
-                    item_count += 1;
-                    if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                        if pending_allocations > 0 {
-                            resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                            pending_allocations = 0;
-                        }
-                    }
                     
                     // Handle serialization error gracefully
                     match serde_json::to_vec(&now) {
@@ -721,10 +592,6 @@ where
                 }
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
-            }
         })
     }
 
@@ -772,24 +639,17 @@ where
     {
         let storage = config.create_storage_arc();
         let window_ms = window_duration.as_millis() as u64;
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
                 let state_access = StateAccess::new(storage.clone(), key.clone());
 
                 let now = unix_timestamp_millis();
-                let (mut throttle_state, is_new) = load_throttle_state(&state_access, now).await;
-                if is_new {
-                    pending_allocations += 1;
-                }
+                let (mut throttle_state, _is_new) = load_throttle_state(&state_access, now).await;
 
                 if now.saturating_sub(throttle_state.window_start) >= window_ms {
                     throttle_state.count = 0;
@@ -800,7 +660,6 @@ where
                 if admit {
                     throttle_state.count += 1;
                 } else {
-                    pending_buffer_overflows += 1;
                 }
 
                 match serde_json::to_vec(&throttle_state) {
@@ -820,25 +679,8 @@ where
                     yield Ok(f(item));
                 }
 
-                item_count += 1;
-                if item_count % (RESOURCE_TRACKING_INTERVAL * 2) == 0 {
-                    if pending_allocations > 0 {
-                        resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                        pending_allocations = 0;
-                    }
-                    for _ in 0..pending_buffer_overflows {
-                        resource_manager.track_buffer_overflow().await.ok();
-                    }
-                    pending_buffer_overflows = 0;
-                }
             }
 
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
-            }
-            for _ in 0..pending_buffer_overflows {
-                resource_manager.track_buffer_overflow().await.ok();
-            }
         })
     }
 
@@ -856,13 +698,10 @@ where
     {
         let storage = config.create_storage_arc();
         let timeout_ms = session_timeout.as_millis() as u64;
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
@@ -875,8 +714,6 @@ where
                 };
 
                 let mut state: SessionState = if state_bytes.is_empty() {
-                    // Track memory allocation for new session state
-                    pending_allocations += 1;
                     SessionState { last_activity: now, is_new_session: true }
                 } else {
                     match serde_json::from_slice(&state_bytes) {
@@ -885,7 +722,7 @@ where
                     }
                 };
 
-                let is_new_session = now - state.last_activity > timeout_ms;
+                let is_new_session = now.saturating_sub(state.last_activity) > timeout_ms;
                 state.last_activity = now;
                 state.is_new_session = is_new_session;
 
@@ -903,22 +740,10 @@ where
                     }
                 }
 
-                // Batch resource tracking
-                item_count += 1;
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    if pending_allocations > 0 {
-                        resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                        pending_allocations = 0;
-                    }
-                }
 
                 yield Ok(f(item, is_new_session));
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
-            }
         })
     }
 
@@ -942,17 +767,13 @@ where
         Self: Sized,
     {
         let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
             let mut patterns: HashMap<String, Vec<T>> = HashMap::new();
-            let mut pattern_order: VecDeque<String> = VecDeque::new();
+            let mut pattern_order = KeyRecency::new();
             let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
@@ -960,41 +781,21 @@ where
                 // Periodic cleanup to prevent memory leaks
                 item_count += 1;
                 if item_count % CLEANUP_INTERVAL == 0 {
-                    let evicted = evict_oldest_entries(&mut patterns, &mut pattern_order, MAX_HASHMAP_KEYS);
-                    if evicted > 0 {
-                        pending_deallocations += evicted as u64;
-                        pending_buffer_overflows += 1;
-                    }
+                    evict_oldest_entries(&mut patterns, &mut pattern_order, MAX_HASHMAP_KEYS);
                 }
 
-                // Batch resource tracking
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                    pending_allocations = 0;
-                    pending_deallocations = 0;
-                    pending_buffer_overflows = 0;
-                }
-
-                let is_new_pattern = !patterns.contains_key(&key);
-                if is_new_pattern {
-                    pattern_order.push_back(key.clone());
-                    pending_allocations += 1;
-                }
+                pattern_order.touch(&key);
                 let pattern = patterns.entry(key.clone()).or_insert_with(Vec::new);
                 pattern.push(item);
-                pending_allocations += 1;
 
                 // Limit pattern buffer size to prevent memory overflow
                 if pattern.len() > MAX_PATTERN_SIZE {
                     let drained = pattern.len() - MAX_PATTERN_SIZE;
                     pattern.drain(0..drained);
-                    pending_deallocations += drained as u64;
-                    pending_buffer_overflows += 1;
                 }
 
                 if pattern.len() >= pattern_size {
                     let pattern_items = pattern.drain(..pattern_size).collect::<Vec<_>>();
-                    pending_deallocations += pattern_size as u64;
                     let state_access = StateAccess::new(storage.clone(), key.clone());
                     match f(pattern_items, state_access).await {
                         Ok(result) => {
@@ -1007,10 +808,6 @@ where
                 }
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-            }
         })
     }
 
@@ -1039,7 +836,6 @@ where
         Self: Sized,
     {
         let storage = config.create_storage_arc();
-        let resource_manager = get_global_resource_manager();
         Box::pin(stream! {
             let left_stream = self;
             let right_stream = other;
@@ -1047,13 +843,10 @@ where
             futures::pin_mut!(right_stream);
             let mut left_buffer: HashMap<String, Vec<LeftItemWithTime<T>>> = HashMap::new();
             let mut right_buffer: HashMap<String, Vec<RightItemWithTime<U>>> = HashMap::new();
-            let mut left_order: VecDeque<String> = VecDeque::new();
-            let mut right_order: VecDeque<String> = VecDeque::new();
+            let mut left_order = KeyRecency::new();
+            let mut right_order = KeyRecency::new();
             let window_ms = window_duration.as_millis() as u64;
             let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
-            let mut pending_buffer_overflows = 0u64;
 
             // Track each side separately: one input ending must not discard the
             // items still buffered and pending on the other.
@@ -1070,49 +863,28 @@ where
                             // Periodic cleanup to prevent memory leaks
                             item_count += 1;
                             if item_count % CLEANUP_INTERVAL == 0 {
-                                let evicted_left = evict_oldest_entries(&mut left_buffer, &mut left_order, MAX_HASHMAP_KEYS);
-                                let evicted_right = evict_oldest_entries(&mut right_buffer, &mut right_order, MAX_HASHMAP_KEYS);
-                                if evicted_left > 0 || evicted_right > 0 {
-                                    pending_deallocations += (evicted_left + evicted_right) as u64;
-                                    pending_buffer_overflows += 1;
-                                }
-                            }
-
-                            // Batch resource tracking
-                            if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                                pending_allocations = 0;
-                                pending_deallocations = 0;
-                                pending_buffer_overflows = 0;
+                                evict_oldest_entries(&mut left_buffer, &mut left_order, MAX_HASHMAP_KEYS);
+                                evict_oldest_entries(&mut right_buffer, &mut right_order, MAX_HASHMAP_KEYS);
                             }
 
                             // Single lookup: check newness before `entry` inserts the key.
-                            if !left_buffer.contains_key(&key) {
-                                left_order.push_back(key.clone());
-                                pending_allocations += 1;
-                            }
+                            left_order.touch(&key);
                             let left_buf = left_buffer.entry(key.clone()).or_default();
 
                             // Drop left items that have fallen out of the window.
                             // `saturating_sub` because SystemTime is not monotonic.
-                            let before = left_buf.len();
+                            let _before = left_buf.len();
                             left_buf.retain(|x| now.saturating_sub(x.timestamp) <= window_ms);
-                            let after = left_buf.len();
-                            if before > after {
-                                pending_deallocations += (before - after) as u64;
-                            }
+                            let _after = left_buf.len();
 
                             // Add new left item
                             left_buf.push(LeftItemWithTime { item: item.clone(), timestamp: now, key: key.clone() });
-                            pending_allocations += 1;
 
                             // Evict oldest if buffer is full
                             let max_size = config.max_size.unwrap_or(DEFAULT_BUFFER_SIZE);
                             if left_buf.len() > max_size {
                                 let removed = left_buf.len() - max_size;
                                 left_buf.drain(0..removed);
-                                pending_deallocations += removed as u64;
-                                pending_buffer_overflows += 1;
                             }
 
                             // Join with right items in window
@@ -1136,57 +908,33 @@ where
                             // Periodic cleanup to prevent memory leaks
                             item_count += 1;
                             if item_count % CLEANUP_INTERVAL == 0 {
-                                let evicted_left = evict_oldest_entries(&mut left_buffer, &mut left_order, MAX_HASHMAP_KEYS);
-                                let evicted_right = evict_oldest_entries(&mut right_buffer, &mut right_order, MAX_HASHMAP_KEYS);
-                                if evicted_left > 0 || evicted_right > 0 {
-                                    pending_deallocations += (evicted_left + evicted_right) as u64;
-                                    pending_buffer_overflows += 1;
-                                }
-                            }
-
-                            // Batch resource tracking
-                            if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-                                pending_allocations = 0;
-                                pending_deallocations = 0;
-                                pending_buffer_overflows = 0;
+                                evict_oldest_entries(&mut left_buffer, &mut left_order, MAX_HASHMAP_KEYS);
+                                evict_oldest_entries(&mut right_buffer, &mut right_order, MAX_HASHMAP_KEYS);
                             }
 
                             // Drop left items that have fallen out of the window.
                             if let Some(left_buf) = left_buffer.get_mut(&key) {
-                                let before = left_buf.len();
+                                let _before = left_buf.len();
                                 left_buf.retain(|x| now.saturating_sub(x.timestamp) <= window_ms);
-                                let after = left_buf.len();
-                                if before > after {
-                                    pending_deallocations += (before - after) as u64;
-                                }
+                                let _after = left_buf.len();
                             }
 
                             // Single lookup: check newness before `entry` inserts the key.
-                            if !right_buffer.contains_key(&key) {
-                                right_order.push_back(key.clone());
-                                pending_allocations += 1;
-                            }
+                            right_order.touch(&key);
                             let right_buf = right_buffer.entry(key.clone()).or_default();
 
                             // Drop right items that have fallen out of the window.
-                            let before = right_buf.len();
+                            let _before = right_buf.len();
                             right_buf.retain(|x| now.saturating_sub(x.timestamp) <= window_ms);
-                            let after = right_buf.len();
-                            if before > after {
-                                pending_deallocations += (before - after) as u64;
-                            }
+                            let _after = right_buf.len();
 
                             // Add new right item
                             right_buf.push(RightItemWithTime { item: item.clone(), timestamp: now, key: key.clone() });
-                            pending_allocations += 1;
                             // Evict oldest if buffer is full
                             let max_size = config.max_size.unwrap_or(DEFAULT_BUFFER_SIZE);
                             if right_buf.len() > max_size {
                                 let removed = right_buf.len() - max_size;
                                 right_buf.drain(0..removed);
-                                pending_deallocations += removed as u64;
-                                pending_buffer_overflows += 1;
                             }
                             // Join with left items in window
                             if let Some(lefts) = left_buffer.get(&key) {
@@ -1205,10 +953,6 @@ where
                 }
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 || pending_deallocations > 0 || pending_buffer_overflows > 0 {
-                track_resource_batch(&resource_manager, pending_allocations, pending_deallocations, pending_buffer_overflows).await;
-            }
         })
     }
 
@@ -1259,60 +1003,37 @@ where
     {
         let storage = config.create_storage_arc();
         let slide_size = slide_size.unwrap_or(window_size); // Default to tumbling window
-        let resource_manager = get_global_resource_manager();
 
         Box::pin(stream! {
             let stream = self;
             futures::pin_mut!(stream);
             let mut windows: HashMap<String, Vec<T>> = HashMap::new();
-            let mut item_count = 0u64;
-            let mut pending_allocations = 0u64;
-            let mut pending_deallocations = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
                 let key = key_extractor.extract_key(&item);
-                let is_new_window = !windows.contains_key(&key);
+                let _is_new_window = !windows.contains_key(&key);
                 let window = windows.entry(key.clone()).or_insert_with(Vec::new);
-                if is_new_window {
-                    pending_allocations += 1;
-                }
 
                 window.push(item);
-                pending_allocations += 1;
 
-                // Batch resource tracking
-                item_count += 1;
-                if item_count % RESOURCE_TRACKING_INTERVAL == 0 {
-                    if pending_allocations > 0 {
-                        resource_manager.track_memory_allocation(pending_allocations).await.ok();
-                        pending_allocations = 0;
-                    }
-                    if pending_deallocations > 0 {
-                        resource_manager.track_memory_deallocation(pending_deallocations).await;
-                        pending_deallocations = 0;
-                    }
-                }
 
                 // Emit window when it reaches the required size
                 if window.len() >= window_size {
                     let window_items = if slide_size >= window_size {
                         // Tumbling window - take all items and clear the window
                         let items = window.drain(..).collect::<Vec<_>>();
-                        pending_deallocations += items.len() as u64;
                         items
                     } else {
                         // Sliding window - take window_size items, keep the sliding portion
                         let items = window.drain(..window_size).collect::<Vec<_>>();
-                        pending_deallocations += window_size as u64;
 
                         // Calculate how many items to keep for the next window
                         let keep_count = window_size.saturating_sub(slide_size);
                         if keep_count > 0 && items.len() >= slide_size {
                             // Put back the items that should remain for the sliding window
                             let to_keep = items[slide_size..].to_vec();
-                            let to_keep_len = to_keep.len();
+                            let _to_keep_len = to_keep.len();
                             window.splice(0..0, to_keep);
-                            pending_allocations += to_keep_len as u64;
                         }
 
                         items
@@ -1330,7 +1051,6 @@ where
             if emit_partial {
                 for (key, window) in windows {
                     if !window.is_empty() {
-                        pending_deallocations += window.len() as u64;
                         let state_access = StateAccess::new(storage.clone(), key.clone());
                         match f(window, state_access).await {
                             Ok(result) => yield Ok(result),
@@ -1340,13 +1060,6 @@ where
                 }
             }
 
-            // Final resource tracking
-            if pending_allocations > 0 {
-                resource_manager.track_memory_allocation(pending_allocations).await.ok();
-            }
-            if pending_deallocations > 0 {
-                resource_manager.track_memory_deallocation(pending_deallocations).await;
-            }
         })
     }
 }
@@ -1387,22 +1100,19 @@ where
 {
 }
 
-
 #[cfg(test)]
 mod evict_tests {
     use super::*;
 
-    fn insert(map: &mut HashMap<String, u32>, order: &mut VecDeque<String>, key: &str, v: u32) {
-        if !map.contains_key(key) {
-            order.push_back(key.to_string());
-        }
+    fn insert(map: &mut HashMap<String, u32>, order: &mut KeyRecency, key: &str, v: u32) {
+        order.touch(key);
         map.insert(key.to_string(), v);
     }
 
     #[test]
-    fn evicts_in_insertion_order_not_key_order() {
+    fn evicts_least_recently_used_not_lexicographically_smallest() {
         let mut map = HashMap::new();
-        let mut order = VecDeque::new();
+        let mut order = KeyRecency::new();
         // Inserted newest-name-first, so lexicographic order is the reverse of age.
         for (i, k) in ["zzz", "mmm", "aaa"].iter().enumerate() {
             insert(&mut map, &mut order, k, i as u32);
@@ -1411,15 +1121,37 @@ mod evict_tests {
         let removed = evict_oldest_entries(&mut map, &mut order, 2);
 
         assert_eq!(removed, 1);
-        assert!(!map.contains_key("zzz"), "oldest insertion should go first");
-        assert!(map.contains_key("aaa"), "newest insertion must survive");
+        assert!(!map.contains_key("zzz"), "least recently used goes first");
+        assert!(map.contains_key("aaa"), "most recent must survive");
         assert!(map.contains_key("mmm"));
+    }
+
+    #[test]
+    fn a_re_seen_key_survives_eviction() {
+        // This is what FIFO got wrong: "old" is inserted first but stays hot,
+        // so it must outlive keys created after it.
+        let mut map = HashMap::new();
+        let mut order = KeyRecency::new();
+
+        insert(&mut map, &mut order, "old", 0);
+        insert(&mut map, &mut order, "b", 1);
+        insert(&mut map, &mut order, "c", 2);
+        // Touch "old" again — it is now the most recently used.
+        order.touch("old");
+
+        evict_oldest_entries(&mut map, &mut order, 2);
+
+        assert!(
+            map.contains_key("old"),
+            "a recently used key was evicted despite being touched last"
+        );
+        assert!(!map.contains_key("b"), "least recently used should go");
     }
 
     #[test]
     fn skips_tombstones_when_evicting() {
         let mut map = HashMap::new();
-        let mut order = VecDeque::new();
+        let mut order = KeyRecency::new();
         for (i, k) in ["a", "b", "c", "d"].iter().enumerate() {
             insert(&mut map, &mut order, k, i as u32);
         }
@@ -1436,61 +1168,29 @@ mod evict_tests {
     }
 
     #[test]
-    fn order_queue_stays_bounded_under_churn() {
-        // Reproduces the stateful_group_by pattern. The critical detail is a
-        // long-lived key pinned at the FRONT of the queue: front-pruning then
-        // stops immediately, and every short-lived key removed behind it
-        // becomes a permanent tombstone. The map stays tiny, so the eviction
-        // loop never runs either — without the rebuild, `order` grows by one
-        // entry per item forever.
+    fn recency_index_stays_bounded_under_churn() {
+        // Reproduces the stateful_group_by pattern: a long-lived key plus a
+        // stream of short-lived ones removed as their groups are emitted.
+        // `forget` must keep the index from growing without bound.
         let mut map: HashMap<String, u32> = HashMap::new();
-        let mut order: VecDeque<String> = VecDeque::new();
+        let mut order = KeyRecency::new();
 
         insert(&mut map, &mut order, "long_lived", 0);
 
         for i in 0..10_000u32 {
             let key = format!("group{}", i);
             insert(&mut map, &mut order, &key, i);
-            // Emit the group: key leaves the map but stays in `order`.
             map.remove(&key);
+            order.forget(&key);
             evict_oldest_entries(&mut map, &mut order, 10_000);
         }
 
+        assert!(map.contains_key("long_lived"));
         assert!(
-            map.contains_key("long_lived"),
-            "the live key must not be evicted"
-        );
-        assert!(
-            order.len() < 256,
-            "order queue grew without bound: {} entries for a map of {}",
-            order.len(),
+            order.last_seen.len() < 256,
+            "recency index grew without bound: {} entries for a map of {}",
+            order.last_seen.len(),
             map.len()
         );
-    }
-
-    #[test]
-    fn rebuild_preserves_oldest_first_ordering() {
-        let mut map: HashMap<String, u32> = HashMap::new();
-        let mut order: VecDeque<String> = VecDeque::new();
-
-        // "old" is inserted first and stays live throughout.
-        insert(&mut map, &mut order, "old", 0);
-        // Churn enough distinct short-lived keys to trigger the rebuild.
-        for i in 0..500u32 {
-            let k = format!("tmp{}", i);
-            insert(&mut map, &mut order, &k, i);
-            map.remove(&k);
-        }
-        insert(&mut map, &mut order, "new", 1);
-        evict_oldest_entries(&mut map, &mut order, 10_000);
-
-        // Rebuild must keep both live keys, oldest first.
-        let live: Vec<&String> = order.iter().collect();
-        assert_eq!(live, vec!["old", "new"], "rebuild lost or reordered keys");
-
-        // And a subsequent eviction must still take "old" before "new".
-        evict_oldest_entries(&mut map, &mut order, 1);
-        assert!(!map.contains_key("old"));
-        assert!(map.contains_key("new"));
     }
 }

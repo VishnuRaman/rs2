@@ -471,7 +471,7 @@ async fn main() {
         },
         "required": ["id", "user_id", "activity_type", "timestamp", "metadata"]
     });
-    let schema_validator = JsonSchemaValidator::new("user-activity-v1", user_activity_schema);
+    let schema_validator = JsonSchemaValidator::try_new("user-activity-v1", user_activity_schema).expect("valid schema");
 
     // --- Kafka source and schema validation ---
     let raw_activity_stream = <KafkaConnector as StreamConnector<String>>::from_source(
