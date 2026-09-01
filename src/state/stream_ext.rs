@@ -196,7 +196,10 @@ where
             let mut item_count = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
 
                 // Periodic cleanup and resource tracking
                 item_count += 1;
@@ -241,7 +244,10 @@ where
             let stream = self;
             futures::pin_mut!(stream);
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
 
                 // No per-key bookkeeping here: the filter's state lives in
                 // `storage`, keyed per item. A `seen_keys` set used to be
@@ -293,7 +299,10 @@ where
             let mut item_count = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
 
                 // Periodic cleanup to prevent memory leaks
                 item_count += 1;
@@ -348,7 +357,10 @@ where
             let mut item_count = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
 
                 // Periodic cleanup to prevent memory leaks
                 item_count += 1;
@@ -432,7 +444,10 @@ where
             let mut item_count = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
                 let now = unix_timestamp_millis();
 
                 // Periodic cleanup to prevent memory leaks
@@ -553,7 +568,10 @@ where
             futures::pin_mut!(stream);
 
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
                 let state_access = StateAccess::new(storage.clone(), key.clone());
 
                 let now = unix_timestamp_millis();
@@ -645,7 +663,10 @@ where
             futures::pin_mut!(stream);
 
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
                 let state_access = StateAccess::new(storage.clone(), key.clone());
 
                 let now = unix_timestamp_millis();
@@ -704,7 +725,10 @@ where
             futures::pin_mut!(stream);
 
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
                 let state_access = StateAccess::new(storage.clone(), key.clone());
 
                 let now = unix_timestamp_millis();
@@ -713,16 +737,23 @@ where
                     None => Vec::new(),
                 };
 
-                let mut state: SessionState = if state_bytes.is_empty() {
-                    SessionState { last_activity: now, is_new_session: true }
+                // `is_first` matters: with no stored state `last_activity` is
+                // seeded to `now`, so the gap test below computes `now - now = 0`,
+                // which is never greater than the timeout. Without this flag the
+                // very first event of every session was reported as *not* new —
+                // the `is_new_session: true` built here was overwritten one line
+                // later and never reached the caller.
+                let (mut state, is_first): (SessionState, bool) = if state_bytes.is_empty() {
+                    (SessionState { last_activity: now, is_new_session: true }, true)
                 } else {
                     match serde_json::from_slice(&state_bytes) {
-                        Ok(session_state) => session_state,
-                        Err(_) => SessionState { last_activity: now, is_new_session: true },
+                        Ok(session_state) => (session_state, false),
+                        Err(_) => (SessionState { last_activity: now, is_new_session: true }, true),
                     }
                 };
 
-                let is_new_session = now.saturating_sub(state.last_activity) > timeout_ms;
+                let is_new_session =
+                    is_first || now.saturating_sub(state.last_activity) > timeout_ms;
                 state.last_activity = now;
                 state.is_new_session = is_new_session;
 
@@ -754,7 +785,7 @@ where
         key_extractor: impl KeyExtractor<T> + Send + Sync + 'static,
         pattern_size: usize,
         mut f: F,
-    ) -> Pin<Box<dyn Stream<Item = Result<Option<String>, StateError>> + Send>>
+    ) -> Pin<Box<dyn Stream<Item = Result<String, StateError>> + Send>>
     where
         F: FnMut(
                 Vec<T>,
@@ -776,7 +807,10 @@ where
             let mut item_count = 0u64;
 
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
 
                 // Periodic cleanup to prevent memory leaks
                 item_count += 1;
@@ -797,12 +831,13 @@ where
                 if pattern.len() >= pattern_size {
                     let pattern_items = pattern.drain(..pattern_size).collect::<Vec<_>>();
                     let state_access = StateAccess::new(storage.clone(), key.clone());
+                    // `f` returning `None` means "no pattern matched here", which
+                    // is not an item. The stream item type used to be
+                    // `Result<Option<String>, _>` even though `Ok(None)` was
+                    // never yielded.
                     match f(pattern_items, state_access).await {
-                        Ok(result) => {
-                            if let Some(pattern_str) = result {
-                                yield Ok(Some(pattern_str));
-                            }
-                        }
+                        Ok(Some(pattern_str)) => yield Ok(pattern_str),
+                        Ok(None) => {}
                         Err(e) => yield Err(e),
                     }
                 }
@@ -857,7 +892,10 @@ where
                 tokio::select! {
                     left_item = left_stream.next(), if !left_done => {
                         if let Some(item) = left_item {
-                            let key = key_extractor.extract_key(&item);
+                            let key = match key_extractor.extract_key(&item) {
+                                Ok(key) => key,
+                                Err(e) => { yield Err(e); continue; }
+                            };
                             let now = unix_timestamp_millis();
 
                             // Periodic cleanup to prevent memory leaks
@@ -903,7 +941,10 @@ where
                     }
                     right_item = right_stream.next(), if !right_done => {
                         if let Some(item) = right_item {
-                            let key = other_key_extractor.extract_key(&item);
+                            let key = match other_key_extractor.extract_key(&item) {
+                                Ok(key) => key,
+                                Err(e) => { yield Err(e); continue; }
+                            };
                             let now = unix_timestamp_millis();
                             // Periodic cleanup to prevent memory leaks
                             item_count += 1;
@@ -1010,7 +1051,10 @@ where
             let mut windows: HashMap<String, Vec<T>> = HashMap::new();
 
             while let Some(item) = StreamExt::next(&mut stream).await {
-                let key = key_extractor.extract_key(&item);
+                let key = match key_extractor.extract_key(&item) {
+                    Ok(key) => key,
+                    Err(e) => { yield Err(e); continue; }
+                };
                 let _is_new_window = !windows.contains_key(&key);
                 let window = windows.entry(key.clone()).or_insert_with(Vec::new);
 

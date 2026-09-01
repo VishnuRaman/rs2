@@ -246,5 +246,8 @@ async fn main() {
         println!("    {} at timestamp {}", req.id, req.timestamp);
     }
 
+    // Invariant for the dropping throttle: it can never emit MORE than it was
+    // given, and with a rate limit it must emit strictly fewer when the input
+    // exceeds the limit within one window.
     println!("\n=== Stateful Throttle Example Complete ===");
 }

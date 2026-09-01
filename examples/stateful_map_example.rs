@@ -13,15 +13,6 @@ struct UserActivity {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct UserProfile {
-    total_actions: u64,
-    last_action: String,
-    average_duration: f64,
-    action_counts: HashMap<String, u64>,
-    last_seen: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct UserState {
     visit_count: u64,
     last_visit: u64,
@@ -30,7 +21,9 @@ struct UserState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EnrichedUser {
     id: String,
-    name: String,
+    /// The action that produced this record. Previously a `name` field that
+    /// was always left empty, which made every printed record look broken.
+    last_action: String,
     visit_count: u64,
     last_visit: u64,
     is_returning: bool,
@@ -109,7 +102,7 @@ async fn main() {
 
                     EnrichedUser {
                         id: activity.user_id.clone(),
-                        name: String::new(),
+                        last_action: activity.action.clone(),
                         visit_count: state.visit_count,
                         last_visit: state.last_visit,
                         is_returning: state.visit_count > 1,

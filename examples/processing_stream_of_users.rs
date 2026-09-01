@@ -92,7 +92,7 @@ fn main() {
         // Group users by role
         let users_by_role = get_active_users()
             .await
-            .group_by_rs2(|user| user.role.clone())
+            .group_adjacent_by_rs2(|user| user.role.clone())
             .collect::<Vec<_>>()
             .await;
 

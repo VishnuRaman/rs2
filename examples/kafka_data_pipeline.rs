@@ -402,6 +402,19 @@ async fn main() {
     // 1. Setup connectors and configs
     let kafka_brokers = "localhost:9092";
     let connector = KafkaConnector::new(kafka_brokers).with_consumer_group("prod-group");
+
+    // This example needs a live broker; without one it would block forever
+    // waiting on a consumer that can never connect.
+    if <KafkaConnector as StreamConnector<UserActivity>>::health_check(&connector)
+        .await
+        .is_err()
+    {
+        println!("No Kafka broker reachable at {kafka_brokers} — skipping.");
+        println!("Start one, e.g.:");
+        println!("  docker run -p 9092:9092 apache/kafka:latest");
+        return;
+    }
+
     let producer_config = KafkaConfig {
         topic: "validated-activity".to_string(),
         ..Default::default()
@@ -586,7 +599,9 @@ async fn main() {
                 })
             }
         )
-        .sink(|_| Box::pin(async {}))
+        // NOTE: no trailing `.sink(..)` here. `branch` is itself a terminal —
+        // it consumes the stream and fans it out — so a sink after it would
+        // never receive anything. `validate()` now rejects that ordering.
         .run()
         .await
         .expect("Pipeline run failed");

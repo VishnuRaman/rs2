@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::state::{StateError, CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio;
@@ -21,8 +21,8 @@ struct TestState {
 }
 
 impl KeyExtractor<TestData> for fn(&TestData) -> String {
-    fn extract_key(&self, item: &TestData) -> String {
-        self(item)
+    fn extract_key(&self, item: &TestData) -> Result<String, StateError> {
+        Ok(self(item))
     }
 }
 

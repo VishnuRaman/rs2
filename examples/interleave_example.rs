@@ -21,6 +21,8 @@ fn delayed_stream<T: Clone + Send + 'static>(
     .boxed()
 }
 
+/// Interleaving never invents or loses elements: the output is a permutation
+/// of the inputs. Each section below asserts that invariant.
 fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
@@ -33,10 +35,19 @@ fn main() {
 
         // Interleave the streams in round-robin fashion
         let interleaved = stream1
-            .interleave_rs2(vec![stream2, stream3])
+            .interleave_many_rs2(vec![stream2, stream3])
             .collect::<Vec<_>>()
             .await;
 
+        // Round-robin drains every stream, so the output is a permutation of
+        // the union of the inputs — [1,4,7,10] + [2,5,8] + [3,6,9,12,15].
+        let mut sorted = interleaved.clone();
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15],
+            "interleave must neither lose nor invent elements"
+        );
         println!("Interleaved streams: {:?}", interleaved);
 
         println!("\n=== Interleave with Different Stream Lengths ===");
@@ -48,7 +59,7 @@ fn main() {
 
         // Interleave the streams
         let interleaved = short_stream
-            .interleave_rs2(vec![medium_stream, long_stream])
+            .interleave_many_rs2(vec![medium_stream, long_stream])
             .collect::<Vec<_>>()
             .await;
 
@@ -65,7 +76,7 @@ fn main() {
         // Interleave the streams
         println!("Interleaving streams with different emission rates...");
         let interleaved = fast_stream
-            .interleave_rs2(vec![medium_stream, slow_stream])
+            .interleave_many_rs2(vec![medium_stream, slow_stream])
             .collect::<Vec<_>>()
             .await;
 
@@ -113,7 +124,7 @@ fn main() {
 
         // Interleave all event streams
         let all_events = user_events
-            .interleave_rs2(vec![system_events, application_events])
+            .interleave_many_rs2(vec![system_events, application_events])
             .collect::<Vec<_>>()
             .await;
 
@@ -132,7 +143,7 @@ fn main() {
 
         // Interleave the streams
         let interleaved = stream1
-            .interleave_rs2(vec![empty_stream1, stream2, empty_stream2])
+            .interleave_many_rs2(vec![empty_stream1, stream2, empty_stream2])
             .collect::<Vec<_>>()
             .await;
 

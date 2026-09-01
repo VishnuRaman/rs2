@@ -26,6 +26,7 @@ fn main() {
         );
 
         let user_ids = user_id_stream.collect::<Vec<_>>().await;
-        println!("User IDs: {:?}", user_ids); // [1, 2, 3, 4, 5]
+        println!("User IDs: {:?}", user_ids);
+        assert_eq!(user_ids, vec![1, 2, 3, 4, 5]);
     });
 }

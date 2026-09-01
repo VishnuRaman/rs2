@@ -48,6 +48,8 @@ async fn generate_analytics(user: &User) -> Result<String, Box<dyn Error + Send 
     Ok(format!("Analytics for {} completed", user.name))
 }
 
+/// Every section filters to the active users, so counts must agree across
+/// sequential, parallel-ordered and parallel-unordered processing.
 fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
@@ -138,6 +140,8 @@ fn main() {
             processed_profiles.len(),
             start.elapsed()
         );
+        // The same active-user filter feeds every section, so the counts agree.
+        assert_eq!(processed_profiles.len(), 4, "4 of the users are active");
         for (id, result) in &processed_profiles {
             println!("  User {}: {}", id, result);
         }

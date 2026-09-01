@@ -1,9 +1,11 @@
-use crate::RS2Stream;
+use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
+use crate::{with_metrics, RS2Stream};
 use async_stream::stream;
 use futures_util::StreamExt;
 use std::future::Future;
 use std::pin::Pin;
-use tokio::sync::broadcast;
+use std::sync::Arc;
+use tokio::sync::{broadcast, Mutex};
 
 #[derive(Debug)]
 pub enum PipelineError {
@@ -53,6 +55,11 @@ pub enum PipelineNode<T> {
 pub struct PipelineConfig {
     pub name: String,
     pub buffer_size: usize,
+    /// Collect throughput metrics for the pipeline.
+    ///
+    /// When set, [`Pipeline::run`] logs a summary at completion and
+    /// [`Pipeline::run_with_metrics`] returns the collected
+    /// [`StreamMetrics`]. This flag was previously declared and never read.
     pub enable_metrics: bool,
 }
 
@@ -157,14 +164,53 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
 
         let mut has_source = false;
         let mut has_sink_or_branch = false;
+        // `run` threads a single stream through the nodes in order, so a second
+        // source would discard the first stream and any node after a terminal
+        // would silently do nothing. Both used to pass validation.
+        let mut consumed = false;
 
         for node in &self.nodes {
             match node {
-                PipelineNode::Source { .. } => has_source = true,
-                PipelineNode::Sink { .. } | PipelineNode::Branch { .. } => {
-                    has_sink_or_branch = true
+                PipelineNode::Source { name, .. } => {
+                    if has_source {
+                        return Err(PipelineError::InvalidPipeline(format!(
+                            "pipeline has more than one source (`{}`); the earlier stream \
+                             would be discarded",
+                            name
+                        )));
+                    }
+                    has_source = true;
                 }
-                _ => {}
+                PipelineNode::Transform { name, .. } => {
+                    if !has_source {
+                        return Err(PipelineError::InvalidPipeline(format!(
+                            "transform `{}` appears before any source",
+                            name
+                        )));
+                    }
+                    if consumed {
+                        return Err(PipelineError::InvalidPipeline(format!(
+                            "transform `{}` appears after a sink, so it would never run",
+                            name
+                        )));
+                    }
+                }
+                PipelineNode::Sink { name, .. } | PipelineNode::Branch { name, .. } => {
+                    if !has_source {
+                        return Err(PipelineError::InvalidPipeline(format!(
+                            "sink `{}` appears before any source",
+                            name
+                        )));
+                    }
+                    if consumed {
+                        return Err(PipelineError::InvalidPipeline(format!(
+                            "sink `{}` appears after the stream was already consumed",
+                            name
+                        )));
+                    }
+                    has_sink_or_branch = true;
+                    consumed = true;
+                }
             }
         }
 
@@ -179,15 +225,67 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
         Ok(())
     }
 
+    /// Run the pipeline, returning metrics when `enable_metrics` is set.
+    pub async fn run_with_metrics(self) -> PipelineResult<Option<StreamMetrics>> {
+        let name = self.config.name.clone();
+        let enabled = self.config.enable_metrics;
+        let collected = self.run_inner().await?;
+
+        if enabled {
+            if let Some(metrics) = &collected {
+                log::info!(
+                    "pipeline `{}`: {} items, {}",
+                    name,
+                    metrics.items_processed,
+                    metrics.throughput_summary()
+                );
+            }
+        }
+        Ok(collected)
+    }
+
     pub async fn run(self) -> PipelineResult<()> {
+        let enabled = self.config.enable_metrics;
+        let name = self.config.name.clone();
+        let collected = self.run_inner().await?;
+
+        if enabled {
+            if let Some(metrics) = collected {
+                log::info!(
+                    "pipeline `{}`: {} items, {}",
+                    name,
+                    metrics.items_processed,
+                    metrics.throughput_summary()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    async fn run_inner(self) -> PipelineResult<Option<StreamMetrics>> {
         self.validate()?;
+
+        let enable_metrics = self.config.enable_metrics;
+        let metrics_name = self.config.name.clone();
+        let mut collected: Option<Arc<Mutex<StreamMetrics>>> = None;
 
         let mut stream = None;
 
         for node in self.nodes {
             match node {
                 PipelineNode::Source { name: _name, func } => {
-                    stream = Some(func());
+                    let source = func();
+                    stream = Some(if enable_metrics {
+                        let (s, m) = with_metrics(
+                            source,
+                            metrics_name.clone(),
+                            HealthThresholds::default(),
+                        );
+                        collected = Some(m);
+                        s
+                    } else {
+                        source
+                    });
                 }
                 PipelineNode::Transform { name: _name, func } => {
                     if let Some(s) = stream.take() {
@@ -265,7 +363,11 @@ impl<T: Send + Clone + 'static> Pipeline<T> {
             }
         }
 
-        Ok(())
+        let snapshot = match collected {
+            Some(m) => Some(m.lock().await.clone()),
+            None => None,
+        };
+        Ok(snapshot)
     }
 }
 

@@ -115,10 +115,8 @@ async fn main() {
         .collect::<Vec<_>>();
 
     println!("  Brute force detections:");
-    for detection in &brute_force_stream {
-        if let Some(msg) = detection {
-            println!("    {}", msg);
-        }
+    for msg in &brute_force_stream {
+        println!("    {}", msg);
     }
 
     // Example 2: Detect port scanning (2 port scan events)
@@ -176,10 +174,8 @@ async fn main() {
         .collect::<Vec<_>>();
 
     println!("  Port scan detections:");
-    for detection in &anomaly_stream {
-        if let Some(msg) = detection {
-            println!("    {}", msg);
-        }
+    for msg in &anomaly_stream {
+        println!("    {}", msg);
     }
 
     // Example 3: Detect time-based patterns (events within 100ms)
@@ -235,10 +231,8 @@ async fn main() {
         .collect::<Vec<_>>();
 
     println!("  Time-based pattern detections:");
-    for detection in &time_pattern_stream {
-        if let Some(msg) = detection {
-            println!("    {}", msg);
-        }
+    for msg in &time_pattern_stream {
+        println!("    {}", msg);
     }
 
     // Example 4: Detect multi-pattern sequences
@@ -296,10 +290,8 @@ async fn main() {
         .collect::<Vec<_>>();
 
     println!("  Multi-pattern detections:");
-    for detection in &multi_pattern_stream {
-        if let Some(msg) = detection {
-            println!("    {}", msg);
-        }
+    for msg in &multi_pattern_stream {
+        println!("    {}", msg);
     }
 
     println!("\n=== Stateful Pattern Example Complete ===");

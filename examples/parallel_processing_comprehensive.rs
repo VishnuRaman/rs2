@@ -122,7 +122,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("================================================\n");
 
     // Generate test data
-    let users: Vec<UserProfile> = (1..=1000)
+    // 200 users is enough to show the speedup ratios clearly. At 1000 this
+    // example took ~108s, which is far too long for something people run to
+    // learn the library — the numbers below are the same shape either way.
+    let users: Vec<UserProfile> = (1..=200)
         .map(|id| UserProfile {
             id,
             name: format!("User {}", id),
@@ -259,7 +262,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 9. Real-World Scenario: E-commerce Processing
     println!("\n9️⃣ Real-World Scenario: E-commerce Order Processing");
-    let orders: Vec<u64> = (1..=500).collect();
+    let orders: Vec<u64> = (1..=100).collect();
     
     let start = Instant::now();
     let order_results: Vec<(u64, ApiResponse, DatabaseRecord, String)> = from_iter(orders)

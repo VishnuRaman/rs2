@@ -67,7 +67,7 @@ fn main() {
 
         // Skip the first 3 users
         let last_two_users = from_iter(users.clone())
-            .drop_rs2(3) // or .skip_rs2(3)
+            .skip_rs2(3)
             .collect::<Vec<_>>()
             .await;
 
@@ -96,6 +96,10 @@ fn main() {
             .collect::<Vec<_>>()
             .await;
 
-        println!("Non-standard role users: {}", non_standard_users.len()); // 3 (Diana, Eve)
+        // 2 (Diana, Eve). `drop_while` stops testing once the predicate is
+        // first false — Diana is a moderator, so she and everything after her
+        // are kept, including Eve even though she is a "user".
+        println!("Non-standard role users: {}", non_standard_users.len());
+        assert_eq!(non_standard_users.len(), 2);
     });
 }

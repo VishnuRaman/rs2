@@ -15,6 +15,7 @@ fn main() {
             .collect::<Vec<_>>() // Collect into a Vec
             .await;
 
-        println!("Result: {:?}", result); // Output: Result: [4, 8]
+        println!("Result: {:?}", result);
+        assert_eq!(result, vec![4, 8]);
     });
 }

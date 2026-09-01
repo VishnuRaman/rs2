@@ -6,6 +6,9 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
 
+/// Set by the release function so the example can assert the finalizer ran.
+static RELEASED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // Acquire a resource - returns a path to the file
 async fn acquire_resource() -> PathBuf {
     println!("Resource acquired: data.txt");
@@ -14,6 +17,14 @@ async fn acquire_resource() -> PathBuf {
 
 // Release a resource with exit case information
 async fn release_resource(path: PathBuf, exit_case: ExitCase<String>) {
+    RELEASED.store(true, std::sync::atomic::Ordering::SeqCst);
+    // In-band `Err` items are data, not stream failure, so a stream that runs
+    // to exhaustion reports Completed even though it carried an error.
+    assert!(
+        matches!(exit_case, ExitCase::Completed),
+        "a stream that ran to exhaustion must report Completed, got {:?}",
+        exit_case
+    );
     println!(
         "Resource released: {} with exit case: {:?}",
         path.display(),
@@ -85,7 +96,11 @@ fn main() {
             }
         }
 
-        println!("\nNote: The resource is properly released regardless of errors in the stream");
+        assert!(
+        RELEASED.load(std::sync::atomic::Ordering::SeqCst),
+        "bracket_case must release the resource even when the stream carried an Err"
+    );
+    println!("\nNote: The resource is properly released regardless of errors in the stream");
     });
 
     // Clean up the sample file

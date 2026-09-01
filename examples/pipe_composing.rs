@@ -21,7 +21,9 @@ fn main() {
 
         // Collect the results
         let result = result_stream.collect::<Vec<_>>().await;
-        println!("Even numbers doubled: {:?}", result); // [4, 8, 12]
+        println!("Even numbers doubled: {:?}", result);
+        // filter(even) over 1..=6 => [2,4,6], then double => [4,8,12]
+        assert_eq!(result, vec![4, 8, 12]);
 
         // Alternatively, use the compose method on the Pipe
         let numbers = from_iter(vec![1, 2, 3, 4, 5, 6]);
@@ -36,6 +38,7 @@ fn main() {
 
         // Collect the results
         let result = result_stream.collect::<Vec<_>>().await;
-        println!("Even numbers doubled (using compose method): {:?}", result); // [4, 8, 12]
+        println!("Even numbers doubled (using compose method): {:?}", result);
+        assert_eq!(result, vec![4, 8, 12], "compose() must match compose fn");
     });
 }

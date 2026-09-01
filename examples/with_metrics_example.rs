@@ -82,9 +82,16 @@ fn main() {
         // Create a stream of numbers
         let numbers = from_iter(1..=20);
 
-        // Apply metrics collection to the stream
-        let (metrics_stream, metrics) =
-            numbers.with_metrics_rs2("numbers_stream".to_string(), HealthThresholds::default());
+        // Apply metrics collection to the stream.
+        //
+        // `with_metrics_rs2` tracks items and timing but leaves
+        // `bytes_processed` at zero: a generic stream cannot know an item's
+        // real size. Supply a sizing function to get byte figures.
+        let (metrics_stream, metrics) = numbers.with_metrics_sized_rs2(
+            "numbers_stream".to_string(),
+            HealthThresholds::default(),
+            |n: &i32| std::mem::size_of_val(n) as u64,
+        );
 
         // Process the stream with enhanced metrics tracking
         let mut results = Vec::new();
@@ -123,7 +130,11 @@ fn main() {
         // Create a stream of numbers that might fail during processing
         let numbers = from_iter(1..=50);
         let (metrics_stream, metrics) =
-            numbers.with_metrics_rs2("async_processing".to_string(), HealthThresholds::default());
+            numbers.with_metrics_sized_rs2(
+                "async_processing".to_string(),
+                HealthThresholds::default(),
+                |n: &i32| std::mem::size_of_val(n) as u64,
+            );
 
         let mut success_count = 0;
         let mut error_count = 0;
@@ -195,7 +206,11 @@ fn main() {
 
         // 1. Filter operation
         let (filter_stream, filter_metrics) = from_iter(1..=1000)
-            .with_metrics_rs2("filter_operation".to_string(), HealthThresholds::default());
+            .with_metrics_sized_rs2(
+                "filter_operation".to_string(),
+                HealthThresholds::default(),
+                |n: &i32| std::mem::size_of_val(n) as u64,
+            );
 
         // Clone metrics for use in the closure
         let filter_metrics_for_closure = filter_metrics.clone();
@@ -234,7 +249,11 @@ fn main() {
 
         // 2. Map operation with timing
         let (map_stream, map_metrics) = from_iter(1..=1000)
-            .with_metrics_rs2("map_operation".to_string(), HealthThresholds::default());
+            .with_metrics_sized_rs2(
+                "map_operation".to_string(),
+                HealthThresholds::default(),
+                |n: &i32| std::mem::size_of_val(n) as u64,
+            );
 
         // Clone metrics for use in the closure
         let map_metrics_for_closure = map_metrics.clone();
@@ -264,9 +283,10 @@ fn main() {
             .await;
 
         // 3. Throttled operation
-        let (throttled_stream, throttled_metrics) = from_iter(1..=100).with_metrics_rs2(
+        let (throttled_stream, throttled_metrics) = from_iter(1..=100).with_metrics_sized_rs2(
             "throttled_operation".to_string(),
             HealthThresholds::default(),
+            |n: &i32| std::mem::size_of_val(n) as u64,
         );
 
         // We need to manually record errors for throttled operation
@@ -292,7 +312,12 @@ fn main() {
 
         // 4. Chunked operation with queue depth tracking
         let (chunked_stream, chunked_metrics) = from_iter(1..=200)
-            .with_metrics_rs2("chunked_operation".to_string(), HealthThresholds::default());
+            .with_metrics_sized_rs2(
+                "chunked_operation".to_string(),
+                HealthThresholds::default(),
+                // Metrics are attached before chunking, so items are still i32.
+                |n: &i32| std::mem::size_of_val(n) as u64,
+            );
 
         // Clone metrics before moving into closure
         let chunked_metrics_for_results = chunked_metrics.clone();

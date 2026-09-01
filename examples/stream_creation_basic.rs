@@ -31,7 +31,8 @@ fn main() {
         // Create an empty stream
         let empty_stream: RS2Stream<User> = empty();
         let empty_result = empty_stream.collect::<Vec<_>>().await;
-        println!("Empty stream length: {}", empty_result.len()); // 0
+        println!("Empty stream length: {}", empty_result.len());
+        assert_eq!(empty_result.len(), 0);
 
         // Create a stream from an iterator
         let users = vec![
@@ -60,6 +61,7 @@ fn main() {
 
         let users_stream = from_iter(users);
         let all_users = users_stream.collect::<Vec<_>>().await;
-        println!("All users: {}", all_users.len()); // 3
+        println!("All users: {}", all_users.len());
+        assert_eq!(all_users.len(), 3);
     });
 }

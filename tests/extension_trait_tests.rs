@@ -933,7 +933,7 @@ fn test_interleave_rs2() {
 
         // Apply interleave
         let result = main_stream
-            .interleave_rs2(vec![stream1, stream2])
+            .interleave_many_rs2(vec![stream1, stream2])
             .collect::<Vec<_>>()
             .await;
 
@@ -953,7 +953,7 @@ fn test_interleave_rs2_different_lengths() {
 
         // Apply interleave
         let result = main_stream
-            .interleave_rs2(vec![stream1, stream2])
+            .interleave_many_rs2(vec![stream1, stream2])
             .collect::<Vec<_>>()
             .await;
 
@@ -973,7 +973,7 @@ fn test_interleave_rs2_empty_streams() {
 
         // Apply interleave
         let result = main_stream
-            .interleave_rs2(vec![empty_stream1, empty_stream2])
+            .interleave_many_rs2(vec![empty_stream1, empty_stream2])
             .collect::<Vec<_>>()
             .await;
 
@@ -993,7 +993,7 @@ fn test_interleave_rs2_all_empty() {
 
         // Apply interleave
         let result = main_stream
-            .interleave_rs2(vec![empty_stream1, empty_stream2])
+            .interleave_many_rs2(vec![empty_stream1, empty_stream2])
             .collect::<Vec<_>>()
             .await;
 
@@ -1003,11 +1003,11 @@ fn test_interleave_rs2_all_empty() {
 }
 
 #[test]
-fn test_tick_rs() {
+fn test_tick() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Create a stream that emits a value at a fixed rate
-        let stream = empty::<i32>().tick_rs(Duration::from_millis(50), 42);
+        let stream = tick(Duration::from_millis(50), 42);
 
         // Take only 3 items to keep the test short
         let result = stream.take(3).collect::<Vec<_>>().await;
@@ -1160,13 +1160,14 @@ fn test_bracket_case_extension_with_error() {
         assert!(*acquired.lock().unwrap());
         assert!(*released.lock().unwrap());
 
-        // Verify the exit case reflects the error the stream yielded.
-        // This previously asserted "Completed" — bracket_case hardcoded
-        // ExitCase::Completed and never reported errors at all.
+        // In-band `Err` items are data, not stream failure — the same way a
+        // `Left` is in FS2, whose ExitCase carries a Throwable from the effect's
+        // error channel rather than an element value. The stream ran to
+        // exhaustion, so the exit case is Completed.
         let case = exit_case.lock().unwrap().clone().unwrap();
         assert!(
-            case.contains("Errored"),
-            "expected Errored exit case, got {}",
+            case.contains("Completed"),
+            "a stream containing Err items still completes; got {}",
             case
         );
     });

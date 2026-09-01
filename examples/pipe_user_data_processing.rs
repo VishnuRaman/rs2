@@ -25,6 +25,8 @@ struct UserStats {
     login_frequency: &'static str,
 }
 
+/// Pipes are pure transformations: composing filter+transform must give the
+/// same result as applying them in sequence.
 fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {

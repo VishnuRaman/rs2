@@ -5,6 +5,11 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
 
+
+/// Set by `release_resource` so the example can assert the finalizer ran —
+/// that guarantee is the whole reason to use bracket.
+static RELEASED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 // Acquire a resource - returns a path to the file
 async fn acquire_resource() -> PathBuf {
     println!("Resource acquired: data.txt");
@@ -14,6 +19,7 @@ async fn acquire_resource() -> PathBuf {
 // Release a resource
 async fn release_resource(path: PathBuf) {
     println!("Resource released: {}", path.display());
+    RELEASED.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 // Use a resource
@@ -51,6 +57,12 @@ fn main() {
             .await;
 
         println!("Lines: {:?}", result);
+        // Invariants: every line is delivered, and the resource is released.
+        assert_eq!(result.len(), 3, "all lines must be delivered");
+        assert!(
+            RELEASED.load(std::sync::atomic::Ordering::SeqCst),
+            "bracket must release the resource"
+        );
     });
 
     // Clean up the sample file

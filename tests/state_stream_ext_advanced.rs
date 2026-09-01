@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use rs2_stream::state::stream_ext::StateAccess;
-use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::state::{StateError, CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tokio;
@@ -20,8 +20,8 @@ struct TestState {
 }
 
 impl KeyExtractor<TestData> for fn(&TestData) -> String {
-    fn extract_key(&self, item: &TestData) -> String {
-        self(item)
+    fn extract_key(&self, item: &TestData) -> Result<String, StateError> {
+        Ok(self(item))
     }
 }
 
@@ -573,9 +573,11 @@ async fn test_stateful_pattern() {
         "Pattern detection should emit at least one result"
     );
 
-    // Verify that we get pattern results with the expected format
-    for result in &results {
-        if let Some(pattern_result) = result {
+    // Verify that we get pattern results with the expected format.
+    // Items are now plain `String`: `f` returning `None` means "no pattern
+    // here", which is not an item, so `Ok(None)` was never yielded anyway.
+    for pattern_result in &results {
+        {
             assert!(
                 pattern_result.contains("total:"),
                 "Pattern result should contain total count"
@@ -593,18 +595,14 @@ async fn test_stateful_pattern() {
         }
     }
 
-    // Verify that at least one result is Some (not None)
+    // Every yielded item is a detected pattern.
     assert!(
-        results.iter().any(|r| r.is_some()),
-        "Should have at least one non-None result"
+        !results.is_empty(),
+        "Should have at least one detected pattern"
     );
 
     // Check for pattern detection - should detect the purchase pattern
-    let pattern_detected = results.iter().any(|r| {
-        r.as_ref()
-            .map(|s| s.contains("PATTERN_DETECTED"))
-            .unwrap_or(false)
-    });
+    let pattern_detected = results.iter().any(|s| s.contains("PATTERN_DETECTED"));
     assert!(pattern_detected, "Should detect the purchase pattern");
 }
 
@@ -1102,9 +1100,11 @@ async fn test_stateful_pattern_with_complex_sequence() {
         "Pattern detection should emit at least one result"
     );
 
-    // Verify that we get pattern results with the expected format
-    for result in &results {
-        if let Some(pattern_result) = result {
+    // Verify that we get pattern results with the expected format.
+    // Items are now plain `String`: `f` returning `None` means "no pattern
+    // here", which is not an item, so `Ok(None)` was never yielded anyway.
+    for pattern_result in &results {
+        {
             assert!(
                 pattern_result.contains("total:"),
                 "Pattern result should contain total count"
@@ -1121,10 +1121,10 @@ async fn test_stateful_pattern_with_complex_sequence() {
         }
     }
 
-    // Verify that at least one result is Some (not None)
+    // Every yielded item is a detected pattern.
     assert!(
-        results.iter().any(|r| r.is_some()),
-        "Should have at least one non-None result"
+        !results.is_empty(),
+        "Should have at least one detected pattern"
     );
 }
 

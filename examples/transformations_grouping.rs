@@ -56,7 +56,7 @@ fn main() {
 
         // Group users by role
         let users_by_role = from_iter(users.clone())
-            .group_by_rs2(|user| user.role.clone())
+            .group_adjacent_by_rs2(|user| user.role.clone())
             .collect::<Vec<_>>()
             .await;
 
@@ -94,7 +94,10 @@ fn main() {
         .collect::<Vec<_>>()
         .await;
 
-        println!("Unique status transitions: {:?}", unique_statuses); // ["online", "away", "online", "offline"]
+        println!("Unique status transitions: {:?}", unique_statuses);
+        // distinct_until_changed collapses *adjacent* repeats only, so "online"
+        // appears twice — it recurs after a different value.
+        assert_eq!(unique_statuses, vec!["online", "away", "online", "offline"]);
 
         // Use custom equality function to detect significant changes
         #[derive(Clone)]

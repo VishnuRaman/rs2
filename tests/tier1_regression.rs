@@ -240,6 +240,7 @@ async fn bracket_case_reports_completed_on_success() {
             async move {
                 *sink.lock().unwrap() = Some(match case {
                     ExitCase::Completed => "completed".to_string(),
+                    ExitCase::Canceled => "canceled".to_string(),
                     ExitCase::Errored(e) => format!("errored:{}", e),
                 });
             }
@@ -253,8 +254,9 @@ async fn bracket_case_reports_completed_on_success() {
 }
 
 #[tokio::test]
-async fn bracket_case_reports_errored_when_stream_yields_err() {
-    // The old implementation hardcoded ExitCase::Completed here.
+async fn bracket_case_reports_completed_for_in_band_errors() {
+    // In-band `Err` items are data, not stream failure — FS2's ExitCase carries
+    // a Throwable from the effect's error channel, not an element value.
     let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let sink = seen.clone();
 
@@ -266,6 +268,7 @@ async fn bracket_case_reports_errored_when_stream_yields_err() {
             async move {
                 *sink.lock().unwrap() = Some(match case {
                     ExitCase::Completed => "completed".to_string(),
+                    ExitCase::Canceled => "canceled".to_string(),
                     ExitCase::Errored(e) => format!("errored:{}", e),
                 });
             }
@@ -275,7 +278,73 @@ async fn bracket_case_reports_errored_when_stream_yields_err() {
     .await;
 
     settle().await;
-    assert_eq!(seen.lock().unwrap().as_deref(), Some("errored:boom"));
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some("completed"),
+        "a stream containing Err items still ran to exhaustion"
+    );
+}
+
+#[tokio::test]
+async fn bracket_case_reports_canceled_when_consumer_stops_early() {
+    // FS2's `Canceled` case: the consumer walked away before the stream was
+    // exhausted. This is the distinction that makes bracket_case worth having
+    // over bracket, and it was unreachable before — the old implementation
+    // passed a hardcoded ExitCase::Completed on the one path where it ran at all.
+    let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let sink = seen.clone();
+
+    let _ = bracket_case(
+        async { 1u32 },
+        |_| from_iter(vec![Ok::<u32, String>(1), Ok(2), Ok(3), Ok(4)]),
+        move |_, case: ExitCase<String>| {
+            let sink = sink.clone();
+            async move {
+                *sink.lock().unwrap() = Some(match case {
+                    ExitCase::Completed => "completed".to_string(),
+                    ExitCase::Canceled => "canceled".to_string(),
+                    ExitCase::Errored(e) => format!("errored:{}", e),
+                });
+            }
+        },
+    )
+    .take(2)
+    .collect::<Vec<_>>()
+    .await;
+
+    settle().await;
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some("canceled"),
+        "stopping at take(2) of 4 must report Canceled, not Completed"
+    );
+}
+
+#[tokio::test]
+async fn bracket_case_reports_completed_when_fully_drained() {
+    // Control for the above: exhausting the stream is Completed, not Canceled.
+    let seen: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let sink = seen.clone();
+
+    let _ = bracket_case(
+        async { 1u32 },
+        |_| from_iter(vec![Ok::<u32, String>(1), Ok(2)]),
+        move |_, case: ExitCase<String>| {
+            let sink = sink.clone();
+            async move {
+                *sink.lock().unwrap() = Some(match case {
+                    ExitCase::Completed => "completed".to_string(),
+                    ExitCase::Canceled => "canceled".to_string(),
+                    ExitCase::Errored(e) => format!("errored:{}", e),
+                });
+            }
+        },
+    )
+    .collect::<Vec<_>>()
+    .await;
+
+    settle().await;
+    assert_eq!(seen.lock().unwrap().as_deref(), Some("completed"));
 }
 
 // ---------------------------------------------------------------------------

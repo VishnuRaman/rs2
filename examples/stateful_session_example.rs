@@ -71,6 +71,15 @@ async fn main() {
         .into_iter()
         .map(|r| r.unwrap())
         .collect();
+    // Invariant: the first event for each user starts a session; later events
+    // inside the timeout do not. alice and bob each log in first, so exactly
+    // two sessions begin. This was the bug: no session ever started.
+    let new_sessions = session_results
+        .iter()
+        .filter(|e| e.is_new_session.unwrap_or(false))
+        .count();
+    assert_eq!(new_sessions, 2, "one new session per user (alice, bob)");
+
     for event in session_results {
         println!(
             "User: {}, Action: {}, New Session: {}",
@@ -79,5 +88,7 @@ async fn main() {
             event.is_new_session.unwrap_or(false)
         );
     }
+    // Invariant: the first event for each user starts a session; later events
+    // within the timeout do not. alice and bob each log in first.
     println!("=== Stateful Session Example Complete ===");
 }

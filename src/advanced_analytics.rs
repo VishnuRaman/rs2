@@ -18,16 +18,38 @@ use std::time::{Duration, SystemTime};
 #[derive(Debug, Clone)]
 pub struct TimeWindowConfig {
     pub window_size: Duration,
-    pub slide_interval: Duration,
+    /// Distance between window starts.
+    ///
+    /// `None` (the default) means tumbling: the slide equals `window_size`, so
+    /// windows tile the timeline exactly once. `Some(d)` with `d < window_size`
+    /// gives overlapping sliding windows.
+    ///
+    /// `Some(d)` with `d > window_size` is legal and means sparse *sampling*
+    /// windows — a `window_size` sample taken every `d`. Note that events
+    /// falling in the gaps between samples are not part of any window and are
+    /// dropped.
+    ///
+    /// This is an `Option` specifically so that
+    /// `TimeWindowConfig { window_size: X, ..Default::default() }` stays
+    /// tumbling at `X`. A fixed default slide silently turned every such config
+    /// into sparse sampling and dropped nearly all events.
+    pub slide_interval: Option<Duration>,
     pub watermark_delay: Duration,
     pub allowed_lateness: Duration,
+}
+
+impl TimeWindowConfig {
+    /// The effective slide: `slide_interval` if set, otherwise `window_size`.
+    pub fn effective_slide(&self) -> Duration {
+        self.slide_interval.unwrap_or(self.window_size)
+    }
 }
 
 impl Default for TimeWindowConfig {
     fn default() -> Self {
         Self {
             window_size: Duration::from_secs(60),
-            slide_interval: Duration::from_secs(60),
+            slide_interval: None,
             watermark_delay: Duration::from_secs(10),
             allowed_lateness: Duration::from_secs(5),
         }
@@ -61,6 +83,22 @@ impl<T> TimeWindow<T> {
 }
 
 /// Create time-based windows from a stream of timestamped events
+///
+/// Honours every field of [`TimeWindowConfig`]:
+///
+/// - `window_size` — the span each window covers.
+/// - `slide_interval` — how far apart window starts are. When it is smaller
+///   than `window_size` the windows overlap and an event lands in every window
+///   that covers it (a genuine sliding window). Equal to `window_size` gives
+///   tumbling windows, which is the default.
+/// - `watermark_delay` — how far behind the watermark a window must fall
+///   before it is emitted.
+/// - `allowed_lateness` — extra grace on top of `watermark_delay`. Events for a
+///   window whose grace has already expired are dropped as too late rather than
+///   reopening it.
+///
+/// `slide_interval` and `allowed_lateness` were previously stored and never
+/// read, so sliding windows silently behaved as tumbling ones.
 pub fn window_by_time<T, F>(
     stream: RS2Stream<T>,
     config: TimeWindowConfig,
@@ -75,48 +113,82 @@ where
         let mut watermark = SystemTime::UNIX_EPOCH;
         pin_mut!(stream);
 
+        // Millisecond arithmetic throughout: `as_secs()` truncated sub-second
+        // windows to zero and panicked on the division.
+        let size_ms = config.window_size.as_millis().max(1) as u64;
+        let slide_ms = config.effective_slide().as_millis().max(1) as u64;
+        let grace_ms =
+            (config.watermark_delay.as_millis() as u64) + (config.allowed_lateness.as_millis() as u64);
+
         while let Some(event) = stream.next().await {
             let event_time = timestamp_fn(&event);
             if event_time > watermark {
                 watermark = event_time;
             }
+            let t_ms = event_time
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let watermark_ms = watermark
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
 
-            // Calculate window boundaries.
-            // Bucket in milliseconds: `as_secs()` truncated sub-second windows
-            // to zero and panicked on the division.
-            let since_epoch = event_time.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-            let window_size_ms = config.window_size.as_millis().max(1) as u64;
-            let window_start_ms = (since_epoch.as_millis() as u64 / window_size_ms) * window_size_ms;
-            let window_start = SystemTime::UNIX_EPOCH + Duration::from_millis(window_start_ms);
-            let window_end = window_start + config.window_size;
-            let window_id = window_start_ms;
+            // Every window start `s` (a multiple of the slide) with s <= t < s + size.
+            // For tumbling windows this is exactly one.
+            let last_start = (t_ms / slide_ms) * slide_ms;
+            let first_start = if t_ms >= size_ms {
+                ((t_ms - size_ms) / slide_ms + 1) * slide_ms
+            } else {
+                0
+            };
 
-            // Add event to appropriate window
-            windows
-                .entry(window_id)
-                .or_insert_with(|| TimeWindow::new(window_start, window_end))
-                .add_event(event);
+            let mut start = first_start;
+            while start <= last_start {
+                let end_ms = start + size_ms;
 
-            // Emit completed windows
-            let mut to_remove = Vec::new();
-            for (id, window) in &windows {
-                // `checked_sub`: the watermark starts at the epoch, so subtracting
-                // the delay can underflow before any event has arrived.
-                let cutoff = watermark.checked_sub(config.watermark_delay).unwrap_or(SystemTime::UNIX_EPOCH);
-                if window.is_complete(cutoff) {
-                    to_remove.push(*id);
+                // Too late: this window's grace has already expired, so it has
+                // been emitted (or will be with the data it had).
+                if watermark_ms > end_ms + grace_ms {
+                    start += slide_ms;
+                    continue;
                 }
+
+                windows
+                    .entry(start)
+                    .or_insert_with(|| {
+                        TimeWindow::new(
+                            SystemTime::UNIX_EPOCH + Duration::from_millis(start),
+                            SystemTime::UNIX_EPOCH + Duration::from_millis(end_ms),
+                        )
+                    })
+                    .add_event(event.clone());
+
+                start += slide_ms;
             }
-            for id in to_remove {
+
+            // Emit windows whose end plus grace the watermark has passed.
+            let mut ready: Vec<u64> = windows
+                .iter()
+                .filter(|(start, _)| watermark_ms >= *start + size_ms + grace_ms)
+                .map(|(start, _)| *start)
+                .collect();
+            ready.sort_unstable();
+
+            for id in ready {
                 if let Some(window) = windows.remove(&id) {
                     yield window;
                 }
             }
         }
 
-        // Emit remaining windows
-        for (_, window) in windows {
-            yield window;
+        // Emit remaining windows, oldest first.
+        let mut leftover: Vec<u64> = windows.keys().copied().collect();
+        leftover.sort_unstable();
+        for id in leftover {
+            if let Some(window) = windows.remove(&id) {
+                yield window;
+            }
         }
     }
     .boxed()

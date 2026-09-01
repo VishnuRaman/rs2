@@ -90,7 +90,7 @@ async fn time_windowed_aggregations() {
 
     let config = TimeWindowConfig {
         window_size: Duration::from_secs(60),
-        slide_interval: Duration::from_secs(30),
+        slide_interval: Some(Duration::from_secs(30)),
         watermark_delay: Duration::from_secs(5),
         allowed_lateness: Duration::from_secs(2),
     };
@@ -246,7 +246,7 @@ async fn system_monitoring() {
     // Use windowed aggregations to monitor system health
     let config = TimeWindowConfig {
         window_size: Duration::from_secs(60),
-        slide_interval: Duration::from_secs(30),
+        slide_interval: Some(Duration::from_secs(30)),
         watermark_delay: Duration::from_secs(5),
         allowed_lateness: Duration::from_secs(2),
     };
@@ -325,4 +325,41 @@ fn main() {
         println!("📋 Note: Complex Event Processing (CEP) is planned for future releases");
         println!("==================================================\n");
     });
+    // --- inspecting the window configuration --------------------------------
+    // `effective_slide()` resolves `slide_interval`: None means tumbling, so the
+    // slide equals the window size. This is why `{ window_size: X,
+    // ..Default::default() }` stays tumbling at X rather than inheriting a
+    // fixed default slide.
+    let tumbling = TimeWindowConfig {
+        window_size: Duration::from_secs(30),
+        ..Default::default()
+    };
+    let sliding = TimeWindowConfig {
+        window_size: Duration::from_secs(30),
+        slide_interval: Some(Duration::from_secs(10)),
+        ..Default::default()
+    };
+    println!("\n--- window configuration ---");
+    println!(
+        "tumbling: size={:?} effective_slide={:?}",
+        tumbling.window_size,
+        tumbling.effective_slide()
+    );
+    println!(
+        "sliding:  size={:?} effective_slide={:?} (windows overlap)",
+        sliding.window_size,
+        sliding.effective_slide()
+    );
+
+    // `TimeWindow::is_complete` asks whether a watermark has passed the
+    // window's end — the test `window_by_time` uses to decide when to emit.
+    let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let window: TimeWindow<u32> = TimeWindow::new(base, base + Duration::from_secs(30));
+    println!(
+        "window [{:?}..): complete at +10s? {}  at +40s? {}",
+        window.start_time,
+        window.is_complete(base + Duration::from_secs(10)),
+        window.is_complete(base + Duration::from_secs(40))
+    );
+
 }

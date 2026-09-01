@@ -1,17 +1,9 @@
 use super::StateStorage;
 use async_trait::async_trait;
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-
-/// How many `set` calls between sweeps for expired entries.
-///
-/// Expiry has to be swept eventually rather than only checked on read: a key
-/// that is written once and never read again would otherwise keep its bytes
-/// alive for the lifetime of the process.
-const EXPIRY_SWEEP_INTERVAL: u64 = 256;
 
 /// Entries plus a write-ordered index over them.
 ///
@@ -23,6 +15,8 @@ struct Inner {
     /// `(written_at, key)`, ordered oldest first. The key breaks ties between
     /// entries written within the same clock tick.
     order: BTreeSet<(Instant, String)>,
+    /// When expired entries were last swept.
+    last_sweep: Instant,
 }
 
 impl Inner {
@@ -71,7 +65,14 @@ pub struct InMemoryState {
     inner: Arc<RwLock<Inner>>,
     ttl: Duration,
     max_size: Option<usize>,
-    sets_since_sweep: Arc<AtomicU64>,
+    /// How often expired entries are swept.
+    ///
+    /// Expiry has to be swept on a schedule rather than only checked on read: a
+    /// key written once and never read again would otherwise keep its bytes
+    /// alive for the life of the process. This comes from
+    /// [`crate::state::StateConfig::cleanup_interval`], which was previously
+    /// stored and never read by anything.
+    cleanup_interval: Duration,
 }
 
 impl InMemoryState {
@@ -80,15 +81,24 @@ impl InMemoryState {
             inner: Arc::new(RwLock::new(Inner {
                 data: HashMap::new(),
                 order: BTreeSet::new(),
+                last_sweep: Instant::now(),
             })),
             ttl,
             max_size: None,
-            sets_since_sweep: Arc::new(AtomicU64::new(0)),
+            // Sweep at the TTL by default, so entries cannot outlive it by more
+            // than one interval. `StateConfig` overrides this.
+            cleanup_interval: ttl,
         }
     }
 
     pub fn with_max_size(mut self, max_size: usize) -> Self {
         self.max_size = Some(max_size);
+        self
+    }
+
+    /// Set how often expired entries are swept.
+    pub fn with_cleanup_interval(mut self, interval: Duration) -> Self {
+        self.cleanup_interval = interval;
         self
     }
 
@@ -133,19 +143,16 @@ impl StateStorage for InMemoryState {
         key: &str,
         value: &[u8],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Decide whether this call owns the sweep before taking the lock, so
-        // the counter advances exactly once per set.
-        let sweep =
-            self.sets_since_sweep.fetch_add(1, Ordering::Relaxed) % EXPIRY_SWEEP_INTERVAL == 0;
-
         // One write lock for the whole operation. An earlier version dropped and
         // re-acquired it between insert and max-size enforcement, letting
         // concurrent writers both overshoot the limit.
+        let now = Instant::now();
         let mut inner = self.inner.write().await;
-        inner.insert(key, value, Instant::now());
+        inner.insert(key, value, now);
 
-        if sweep {
+        if now.duration_since(inner.last_sweep) >= self.cleanup_interval {
             inner.sweep_expired(self.ttl);
+            inner.last_sweep = now;
         }
         if let Some(max_size) = self.max_size {
             inner.enforce_max_size(max_size);

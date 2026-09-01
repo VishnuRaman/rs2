@@ -40,6 +40,8 @@ fn main() {
             .await;
 
         println!("Batch sums (batch size 5): {:?}", batch_sums);
+        // 1..=20 in batches of 5: 1+..+5=15, 6+..+10=40, 11+..+15=65, 16+..+20=90
+        assert_eq!(batch_sums, vec![15, 40, 65, 90]);
 
         println!("\n=== Batch Processing with Transformation Example ===");
 

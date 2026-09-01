@@ -39,8 +39,14 @@ pub enum StateError {
 pub type StateResult<T> = Result<T, StateError>;
 
 /// Helper trait for extracting keys from events
+///
+/// Extraction can fail — a field may be missing, or the event may not
+/// serialize. Returning a `Result` keeps those cases visible: an earlier
+/// version returned a sentinel string like `"missing_field_user_id"`, so every
+/// malformed event silently shared one state bucket and corrupted whatever
+/// accumulated there.
 pub trait KeyExtractor<T> {
-    fn extract_key(&self, event: &T) -> String;
+    fn extract_key(&self, event: &T) -> StateResult<String>;
 }
 
 /// Default key extractor that uses a field name
@@ -56,35 +62,32 @@ impl FieldKeyExtractor {
     }
 }
 
-impl<T> KeyExtractor<T> for FieldKeyExtractor 
-where T: Serialize {
-    fn extract_key(&self, event: &T) -> String {
-        match serde_json::to_value(event) {
-            Ok(value) => {
-                // Support nested field paths
-                let field_value = if self.field_name.contains('.') {
-                    self.extract_nested_field(&value)
-                } else {
-                    value.get(&self.field_name)
-                };
-                
-                match field_value {
-                    Some(Value::String(s)) => s.clone(),
-                    Some(Value::Number(n)) => n.to_string(),
-                    Some(Value::Bool(b)) => b.to_string(),
-                    Some(Value::Null) => "null".to_string(),
-                    Some(Value::Array(_) | Value::Object(_)) => {
-                        serde_json::to_string(field_value.unwrap())
-                            .unwrap_or_else(|_| "invalid_complex_type".to_string())
-                    }
-                    None => format!("missing_field_{}", self.field_name),
-                }
+impl<T> KeyExtractor<T> for FieldKeyExtractor
+where
+    T: Serialize,
+{
+    fn extract_key(&self, event: &T) -> StateResult<String> {
+        let value = serde_json::to_value(event)?;
+
+        // Support nested field paths
+        let field_value = if self.field_name.contains('.') {
+            self.extract_nested_field(&value)
+        } else {
+            value.get(&self.field_name)
+        };
+
+        match field_value {
+            Some(Value::String(s)) => Ok(s.clone()),
+            Some(Value::Number(n)) => Ok(n.to_string()),
+            Some(Value::Bool(b)) => Ok(b.to_string()),
+            Some(Value::Null) => Ok("null".to_string()),
+            Some(complex @ (Value::Array(_) | Value::Object(_))) => {
+                Ok(serde_json::to_string(complex)?)
             }
-            Err(e) => {
-                format!("serialization_error_{}_{}", 
-                    self.field_name, 
-                    e.to_string().chars().take(10).collect::<String>())
-            }
+            None => Err(StateError::Validation(format!(
+                "key field `{}` is missing from the event",
+                self.field_name
+            ))),
         }
     }
 }
@@ -101,7 +104,6 @@ impl FieldKeyExtractor {
 
         Some(current)
     }
-
 }
 
 /// Custom key extractor function
@@ -120,7 +122,31 @@ impl<T, F> KeyExtractor<T> for CustomKeyExtractor<F>
 where
     F: Fn(&T) -> String + Clone,
 {
-    fn extract_key(&self, event: &T) -> String {
+    fn extract_key(&self, event: &T) -> StateResult<String> {
+        Ok((self.extractor)(event))
+    }
+}
+
+/// Key extractor whose function can itself fail.
+///
+/// Use this when deriving the key can go wrong in a way the caller wants to
+/// surface, rather than [`CustomKeyExtractor`], which is infallible.
+#[derive(Clone)]
+pub struct TryKeyExtractor<F> {
+    extractor: F,
+}
+
+impl<F> TryKeyExtractor<F> {
+    pub fn new(extractor: F) -> Self {
+        Self { extractor }
+    }
+}
+
+impl<T, F> KeyExtractor<T> for TryKeyExtractor<F>
+where
+    F: Fn(&T) -> StateResult<String> + Clone,
+{
+    fn extract_key(&self, event: &T) -> StateResult<String> {
         (self.extractor)(event)
     }
 }

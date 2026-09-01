@@ -5,7 +5,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-/// Common configuration for all connectors
+/// Common configuration options for connector implementations.
+///
+/// RS2 does not interpret these itself — they are here for connector authors to
+/// embed in their own `Config` type and honour. `KafkaConnector` carries its own
+/// equivalents on [`crate::connectors::kafka_connector::KafkaConfig`] instead,
+/// so nothing in RS2 reads this struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommonConfig {
     /// Batch size for processing

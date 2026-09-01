@@ -59,17 +59,17 @@ async fn queue_len_tracks_enqueue_and_dequeue() {
 }
 
 // ---------------------------------------------------------------------------
-// 11. either must not starve one side or re-poll a finished stream
+// 11. race must not starve one side or re-poll a finished stream
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn either_does_not_starve_the_ready_side() {
+async fn race_does_not_starve_the_ready_side() {
     // s1 is slow; s2 is ready immediately. The old implementation did an
     // unconditional `await` on s1 first, so s2 could not get through.
     let slow = stream_after(Duration::from_millis(300), vec![1, 2]);
     let fast = from_iter(vec![10, 20, 30]);
 
-    let out = either(slow, fast).take(3).collect::<Vec<_>>().await;
+    let out = race(slow, fast).take(3).collect::<Vec<_>>().await;
 
     assert!(
         out.iter().all(|x| *x >= 10),
@@ -79,23 +79,23 @@ async fn either_does_not_starve_the_ready_side() {
 }
 
 #[tokio::test]
-async fn either_drains_both_sides_completely() {
+async fn race_drains_both_sides_completely() {
     let a = from_iter(vec![1, 2, 3]);
     let b = from_iter(vec![10, 20]);
 
-    let mut out = either(a, b).collect::<Vec<_>>().await;
+    let mut out = race(a, b).collect::<Vec<_>>().await;
     out.sort();
 
     assert_eq!(
         out,
         vec![1, 2, 3, 10, 20],
-        "either dropped items from one side"
+        "race dropped items from one side"
     );
 }
 
 /// A stream that panics if polled again after it has returned `None`.
 ///
-/// Polling a `Stream` after completion violates its contract. The old `either`
+/// Polling a `Stream` after completion violates its contract. The old `race`
 /// awaited one side, set its done flag, and then immediately re-polled that same
 /// side inside a `select!`.
 struct PanicOnRepoll {
@@ -124,7 +124,7 @@ impl futures_core::Stream for PanicOnRepoll {
 }
 
 #[tokio::test]
-async fn either_does_not_repoll_a_finished_stream() {
+async fn race_does_not_repoll_a_finished_stream() {
     let a = PanicOnRepoll {
         remaining: 2,
         finished: false,
@@ -132,18 +132,18 @@ async fn either_does_not_repoll_a_finished_stream() {
     let b = from_iter(vec![10, 20, 30]);
 
     // Must complete without tripping the assertion inside PanicOnRepoll.
-    let out = either(a, b).collect::<Vec<_>>().await;
+    let out = race(a, b).collect::<Vec<_>>().await;
     assert_eq!(out.len(), 5, "all items from both sides: {:?}", out);
 }
 
 #[tokio::test]
-async fn either_handles_one_empty_side() {
-    let out = either(empty::<i32>(), from_iter(vec![1, 2, 3]))
+async fn race_handles_one_empty_side() {
+    let out = race(empty::<i32>(), from_iter(vec![1, 2, 3]))
         .collect::<Vec<_>>()
         .await;
     assert_eq!(out, vec![1, 2, 3]);
 
-    let out = either(from_iter(vec![1, 2, 3]), empty::<i32>())
+    let out = race(from_iter(vec![1, 2, 3]), empty::<i32>())
         .collect::<Vec<_>>()
         .await;
     assert_eq!(out, vec![1, 2, 3]);

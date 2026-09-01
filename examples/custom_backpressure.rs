@@ -29,6 +29,14 @@ fn main() {
             .collect::<Vec<_>>()
             .await;
 
+        // DropNewest with buffer_size 10 against a 1000-item source: the buffer
+        // bounds what survives, so the count must be small and far below the
+        // source size. The exact figure depends on scheduling, hence a range.
+        assert!(
+            result.len() <= 20 && !result.is_empty(),
+            "DropNewest should bound delivery near the buffer size, got {}",
+            result.len()
+        );
         println!("Processed {} elements with backpressure", result.len());
     });
 }

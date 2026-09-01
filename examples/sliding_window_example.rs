@@ -12,6 +12,10 @@ fn main() {
 
         // Apply a sliding window of size 3
         let windows = numbers.sliding_window_rs2(3).collect::<Vec<_>>().await;
+        // 10 items, window 3 => 10 - 3 + 1 = 8 overlapping windows
+        assert_eq!(windows.len(), 8);
+        assert_eq!(windows[0], vec![1, 2, 3]);
+        assert_eq!(windows[7], vec![8, 9, 10]);
 
         // Print each window
         println!("Sliding windows of size 3:");
@@ -36,6 +40,8 @@ fn main() {
 
         // Apply a sliding window of size 4 to create phrases
         let phrases = words.sliding_window_rs2(4).collect::<Vec<_>>().await;
+        // 9 words, window 4 => 6 phrases
+        assert_eq!(phrases.len(), 6);
 
         // Print each phrase
         println!("Phrases (sliding windows of size 4):");

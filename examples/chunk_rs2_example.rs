@@ -35,6 +35,8 @@ fn main() {
         }
 
         println!("Processed {} chunks", chunk_count);
+        // 10 items in chunks of 3 => 3 full chunks plus a remainder of 1
+        assert_eq!(chunk_count, 4);
         println!("Example completed!");
     });
 }

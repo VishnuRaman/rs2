@@ -144,29 +144,29 @@ fn generate_user_events() -> Vec<UserEvent> {
 // Key extractors for different stateful operations
 struct UserIdExtractor;
 impl KeyExtractor<UserEvent> for UserIdExtractor {
-    fn extract_key(&self, event: &UserEvent) -> String {
-        event.user_id.clone()
+    fn extract_key(&self, event: &UserEvent) -> Result<String, StateError> {
+        Ok(event.user_id.clone())
     }
 }
 
 struct SessionIdExtractor;
 impl KeyExtractor<UserEvent> for SessionIdExtractor {
-    fn extract_key(&self, event: &UserEvent) -> String {
-        event.session_id.clone()
+    fn extract_key(&self, event: &UserEvent) -> Result<String, StateError> {
+        Ok(event.session_id.clone())
     }
 }
 
 struct PageUrlExtractor;
 impl KeyExtractor<UserEvent> for PageUrlExtractor {
-    fn extract_key(&self, event: &UserEvent) -> String {
-        event.page_url.clone()
+    fn extract_key(&self, event: &UserEvent) -> Result<String, StateError> {
+        Ok(event.page_url.clone())
     }
 }
 
 struct EventTypeExtractor;
 impl KeyExtractor<UserEvent> for EventTypeExtractor {
-    fn extract_key(&self, event: &UserEvent) -> String {
-        event.event_type.clone()
+    fn extract_key(&self, event: &UserEvent) -> Result<String, StateError> {
+        Ok(event.event_type.clone())
     }
 }
 
@@ -307,7 +307,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n4️⃣ Event Pattern Detection");
     println!("--------------------------");
     
-    let patterns_results: Vec<Result<Option<String>, StateError>> = stream_from_vec(events.clone())
+    let patterns_results: Vec<Result<String, StateError>> = stream_from_vec(events.clone())
         .stateful_pattern_rs2(
             state_config.clone(),
             UserIdExtractor,
@@ -333,11 +333,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .collect()
         .await;
-    let patterns: Vec<Option<String>> = patterns_results.into_iter().filter_map(Result::ok).collect();
-
-    let detected_patterns: Vec<String> = patterns.into_iter()
-        .filter_map(|p| p)
-        .collect();
+    // Items are plain `String` now: `f` returning `None` means "no pattern
+    // here", which is simply not emitted.
+    let detected_patterns: Vec<String> =
+        patterns_results.into_iter().filter_map(Result::ok).collect();
     
     println!("   ✅ Detected {} interesting patterns", detected_patterns.len());
     for pattern in detected_patterns.iter().take(3) {

@@ -18,10 +18,12 @@ use crate::stream_configuration::{BufferConfig, GrowthStrategy};
 use crate::stream_performance_metrics::{HealthThresholds, StreamMetrics};
 use crate::{
     auto_backpressure, batch_process, bracket, chunk, debounce, distinct_until_changed,
-    distinct_until_changed_by, drop, drop_while, either, fold, group_adjacent_by, group_by,
-    interleave, interrupt_when, merge, par_eval_map, par_eval_map_unordered, par_join, prefetch,
-    sample, scan, sliding_window, take, take_while, throttle, tick, timeout, with_metrics,
-    zip_with, BackpressureConfig, RS2Stream,
+    distinct_until_changed_by, drop_while, fold, group_adjacent_by, skip, Either,
+    interleave, interleave_all, interleave_many, interrupt_when, merge, merge_either,
+    par_eval_map, par_eval_map_unordered, par_join, prefetch, race,
+    sample, scan, sliding_window, take, take_while, throttle, timeout, with_metrics,
+    with_metrics_sized, zip_with, zip_with_index, BackpressureConfig, RS2Stream,
+    chunk_n, eval_tap, group_within, metered, on_finalize, on_finalize_case, ExitCase,
 };
 
 /// Extension trait providing RS2-like combinators on Streams
@@ -68,7 +70,11 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     /// # Performance
     ///
     /// - **Concurrency**: Automatically uses `num_cpus::get()` concurrent tasks
+    /// - **Execution**: Each call runs on Tokio's blocking pool via
+    ///   `spawn_blocking`, so CPU work genuinely runs on multiple threads
     /// - **Best for**: CPU-intensive computations (math, parsing, compression)
+    /// - **Not for**: trivial closures — `spawn_blocking` costs more than the
+    ///   work itself; use `map_rs2` there
     /// - **Memory**: Uses one task per CPU core, moderate memory overhead
     /// - **Backpressure**: Inherits from underlying `par_eval_map_rs2`
     ///
@@ -91,10 +97,7 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         O: Send + 'static,
     {
         let concurrency = num_cpus::get();
-        self.par_eval_map_rs2(concurrency, move |x| {
-            let f = f.clone();
-            async move { f(x) }
-        })
+        self.map_parallel_with_concurrency_rs2(concurrency, f)
     }
 
     /// Transforms each element of the stream in parallel with custom concurrency control.
@@ -139,7 +142,8 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     ///
     /// # Panics
     ///
-    /// This function will panic if `concurrency` is 0. Always use a positive value.
+    /// Re-raises a panic from `f`, matching what would happen if it ran inline.
+    /// A `concurrency` of 0 is treated as 1.
     ///
     /// # See Also
     ///
@@ -151,9 +155,21 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         Self::Item: Send + 'static,
         O: Send + 'static,
     {
-        self.par_eval_map_rs2(concurrency, move |x| {
+        // `f` is synchronous, so it must go to the blocking pool to achieve any
+        // parallelism at all. Wrapping it in a plain `async move { f(x) }` — as
+        // this used to — produces a future that completes on its first poll, on
+        // the polling thread: `buffered` then interleaves futures that have
+        // nothing left to interleave. Measured on 8 x 100ms of CPU work across
+        // 16 cores: 800ms before, 108ms after, against an 800ms serial baseline.
+        self.par_eval_map_rs2(concurrency.max(1), move |x| {
             let f = f.clone();
-            async move { f(x) }
+            async move {
+                tokio::task::spawn_blocking(move || f(x))
+                    .await
+                    // Re-raise a panic from the user's closure, which is what
+                    // would happen if it ran inline.
+                    .expect("map_parallel closure panicked")
+            }
         })
     }
 
@@ -384,13 +400,17 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     /// This combinator groups consecutive elements that produce the same key.
     /// It emits groups as they complete (when the key changes or the rs2_stream ends).
     /// Each emitted item is a tuple containing the key and a vector of elements.
+    #[deprecated(
+        since = "0.4.0",
+        note = "groups only adjacent runs despite the name; use group_adjacent_by_rs2"
+    )]
     fn group_by_rs2<K, F>(self, key_fn: F) -> RS2Stream<(K, Vec<Self::Item>)>
     where
         Self::Item: Clone + Send + 'static,
         K: Eq + Clone + Send + 'static,
         F: FnMut(&Self::Item) -> K + Send + 'static,
     {
-        group_by(self.boxed(), key_fn)
+        group_adjacent_by(self.boxed(), key_fn)
     }
 
     /// Fold operation that accumulates a value over a stream
@@ -449,24 +469,15 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         take(self.boxed(), n)
     }
 
-    /// Drop the first n elements from the stream
-    ///
-    /// This combinator skips the first n elements from the stream and yields all remaining elements.
-    fn drop_rs2(self, n: usize) -> RS2Stream<Self::Item>
-    where
-        Self::Item: Send + 'static,
-    {
-        drop(self.boxed(), n)
-    }
-
     /// Skip the first n elements from the stream
     ///
-    /// This combinator skips the first n elements from the stream and yields all remaining elements.
+    /// FS2 calls this `drop`; RS2 uses `skip` to match Rust convention and to
+    /// avoid shadowing `std::mem::drop` under a glob import.
     fn skip_rs2(self, n: usize) -> RS2Stream<Self::Item>
     where
         Self::Item: Send + 'static,
     {
-        drop(self.boxed(), n)
+        skip(self.boxed(), n)
     }
 
     /// Select between this rs2_stream and another rs2_stream based on which one produces a value first
@@ -474,11 +485,35 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
     /// This combinator emits values from whichever rs2_stream produces a value first.
     /// Once a value is received from one rs2_stream, the other rs2_stream is cancelled.
     /// If either rs2_stream completes (returns None), the combinator switches to the other rs2_stream exclusively.
+    /// Emit from whichever stream produces a value first
+    fn race_rs2(self, other: RS2Stream<Self::Item>) -> RS2Stream<Self::Item>
+    where
+        Self::Item: Send + 'static,
+    {
+        race(self, other)
+    }
+
+    /// Emit from whichever stream produces a value first
+    ///
+    /// # Deprecated
+    ///
+    /// Renamed to [`race_rs2`]; the name collided with FS2's `either`, which
+    /// tags values by branch. That combinator is [`merge_either_rs2`].
+    #[deprecated(since = "0.4.0", note = "renamed to `race_rs2`; FS2's `either` is `merge_either_rs2`")]
     fn either_rs2(self, other: RS2Stream<Self::Item>) -> RS2Stream<Self::Item>
     where
         Self::Item: Send + 'static,
     {
-        either(self, other)
+        race(self, other)
+    }
+
+    /// Merge with another stream, tagging each value with its branch (FS2's `either`)
+    fn merge_either_rs2<B>(self, other: RS2Stream<B>) -> RS2Stream<Either<Self::Item, B>>
+    where
+        Self::Item: Send + 'static,
+        B: Send + 'static,
+    {
+        merge_either(self, other)
     }
 
     /// Collect all items from the stream into a collection
@@ -687,18 +722,128 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         with_metrics(self.boxed(), name, health_thresholds)
     }
 
+    /// Collect metrics, sizing each item with the supplied function
+    ///
+    /// Use this when you need `bytes_processed`; [`with_metrics_rs2`] leaves it
+    /// at zero rather than reporting the shallow `size_of_val`, which was 24
+    /// bytes for every `String` regardless of contents.
+    fn with_metrics_sized_rs2<F>(
+        self,
+        name: String,
+        health_thresholds: HealthThresholds,
+        size_of: F,
+    ) -> (RS2Stream<Self::Item>, Arc<Mutex<StreamMetrics>>)
+    where
+        Self::Item: Send + 'static,
+        F: Fn(&Self::Item) -> u64 + Send + 'static,
+    {
+        with_metrics_sized(self.boxed(), name, health_thresholds, size_of)
+    }
+
     /// Interleave multiple streams in a round-robin fashion
     ///
     /// This combinator takes a vector of streams and interleaves their elements
     /// in a round-robin fashion.
-    fn interleave_rs2<S>(self, streams: Vec<S>) -> RS2Stream<Self::Item>
+    /// Deterministically interleave with another stream, stopping at the shorter
+    ///
+    /// FS2's `interleave`. This used to take a `Vec` and round-robin until every
+    /// stream was exhausted; that behaviour is now [`interleave_many_rs2`].
+    fn interleave_rs2(self, other: RS2Stream<Self::Item>) -> RS2Stream<Self::Item>
+    where
+        Self::Item: Send + 'static,
+    {
+        interleave(self, other)
+    }
+
+    /// Deterministically interleave, continuing with whichever stream is longer
+    ///
+    /// FS2's `interleaveAll`.
+    fn interleave_all_rs2(self, other: RS2Stream<Self::Item>) -> RS2Stream<Self::Item>
+    where
+        Self::Item: Send + 'static,
+    {
+        interleave_all(self, other)
+    }
+
+    /// Round-robin across this stream and others, dropping each as it ends
+    fn interleave_many_rs2<S>(self, streams: Vec<S>) -> RS2Stream<Self::Item>
     where
         S: Stream<Item = Self::Item> + Send + 'static + Unpin,
         Self::Item: Send + 'static,
     {
         let mut all_streams = vec![self.boxed()];
         all_streams.extend(streams.into_iter().map(|s| s.boxed()));
-        interleave(all_streams)
+        interleave_many(all_streams)
+    }
+
+    /// Run an effect on each element for its side effects, passing it through
+    ///
+    /// FS2's `evalTap`.
+    fn eval_tap_rs2<F, Fut>(self, f: F) -> RS2Stream<Self::Item>
+    where
+        Self::Item: Send + 'static,
+        F: FnMut(&Self::Item) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        eval_tap(self.boxed(), f)
+    }
+
+    /// Pair each element with its zero-based index (FS2's `zipWithIndex`)
+    fn zip_with_index_rs2(self) -> RS2Stream<(Self::Item, u64)>
+    where
+        Self::Item: Send + 'static,
+    {
+        zip_with_index(self.boxed())
+    }
+
+    /// Buffer into chunks of up to `chunk_size`, emitting early on `timeout`
+    ///
+    /// FS2's `groupWithin`.
+    fn group_within_rs2(self, chunk_size: usize, timeout: Duration) -> RS2Stream<Vec<Self::Item>>
+    where
+        Self::Item: Send + 'static,
+    {
+        group_within(self.boxed(), chunk_size, timeout)
+    }
+
+    /// Chunk into vectors of size `n`, optionally dropping a short final chunk
+    ///
+    /// FS2's `chunkN(n, allowFewer)`.
+    fn chunk_n_rs2(self, n: usize, allow_fewer: bool) -> RS2Stream<Vec<Self::Item>>
+    where
+        Self::Item: Send + 'static,
+    {
+        chunk_n(self.boxed(), n, allow_fewer)
+    }
+
+    /// Emit at most one element per `rate`, dropping none (FS2's `metered`)
+    fn metered_rs2(self, rate: Duration) -> RS2Stream<Self::Item>
+    where
+        Self::Item: Send + 'static,
+    {
+        metered(self.boxed(), rate)
+    }
+
+    /// Run an action when the stream ends, however it ends (FS2's `onFinalize`)
+    fn on_finalize_rs2<F, Fut>(self, f: F) -> RS2Stream<Self::Item>
+    where
+        Self::Item: Send + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        on_finalize(self.boxed(), f)
+    }
+
+    /// Run an action when the stream ends, told how it ended
+    ///
+    /// FS2's `onFinalizeCase`.
+    fn on_finalize_case_rs2<F, Fut>(self, f: F) -> RS2Stream<Self::Item>
+    where
+        Self::Item: Send + 'static,
+        F: FnOnce(ExitCase<()>) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        on_finalize_case(self.boxed(), f)
     }
 
     /// Chunk the stream into vectors of the specified size
@@ -710,16 +855,6 @@ pub trait RS2StreamExt: Stream + Sized + Unpin + Send + 'static {
         Self::Item: Send + 'static,
     {
         chunk(self.boxed(), size)
-    }
-
-    /// Create a stream that emits values at a fixed rate
-    ///
-    /// This combinator creates a stream that emits the provided item at a fixed rate.
-    fn tick_rs<O>(self, period: Duration, item: O) -> RS2Stream<O>
-    where
-        O: Clone + Send + 'static,
-    {
-        tick(period, item)
     }
 
     /// Bracket for resource management
