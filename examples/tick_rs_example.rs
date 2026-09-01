@@ -6,10 +6,13 @@ use tokio::runtime::Runtime;
 fn main() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
-        println!("Creating a stream that emits a value every 500ms using tick_rs extension method");
+        println!("Creating a stream that emits a value every 500ms using tick()");
 
-        // Create an empty stream and use the tick_rs extension method
-        let stream = empty::<i32>().tick_rs(Duration::from_millis(500), "Tick!");
+        // `tick` is a stream *constructor*, not a transformation — it takes no
+        // input stream. It used to also exist as `tick_rs`, an extension method
+        // that discarded its receiver entirely, so `empty().tick_rs(..)` read as
+        // if the empty stream mattered when it did not.
+        let stream = tick(Duration::from_millis(500), "Tick!");
 
         println!("Stream created. Collecting 5 values...");
 
@@ -22,6 +25,8 @@ fn main() {
             println!("Received item {}: {}", count, item);
         }
 
+        // Invariant: `tick` repeats forever, so `take(5)` yields exactly 5.
+        assert_eq!(count, 5, "take(5) over an infinite tick must yield 5 items");
         println!("Example completed!");
     });
 }

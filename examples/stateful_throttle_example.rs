@@ -69,7 +69,7 @@ async fn main() {
     println!("1. Throttle by User (2 requests per second):");
     let high_perf_config = StateConfigs::high_performance();
 
-    let user_throttled = futures::stream::iter(requests.clone()).stateful_throttle_rs2(
+    let user_throttled = futures::stream::iter(requests.clone()).stateful_throttle_drop_rs2(
         high_perf_config,
         CustomKeyExtractor::new(|req: &Request| req.user_id.clone()),
         2,                      // Rate limit: 2 requests per window
@@ -98,7 +98,7 @@ async fn main() {
     println!("\n2. Throttle by Endpoint (3 requests per 2 seconds):");
     let session_config = StateConfigs::session();
 
-    let endpoint_throttled = futures::stream::iter(requests.clone()).stateful_throttle_rs2(
+    let endpoint_throttled = futures::stream::iter(requests.clone()).stateful_throttle_drop_rs2(
         session_config,
         CustomKeyExtractor::new(|req: &Request| req.endpoint.clone()),
         3,                      // Rate limit: 3 requests per window
@@ -127,7 +127,7 @@ async fn main() {
     println!("\n3. Throttle by User-Endpoint Combination (1 request per 500ms):");
     let short_lived_config = StateConfigs::short_lived();
 
-    let user_endpoint_throttled = futures::stream::iter(requests.clone()).stateful_throttle_rs2(
+    let user_endpoint_throttled = futures::stream::iter(requests.clone()).stateful_throttle_drop_rs2(
         short_lived_config,
         CustomKeyExtractor::new(|req: &Request| format!("{}_{}", req.user_id, req.endpoint)),
         1,                          // Rate limit: 1 request per window
@@ -156,7 +156,7 @@ async fn main() {
     println!("\n4. Throttle by Priority (5 requests per 3 seconds):");
     let long_lived_config = StateConfigs::long_lived();
 
-    let priority_throttled = futures::stream::iter(requests.clone()).stateful_throttle_rs2(
+    let priority_throttled = futures::stream::iter(requests.clone()).stateful_throttle_drop_rs2(
         long_lived_config,
         CustomKeyExtractor::new(|req: &Request| req.priority.to_string()),
         5,                      // Rate limit: 5 requests per window
@@ -224,7 +224,7 @@ async fn main() {
         },
     ];
 
-    let rapid_throttled = futures::stream::iter(rapid_requests).stateful_throttle_rs2(
+    let rapid_throttled = futures::stream::iter(rapid_requests).stateful_throttle_drop_rs2(
         realtime_config,
         CustomKeyExtractor::new(|req: &Request| req.user_id.clone()),
         2,                          // Rate limit: 2 requests per window
@@ -246,5 +246,8 @@ async fn main() {
         println!("    {} at timestamp {}", req.id, req.timestamp);
     }
 
+    // Invariant for the dropping throttle: it can never emit MORE than it was
+    // given, and with a rate limit it must emit strictly fewer when the input
+    // exceeds the limit within one window.
     println!("\n=== Stateful Throttle Example Complete ===");
 }

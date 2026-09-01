@@ -48,7 +48,7 @@ fn test_key_extractor_trait() {
         value: "test".to_string(),
     };
 
-    let key = extractor.extract_key(&data);
+    let key = extractor.extract_key(&data).unwrap();
     assert_eq!(key, "key_42");
 }
 
@@ -61,7 +61,7 @@ fn test_custom_key_extractor_with_string() {
         value: "user_123".to_string(),
     };
 
-    let key = extractor.extract_key(&data);
+    let key = extractor.extract_key(&data).unwrap();
     assert_eq!(key, "user_123");
 }
 
@@ -75,7 +75,7 @@ fn test_custom_key_extractor_with_complex_key() {
         value: "session_abc".to_string(),
     };
 
-    let key = extractor.extract_key(&data);
+    let key = extractor.extract_key(&data).unwrap();
     assert_eq!(key, "100:session_abc");
 }
 
@@ -205,7 +205,7 @@ fn test_key_extractor_with_different_types() {
         value: "test".to_string(),
     };
 
-    let key = int_extractor.extract_key(&data);
+    let key = int_extractor.extract_key(&data).unwrap();
     assert_eq!(key, "123");
 
     // Test with hash-based key
@@ -219,7 +219,7 @@ fn test_key_extractor_with_different_types() {
         format!("{:x}", hasher.finish())
     });
 
-    let key = hash_extractor.extract_key(&data);
+    let key = hash_extractor.extract_key(&data).unwrap();
     assert!(!key.is_empty());
     assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
 }
@@ -263,7 +263,7 @@ fn test_field_key_extractor_string() {
         tags: vec!["tag1".to_string(), "tag2".to_string()],
     };
     
-    assert_eq!(extractor.extract_key(&event), "user123");
+    assert_eq!(extractor.extract_key(&event).unwrap(), "user123");
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn test_field_key_extractor_number() {
         tags: vec!["tag1".to_string(), "tag2".to_string()],
     };
     
-    assert_eq!(extractor.extract_key(&event), "25");
+    assert_eq!(extractor.extract_key(&event).unwrap(), "25");
 }
 
 #[test]
@@ -291,7 +291,7 @@ fn test_field_key_extractor_bool() {
         tags: vec!["tag1".to_string(), "tag2".to_string()],
     };
     
-    assert_eq!(extractor.extract_key(&event), "true");
+    assert_eq!(extractor.extract_key(&event).unwrap(), "true");
 }
 
 #[test]
@@ -305,7 +305,7 @@ fn test_field_key_extractor_null() {
         tags: vec!["tag1".to_string(), "tag2".to_string()],
     };
     
-    assert_eq!(extractor.extract_key(&event), "null");
+    assert_eq!(extractor.extract_key(&event).unwrap(), "null");
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn test_field_key_extractor_array() {
     };
     
     // Should serialize the array to a JSON string
-    let result = extractor.extract_key(&event);
+    let result = extractor.extract_key(&event).unwrap();
     assert!(result.contains("tag1"));
     assert!(result.contains("tag2"));
 }
@@ -340,7 +340,7 @@ fn test_field_key_extractor_nested() {
     };
     
     // Should serialize the nested object to a JSON string
-    let result = extractor.extract_key(&nested_event);
+    let result = extractor.extract_key(&nested_event).unwrap();
     assert!(result.contains("user123"));
     assert!(result.contains("25"));
 }
@@ -356,7 +356,13 @@ fn test_field_key_extractor_missing_field() {
         tags: vec!["tag1".to_string()],
     };
     
-    assert_eq!(extractor.extract_key(&event), "missing_field_nonexistent_field");
+    // Previously returned the sentinel "missing_field_nonexistent_field", which
+    // silently funnelled every malformed event into one shared state bucket.
+    let result = extractor.extract_key(&event);
+    assert!(
+        result.is_err(),
+        "a missing key field must be reported, not turned into a sentinel key"
+    );
 }
 
 #[test]
@@ -370,7 +376,7 @@ fn test_field_key_extractor_with_some_metadata() {
         tags: vec!["tag1".to_string()],
     };
     
-    assert_eq!(extractor.extract_key(&event), "some_metadata");
+    assert_eq!(extractor.extract_key(&event).unwrap(), "some_metadata");
 }
 
 #[test]
@@ -387,7 +393,7 @@ fn test_field_key_extractor_nested_dot_notation() {
         timestamp: 1234567890,
     };
     
-    assert_eq!(extractor.extract_key(&nested_event), "user123");
+    assert_eq!(extractor.extract_key(&nested_event).unwrap(), "user123");
 }
 
 #[test]
@@ -407,7 +413,7 @@ fn test_field_key_extractor_deep_nested() {
         metadata: Some("test_metadata".to_string()),
     };
     
-    assert_eq!(extractor.extract_key(&deep_event), "25");
+    assert_eq!(extractor.extract_key(&deep_event).unwrap(), "25");
 }
 
 #[test]
@@ -424,7 +430,11 @@ fn test_field_key_extractor_nested_missing_field() {
         timestamp: 1234567890,
     };
     
-    assert_eq!(extractor.extract_key(&nested_event), "missing_field_user.nonexistent_field");
+    let result = extractor.extract_key(&nested_event);
+    assert!(
+        result.is_err(),
+        "a missing nested key field must be reported, not turned into a sentinel key"
+    );
 }
 
 #[test]
@@ -442,7 +452,7 @@ fn test_field_key_extractor_nested_complex_type() {
     };
     
     // Should serialize the array to a JSON string
-    let result = extractor.extract_key(&nested_event);
+    let result = extractor.extract_key(&nested_event).unwrap();
     assert!(result.contains("tag1"));
     assert!(result.contains("tag2"));
 }

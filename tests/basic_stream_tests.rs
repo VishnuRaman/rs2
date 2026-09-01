@@ -84,7 +84,7 @@ fn test_drop() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
-        let result = drop(stream, 2).collect::<Vec<_>>().await;
+        let result = skip(stream, 2).collect::<Vec<_>>().await;
         assert_eq!(result, vec![3, 4, 5]);
     });
 }

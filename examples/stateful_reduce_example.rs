@@ -58,6 +58,8 @@ async fn main() {
     ];
 
     // Example 1: Simple aggregation with custom config
+    // user1: 100 + 50 + 200 = 350 across 3 transactions
+    // user2: 75 + 150 = 225 across 2
     println!("1. Simple Transaction Aggregation:");
     let custom_config = StateConfig::new();
 

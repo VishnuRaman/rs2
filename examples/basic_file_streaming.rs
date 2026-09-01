@@ -45,9 +45,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Starting file stream from: {:?}", file_path);
 
     // Start streaming from the file
-    let chunk_stream = streaming_service
-        .start_file_stream(file_path, stream_config)
-        .await;
+    let chunk_stream = match streaming_service
+        .start_file_stream(file_path.clone(), stream_config)
+        .await
+    {
+        Ok(stream) => stream,
+        Err(e) => {
+            eprintln!("Could not open {:?}: {}", file_path, e);
+            return Ok(());
+        }
+    };
 
     // Process the chunks
     let mut chunk_count = 0;

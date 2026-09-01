@@ -128,8 +128,13 @@ fn test_bracket_case_error() {
         assert!(*acquired.lock().unwrap());
         assert!(*released.lock().unwrap());
 
-        // Verify exit case was Completed (even with an error in the rs2_stream)
+        // In-band `Err` items are data, not stream failure — as `Left` is in
+        // FS2. The rs2_stream ran to exhaustion, so the exit case is Completed.
         let case = exit_case.lock().unwrap().clone().unwrap();
-        assert!(case.contains("Completed"));
+        assert!(
+            case.contains("Completed"),
+            "a rs2_stream containing Err items still completes; got {}",
+            case
+        );
     });
 }

@@ -30,12 +30,26 @@ pub struct JsonSchemaValidator {
 
 impl JsonSchemaValidator {
     /// Create a new validator from a JSON schema value.
-    pub fn new(schema_id: &str, schema: Value) -> Self {
-        let compiled = validator_for(&schema).expect("Invalid JSON schema");
-        Self {
+    ///
+    /// Returns [`SchemaError::ParseError`] if the schema itself is invalid.
+    pub fn try_new(schema_id: &str, schema: Value) -> Result<Self, SchemaError> {
+        let compiled =
+            validator_for(&schema).map_err(|e| SchemaError::ParseError(e.to_string()))?;
+        Ok(Self {
             schema_id: schema_id.to_string(),
             compiled: Arc::new(compiled),
-        }
+        })
+    }
+
+    /// Create a new validator from a JSON schema value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the schema is invalid. Prefer [`JsonSchemaValidator::try_new`],
+    /// which reports the problem instead of aborting the caller.
+    #[deprecated(since = "0.4.0", note = "panics on an invalid schema; use try_new")]
+    pub fn new(schema_id: &str, schema: Value) -> Self {
+        Self::try_new(schema_id, schema).expect("Invalid JSON schema")
     }
 }
 

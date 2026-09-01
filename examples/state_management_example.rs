@@ -521,4 +521,61 @@ async fn main() {
     }
 
     println!("\n=== State Management Example Complete ===");
+    // --- sliding vs tumbling windows ----------------------------------------
+    // `stateful_window_rs2` is tumbling: each window is disjoint. The
+    // `_advanced` form adds a slide size and control over partial windows at
+    // stream end.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct Reading {
+        sensor: String,
+        value: u32,
+    }
+
+    let readings: Vec<Reading> = (1..=7)
+        .map(|value| Reading { sensor: "s1".to_string(), value })
+        .collect();
+
+    // Tumbling: window_size 3, slide defaults to 3 -> [1,2,3] [4,5,6], 7 dropped.
+    let tumbling = futures::stream::iter(readings.clone())
+        .stateful_window_rs2_advanced(
+            StateConfig::default(),
+            CustomKeyExtractor::new(|r: &Reading| r.sensor.clone()),
+            3,
+            None,
+            false, // emit_partial: drop the trailing incomplete window
+            |window: Vec<Reading>, _state| {
+                Box::pin(async move {
+                    Ok(window.iter().map(|r| r.value).collect::<Vec<_>>())
+                })
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+    println!("\n--- windows ---");
+    println!(
+        "tumbling(3)          -> {:?}",
+        tumbling.iter().filter_map(|r| r.as_ref().ok()).collect::<Vec<_>>()
+    );
+
+    // Sliding: window_size 3, slide 1 -> overlapping windows.
+    let sliding = futures::stream::iter(readings.clone())
+        .stateful_window_rs2_advanced(
+            StateConfig::default(),
+            CustomKeyExtractor::new(|r: &Reading| r.sensor.clone()),
+            3,
+            Some(1), // slide by 1: each window shares two items with the last
+            true,    // emit_partial: keep whatever is left at stream end
+            |window: Vec<Reading>, _state| {
+                Box::pin(async move {
+                    Ok(window.iter().map(|r| r.value).collect::<Vec<_>>())
+                })
+            },
+        )
+        .collect::<Vec<_>>()
+        .await;
+    println!(
+        "sliding(3, slide 1)  -> {:?}",
+        sliding.iter().filter_map(|r| r.as_ref().ok()).collect::<Vec<_>>()
+    );
+
 }

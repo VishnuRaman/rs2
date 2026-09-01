@@ -31,7 +31,7 @@ async fn test_time_windowed_aggregations() {
 
     let config = TimeWindowConfig {
         window_size: Duration::from_secs(60),
-        slide_interval: Duration::from_secs(30),
+        slide_interval: Some(Duration::from_secs(30)),
         watermark_delay: Duration::from_secs(5),
         allowed_lateness: Duration::from_secs(2),
     };
@@ -100,7 +100,10 @@ async fn test_time_windowed_joins() {
 async fn test_window_config_default() {
     let config = TimeWindowConfig::default();
     assert_eq!(config.window_size, Duration::from_secs(60));
-    assert_eq!(config.slide_interval, Duration::from_secs(60));
+    // `None` means "tumbling at window_size". A fixed 60s default silently
+    // turned `{ window_size: X, ..Default::default() }` into sparse sampling.
+    assert_eq!(config.slide_interval, None);
+    assert_eq!(config.effective_slide(), Duration::from_secs(60));
     assert_eq!(config.watermark_delay, Duration::from_secs(10));
     assert_eq!(config.allowed_lateness, Duration::from_secs(5));
 }

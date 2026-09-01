@@ -8,9 +8,7 @@ use futures_core::Stream;
 use futures_util::pin_mut;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
-use crate::resource_manager::get_global_resource_manager;
 
 // ================================
 // Time-based Windowed Aggregations
@@ -20,16 +18,38 @@ use crate::resource_manager::get_global_resource_manager;
 #[derive(Debug, Clone)]
 pub struct TimeWindowConfig {
     pub window_size: Duration,
-    pub slide_interval: Duration,
+    /// Distance between window starts.
+    ///
+    /// `None` (the default) means tumbling: the slide equals `window_size`, so
+    /// windows tile the timeline exactly once. `Some(d)` with `d < window_size`
+    /// gives overlapping sliding windows.
+    ///
+    /// `Some(d)` with `d > window_size` is legal and means sparse *sampling*
+    /// windows — a `window_size` sample taken every `d`. Note that events
+    /// falling in the gaps between samples are not part of any window and are
+    /// dropped.
+    ///
+    /// This is an `Option` specifically so that
+    /// `TimeWindowConfig { window_size: X, ..Default::default() }` stays
+    /// tumbling at `X`. A fixed default slide silently turned every such config
+    /// into sparse sampling and dropped nearly all events.
+    pub slide_interval: Option<Duration>,
     pub watermark_delay: Duration,
     pub allowed_lateness: Duration,
+}
+
+impl TimeWindowConfig {
+    /// The effective slide: `slide_interval` if set, otherwise `window_size`.
+    pub fn effective_slide(&self) -> Duration {
+        self.slide_interval.unwrap_or(self.window_size)
+    }
 }
 
 impl Default for TimeWindowConfig {
     fn default() -> Self {
         Self {
             window_size: Duration::from_secs(60),
-            slide_interval: Duration::from_secs(60),
+            slide_interval: None,
             watermark_delay: Duration::from_secs(10),
             allowed_lateness: Duration::from_secs(5),
         }
@@ -63,6 +83,22 @@ impl<T> TimeWindow<T> {
 }
 
 /// Create time-based windows from a stream of timestamped events
+///
+/// Honours every field of [`TimeWindowConfig`]:
+///
+/// - `window_size` — the span each window covers.
+/// - `slide_interval` — how far apart window starts are. When it is smaller
+///   than `window_size` the windows overlap and an event lands in every window
+///   that covers it (a genuine sliding window). Equal to `window_size` gives
+///   tumbling windows, which is the default.
+/// - `watermark_delay` — how far behind the watermark a window must fall
+///   before it is emitted.
+/// - `allowed_lateness` — extra grace on top of `watermark_delay`. Events for a
+///   window whose grace has already expired are dropped as too late rather than
+///   reopening it.
+///
+/// `slide_interval` and `allowed_lateness` were previously stored and never
+/// read, so sliding windows silently behaved as tumbling ones.
 pub fn window_by_time<T, F>(
     stream: RS2Stream<T>,
     config: TimeWindowConfig,
@@ -75,53 +111,84 @@ where
     stream! {
         let mut windows: HashMap<u64, TimeWindow<T>> = HashMap::new();
         let mut watermark = SystemTime::UNIX_EPOCH;
-        let resource_manager = get_global_resource_manager();
         pin_mut!(stream);
+
+        // Millisecond arithmetic throughout: `as_secs()` truncated sub-second
+        // windows to zero and panicked on the division.
+        let size_ms = config.window_size.as_millis().max(1) as u64;
+        let slide_ms = config.effective_slide().as_millis().max(1) as u64;
+        let grace_ms =
+            (config.watermark_delay.as_millis() as u64) + (config.allowed_lateness.as_millis() as u64);
 
         while let Some(event) = stream.next().await {
             let event_time = timestamp_fn(&event);
             if event_time > watermark {
                 watermark = event_time;
             }
+            let t_ms = event_time
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let watermark_ms = watermark
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
 
-            // Calculate window boundaries
-            let since_epoch = event_time.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
-            let window_size_secs = config.window_size.as_secs();
-            let window_start_secs = (since_epoch.as_secs() / window_size_secs) * window_size_secs;
-            let window_start = SystemTime::UNIX_EPOCH + Duration::from_secs(window_start_secs);
-            let window_end = window_start + config.window_size;
-            let window_id = window_start_secs;
+            // Every window start `s` (a multiple of the slide) with s <= t < s + size.
+            // For tumbling windows this is exactly one.
+            let last_start = (t_ms / slide_ms) * slide_ms;
+            let first_start = if t_ms >= size_ms {
+                ((t_ms - size_ms) / slide_ms + 1) * slide_ms
+            } else {
+                0
+            };
 
-            // Add event to appropriate window
-            let is_new_window = !windows.contains_key(&window_id);
-            let window = windows.entry(window_id).or_insert_with(|| {
-                TimeWindow::new(window_start, window_end)
-            });
-            if is_new_window {
-                resource_manager.track_memory_allocation(1).await.ok();
-            }
-            window.add_event(event);
-            resource_manager.track_memory_allocation(1).await.ok();
+            let mut start = first_start;
+            while start <= last_start {
+                let end_ms = start + size_ms;
 
-            // Emit completed windows
-            let mut to_remove = Vec::new();
-            for (id, window) in &windows {
-                if window.is_complete(watermark - config.watermark_delay) {
-                    to_remove.push(*id);
+                // Too late: this window's grace has already expired, so it has
+                // been emitted (or will be with the data it had).
+                if watermark_ms > end_ms + grace_ms {
+                    start += slide_ms;
+                    continue;
                 }
+
+                windows
+                    .entry(start)
+                    .or_insert_with(|| {
+                        TimeWindow::new(
+                            SystemTime::UNIX_EPOCH + Duration::from_millis(start),
+                            SystemTime::UNIX_EPOCH + Duration::from_millis(end_ms),
+                        )
+                    })
+                    .add_event(event.clone());
+
+                start += slide_ms;
             }
-            for id in to_remove {
+
+            // Emit windows whose end plus grace the watermark has passed.
+            let mut ready: Vec<u64> = windows
+                .iter()
+                .filter(|(start, _)| watermark_ms >= *start + size_ms + grace_ms)
+                .map(|(start, _)| *start)
+                .collect();
+            ready.sort_unstable();
+
+            for id in ready {
                 if let Some(window) = windows.remove(&id) {
-                    resource_manager.track_memory_deallocation(window.events.len() as u64).await;
                     yield window;
                 }
             }
         }
 
-        // Emit remaining windows
-        for (_, window) in windows {
-            resource_manager.track_memory_deallocation(window.events.len() as u64).await;
-            yield window;
+        // Emit remaining windows, oldest first.
+        let mut leftover: Vec<u64> = windows.keys().copied().collect();
+        leftover.sort_unstable();
+        for id in leftover {
+            if let Some(window) = windows.remove(&id) {
+                yield window;
+            }
         }
     }
     .boxed()
@@ -130,6 +197,16 @@ where
 // ================================
 // Stream Joins with Time Windows
 // ================================
+
+/// Whether two event times fall within `window` of each other, in either direction.
+fn within_window(a: SystemTime, b: SystemTime, window: Duration) -> bool {
+    let diff = if a > b {
+        a.duration_since(b).unwrap_or_default()
+    } else {
+        b.duration_since(a).unwrap_or_default()
+    };
+    diff <= window
+}
 
 /// Configuration for time-windowed joins
 #[derive(Debug, Clone)]
@@ -172,57 +249,114 @@ where
         Left(L),
         Right(R),
     }
+
+    /// Bucket key for the join index.
+    ///
+    /// Indexing on the *hash* of the join key rather than the key itself keeps
+    /// the public bounds unchanged (`K: Eq + Hash` already), since the key never
+    /// has to be stored. Hash collisions only widen the candidate set — the
+    /// existing `fk1(e1) == fk2(e2)` check still decides every match.
+    fn bucket_of<K: std::hash::Hash>(key: &K) -> u64 {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Drop buffered events that have fallen behind the watermark.
+    fn prune<V>(buffer: &mut HashMap<u64, Vec<(V, SystemTime)>>, min_time: SystemTime) {
+        buffer.retain(|_, items| {
+            items.retain(|(_, t)| *t >= min_time);
+            !items.is_empty()
+        });
+    }
+
+    /// Events between watermark-eviction passes.
+    ///
+    /// Pruning used to run on every event, which was O(n) per event and
+    /// quadratic overall on its own. Correctness does not depend on it —
+    /// `within_window` still gates every pair — so it is pure memory hygiene and
+    /// safe to amortise.
+    const EVICT_INTERVAL: u32 = 256;
+
     stream! {
-        let mut buffer1: Vec<(T1, SystemTime)> = Vec::new();
-        let mut buffer2: Vec<(T2, SystemTime)> = Vec::new();
+        // Bucketed by join-key hash. The unkeyed (cross join) case puts
+        // everything in bucket 0, which is the correct behaviour there: every
+        // pair genuinely has to be considered.
+        let mut buffer1: HashMap<u64, Vec<(T1, SystemTime)>> = HashMap::new();
+        let mut buffer2: HashMap<u64, Vec<(T2, SystemTime)>> = HashMap::new();
         let mut watermark = SystemTime::UNIX_EPOCH;
-        let mut yielded: HashSet<(u128, u128)> = HashSet::new();
-        let s1 = stream1.map(|e| Either::Left(e));
-        let s2 = stream2.map(|e| Either::Right(e));
+        let mut since_evict: u32 = 0;
+
+        let s1 = stream1.map(Either::Left);
+        let s2 = stream2.map(Either::Right);
         let merged = merge(s1, s2);
         pin_mut!(merged);
+
         while let Some(either) = merged.next().await {
+            // Each arriving event is joined against the *opposite* buffer only,
+            // so every pair is considered exactly once. With the hash index that
+            // is one bucket rather than the whole buffer.
             match either {
                 Either::Left(e1) => {
                     let t1 = timestamp_fn1(&e1);
                     if t1 > watermark { watermark = t1; }
-                    buffer1.push((e1, t1));
+
+                    let bucket = match key_selector {
+                        Some((ref fk1, _)) => bucket_of(&fk1(&e1)),
+                        None => 0,
+                    };
+
+                    if let Some(candidates) = buffer2.get(&bucket) {
+                        for (e2, t2) in candidates {
+                            if within_window(t1, *t2, config.window_size) {
+                                let key_match = match key_selector {
+                                    Some((ref fk1, ref fk2)) => fk1(&e1) == fk2(e2),
+                                    None => true,
+                                };
+                                if key_match {
+                                    yield join_fn(e1.clone(), e2.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    buffer1.entry(bucket).or_default().push((e1, t1));
                 }
                 Either::Right(e2) => {
                     let t2 = timestamp_fn2(&e2);
                     if t2 > watermark { watermark = t2; }
-                    buffer2.push((e2, t2));
-                }
-            }
-            // Clean old events
-            let min_time = watermark - config.window_size;
-            buffer1.retain(|(_, t)| *t >= min_time);
-            buffer2.retain(|(_, t)| *t >= min_time);
-            // Perform joins
-            for (e1, t1) in &buffer1 {
-                for (e2, t2) in &buffer2 {
-                    let diff = if t1 > t2 {
-                        t1.duration_since(*t2).unwrap_or_default()
-                    } else {
-                        t2.duration_since(*t1).unwrap_or_default()
+
+                    let bucket = match key_selector {
+                        Some((_, ref fk2)) => bucket_of(&fk2(&e2)),
+                        None => 0,
                     };
-                    if diff <= config.window_size {
-                        let key_match = if let Some((ref fk1, ref fk2)) = key_selector {
-                            fk1(e1) == fk2(e2)
-                        } else {
-                            true
-                        };
-                        if key_match {
-                            // Deduplicate by timestamps
-                            let t1n = t1.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
-                            let t2n = t2.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos();
-                            let key = (t1n, t2n);
-                            if !yielded.contains(&key) {
-                                yielded.insert(key);
-                                yield join_fn(e1.clone(), e2.clone());
+
+                    if let Some(candidates) = buffer1.get(&bucket) {
+                        for (e1, t1) in candidates {
+                            if within_window(*t1, t2, config.window_size) {
+                                let key_match = match key_selector {
+                                    Some((ref fk1, ref fk2)) => fk1(e1) == fk2(&e2),
+                                    None => true,
+                                };
+                                if key_match {
+                                    yield join_fn(e1.clone(), e2.clone());
+                                }
                             }
                         }
                     }
+
+                    buffer2.entry(bucket).or_default().push((e2, t2));
+                }
+            }
+
+            since_evict += 1;
+            if since_evict >= EVICT_INTERVAL {
+                since_evict = 0;
+                // `checked_sub`: the watermark can sit near the epoch.
+                if let Some(min_time) = watermark.checked_sub(config.window_size) {
+                    prune(&mut buffer1, min_time);
+                    prune(&mut buffer2, min_time);
                 }
             }
         }

@@ -51,6 +51,13 @@ fn main() {
         let user = delayed_user.collect::<Vec<_>>().await;
         let elapsed = start.elapsed();
 
+        // One-sided bound: emit_after can be slower on a loaded machine, but it
+        // can never fire before its delay.
+        assert!(
+            elapsed.as_millis() >= 90,
+            "emit_after fired too early: {:?}",
+            elapsed
+        );
         println!(
             "Delayed user: {} (after {}ms)",
             user[0].name,

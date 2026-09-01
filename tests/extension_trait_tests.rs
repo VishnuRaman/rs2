@@ -710,23 +710,44 @@ fn test_collect_rs2_empty_stream() {
 }
 
 #[test]
+#[allow(deprecated)] // exercising the deprecated shim until it is removed
 fn test_collect_with_config_rs2() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Create a stream of numbers
         let stream = from_iter(vec![1, 2, 3, 4, 5]);
 
-        // Create a custom buffer configuration with a small initial capacity
+        // BufferConfig is now ignored; the point of this test is that the
+        // deprecated shim still collects everything.
         let config = BufferConfig {
             initial_capacity: 2,
             max_capacity: Some(10),
             growth_strategy: GrowthStrategy::Exponential(2.0),
         };
 
-        // Collect into a Vec with custom buffer configuration
         let result = stream.collect_with_config_rs2::<Vec<_>>(config).await;
 
         // Check that all items were collected correctly
+        assert_eq!(result, vec![1, 2, 3, 4, 5]);
+    });
+}
+
+#[test]
+#[allow(deprecated)]
+fn test_collect_with_config_rs2_no_longer_truncates() {
+    // max_capacity used to cap the item count and silently drop the rest.
+    let rt = Runtime::new().unwrap();
+    rt.block_on(async {
+        let config = BufferConfig {
+            initial_capacity: 2,
+            max_capacity: Some(3),
+            growth_strategy: GrowthStrategy::Exponential(2.0),
+        };
+
+        let result = from_iter(vec![1, 2, 3, 4, 5])
+            .collect_with_config_rs2::<Vec<_>>(config)
+            .await;
+
         assert_eq!(result, vec![1, 2, 3, 4, 5]);
     });
 }
@@ -912,7 +933,7 @@ fn test_interleave_rs2() {
 
         // Apply interleave
         let result = main_stream
-            .interleave_rs2(vec![stream1, stream2])
+            .interleave_many_rs2(vec![stream1, stream2])
             .collect::<Vec<_>>()
             .await;
 
@@ -932,7 +953,7 @@ fn test_interleave_rs2_different_lengths() {
 
         // Apply interleave
         let result = main_stream
-            .interleave_rs2(vec![stream1, stream2])
+            .interleave_many_rs2(vec![stream1, stream2])
             .collect::<Vec<_>>()
             .await;
 
@@ -952,7 +973,7 @@ fn test_interleave_rs2_empty_streams() {
 
         // Apply interleave
         let result = main_stream
-            .interleave_rs2(vec![empty_stream1, empty_stream2])
+            .interleave_many_rs2(vec![empty_stream1, empty_stream2])
             .collect::<Vec<_>>()
             .await;
 
@@ -972,7 +993,7 @@ fn test_interleave_rs2_all_empty() {
 
         // Apply interleave
         let result = main_stream
-            .interleave_rs2(vec![empty_stream1, empty_stream2])
+            .interleave_many_rs2(vec![empty_stream1, empty_stream2])
             .collect::<Vec<_>>()
             .await;
 
@@ -982,11 +1003,11 @@ fn test_interleave_rs2_all_empty() {
 }
 
 #[test]
-fn test_tick_rs() {
+fn test_tick() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Create a stream that emits a value at a fixed rate
-        let stream = empty::<i32>().tick_rs(Duration::from_millis(50), 42);
+        let stream = tick(Duration::from_millis(50), 42);
 
         // Take only 3 items to keep the test short
         let result = stream.take(3).collect::<Vec<_>>().await;
@@ -1139,9 +1160,16 @@ fn test_bracket_case_extension_with_error() {
         assert!(*acquired.lock().unwrap());
         assert!(*released.lock().unwrap());
 
-        // Verify exit case was Completed (even with an error in the stream)
+        // In-band `Err` items are data, not stream failure — the same way a
+        // `Left` is in FS2, whose ExitCase carries a Throwable from the effect's
+        // error channel rather than an element value. The stream ran to
+        // exhaustion, so the exit case is Completed.
         let case = exit_case.lock().unwrap().clone().unwrap();
-        assert!(case.contains("Completed"));
+        assert!(
+            case.contains("Completed"),
+            "a stream containing Err items still completes; got {}",
+            case
+        );
     });
 }
 

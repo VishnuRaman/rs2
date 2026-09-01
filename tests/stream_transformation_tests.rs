@@ -313,7 +313,7 @@ fn test_interrupt_when_completed_stream() {
 }
 
 #[test]
-fn test_either() {
+fn test_race() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Test with two streams that produce values at different times
@@ -321,7 +321,7 @@ fn test_either() {
         let s2 = from_iter(vec![10, 20, 30]);
 
         // Using the function directly
-        let result1 = either(s1, s2).collect::<Vec<_>>().await;
+        let result1 = race(s1, s2).collect::<Vec<_>>().await;
 
         // We expect to get values from the first rs2_stream only, since it's selected first
         // and then the second rs2_stream is cancelled
@@ -332,7 +332,7 @@ fn test_either() {
         // Using the extension trait
         let s3 = from_iter(vec![1, 2, 3]);
         let s4 = from_iter(vec![10, 20, 30]);
-        let result2 = s3.either_rs2(s4).collect::<Vec<_>>().await;
+        let result2 = s3.race_rs2(s4).collect::<Vec<_>>().await;
 
         // We expect the same result as with the direct function
         // Note: The actual behavior depends on the implementation details
@@ -342,7 +342,7 @@ fn test_either() {
 }
 
 #[test]
-fn test_either_with_different_timing() {
+fn test_race_with_different_timing() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Create two streams with different timing
@@ -362,7 +362,7 @@ fn test_either_with_different_timing() {
         };
 
         // The either combinator will select values from whichever rs2_stream produces first
-        let result = either(fast_stream.boxed(), slow_stream.boxed())
+        let result = race(fast_stream.boxed(), slow_stream.boxed())
             .collect::<Vec<_>>()
             .await;
 
@@ -380,7 +380,7 @@ fn test_either_with_different_timing() {
 }
 
 #[test]
-fn test_either_with_empty_stream() {
+fn test_race_with_empty_stream() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Test with one empty rs2_stream and one non-empty rs2_stream
@@ -388,7 +388,7 @@ fn test_either_with_empty_stream() {
         let non_empty_stream = from_iter(vec![1, 2, 3]);
 
         // The either combinator should switch to the non-empty rs2_stream when the empty rs2_stream completes
-        let result1 = either(empty_stream, non_empty_stream)
+        let result1 = race(empty_stream, non_empty_stream)
             .collect::<Vec<_>>()
             .await;
         assert_eq!(result1, vec![1, 2, 3]);
@@ -398,7 +398,7 @@ fn test_either_with_empty_stream() {
         let empty_stream2 = from_iter(Vec::<i32>::new());
 
         // The either combinator should complete immediately with no values
-        let result2 = either(empty_stream1, empty_stream2)
+        let result2 = race(empty_stream1, empty_stream2)
             .collect::<Vec<_>>()
             .await;
         assert_eq!(result2, Vec::<i32>::new());
@@ -406,7 +406,7 @@ fn test_either_with_empty_stream() {
 }
 
 #[test]
-fn test_either_with_early_completion() {
+fn test_race_with_early_completion() {
     let rt = Runtime::new().unwrap();
     rt.block_on(async {
         // Test with one rs2_stream that completes early and one that continues
@@ -414,7 +414,7 @@ fn test_either_with_early_completion() {
         let long_stream = from_iter(vec![10, 20, 30, 40]);
 
         // The either combinator should switch to the long rs2_stream when the short rs2_stream completes
-        let result = either(short_stream, long_stream).collect::<Vec<_>>().await;
+        let result = race(short_stream, long_stream).collect::<Vec<_>>().await;
         assert_eq!(result, vec![1, 2, 10, 20, 30, 40]);
     });
 }
@@ -823,7 +823,7 @@ fn test_group_by_basic() {
         let numbers = from_iter(vec![1, 1, 2, 2, 3, 3, 2, 1]);
 
         // Group by even/odd (using modulo 2)
-        let result = group_by(numbers, |&x| x % 2).collect::<Vec<_>>().await;
+        let result = group_adjacent_by(numbers, |&x| x % 2).collect::<Vec<_>>().await;
 
         // Should group consecutive elements with the same key
         assert_eq!(
@@ -847,7 +847,7 @@ fn test_group_by_empty_stream() {
         let empty: RS2Stream<i32> = from_iter(vec![]);
 
         // Group by even/odd
-        let result = group_by(empty, |&x| x % 2).collect::<Vec<_>>().await;
+        let result = group_adjacent_by(empty, |&x| x % 2).collect::<Vec<_>>().await;
 
         // Result should be an empty vector
         assert_eq!(result, Vec::<(i32, Vec<i32>)>::new());
@@ -862,7 +862,7 @@ fn test_group_by_all_same_key() {
         let numbers = from_iter(vec![2, 4, 6, 8, 10]);
 
         // Group by even/odd (all are even)
-        let result = group_by(numbers, |&x| x % 2).collect::<Vec<_>>().await;
+        let result = group_adjacent_by(numbers, |&x| x % 2).collect::<Vec<_>>().await;
 
         // Should produce a single group with all elements
         assert_eq!(
@@ -882,7 +882,7 @@ fn test_group_by_unique_keys() {
         let numbers = from_iter(vec![1, 2, 3, 4, 5]);
 
         // Group by the value itself (each value is its own group)
-        let result = group_by(numbers, |&x| x).collect::<Vec<_>>().await;
+        let result = group_adjacent_by(numbers, |&x| x).collect::<Vec<_>>().await;
 
         // Should produce a separate group for each element
         assert_eq!(
@@ -913,7 +913,7 @@ fn test_group_by_complex_key() {
         ]);
 
         // Group by first letter
-        let result = group_by(words, |s| s.chars().next().unwrap())
+        let result = group_adjacent_by(words, |s| s.chars().next().unwrap())
             .collect::<Vec<_>>()
             .await;
 

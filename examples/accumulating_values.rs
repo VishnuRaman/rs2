@@ -26,6 +26,11 @@ fn main() {
             )
             .await;
 
+        // Alice 120+60+75 = 255, Bob 45+30 = 75, Charlie 90
+        assert_eq!(total_time_by_user.get("Alice"), Some(&255));
+        assert_eq!(total_time_by_user.get("Bob"), Some(&75));
+        assert_eq!(total_time_by_user.get("Charlie"), Some(&90));
+
         println!("Total time spent by each user:");
         for (user, time) in total_time_by_user {
             println!("  - {}: {} seconds", user, time);

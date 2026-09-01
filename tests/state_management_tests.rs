@@ -490,7 +490,7 @@ async fn test_custom_key_extractor() {
         amount: 100.0,
     };
 
-    let key = extractor.extract_key(&event);
+    let key = extractor.extract_key(&event).unwrap();
     assert_eq!(key, "user_42");
 }
 

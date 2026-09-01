@@ -92,6 +92,7 @@ fn main() {
             Duration::from_millis(100 * (throttled.len() as u64 - 1))
         );
         println!("Elements: {:?}", throttled);
+        assert_eq!(throttled, (0..10).collect::<Vec<_>>(), "throttle must not drop items");
 
         println!("\n=== 4. Debounce Example ===");
 
@@ -127,6 +128,8 @@ fn main() {
         println!("\nDebounced stream collected in {:?}", elapsed);
         println!("Original events: a, b, c, d, e, f");
         println!("Debounced events (expected 'd' and 'f'): {:?}", debounced);
+        // Only the last event of each burst survives the quiet period.
+        assert_eq!(debounced, vec!["d", "f"]);
 
         println!("\n=== 5. Sample Example ===");
 

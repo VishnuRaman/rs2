@@ -46,7 +46,8 @@ fn main() {
         let names_stream = users_stream.map_rs2(|user| user.name);
 
         let names = names_stream.collect::<Vec<_>>().await;
-        println!("User names: {:?}", names); // ["Alice", "Bob", "Charlie"]
+        println!("User names: {:?}", names);
+        assert_eq!(names, vec!["Alice", "Bob", "Charlie"]);
 
         // Create a new stream for filtering
         let users = vec![

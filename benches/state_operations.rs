@@ -742,7 +742,7 @@ fn bench_specialized_operations(c: &mut Criterion) {
 
                 let stream = stream::iter(events);
                 let result = stream
-                    .stateful_throttle_rs2(
+                    .stateful_throttle_drop_rs2(
                         config,
                         key_extractor,
                         100, // 100 events per second

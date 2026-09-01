@@ -4,7 +4,7 @@ use async_stream::stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::{Message, TopicPartitionList};
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex; // ← Use Tokio Mutex!
 
 /// Kafka connector for RS2 streams
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct KafkaConnector {
     bootstrap_servers: String,
     consumer_group: Option<String>,
@@ -40,6 +40,15 @@ pub struct KafkaConfig {
     pub session_timeout_ms: Option<u64>,
     /// Message timeout in milliseconds
     pub message_timeout_ms: Option<u64>,
+    /// JSON field of the serialized message to use as the Kafka partition key.
+    ///
+    /// `None` (the default) sends no key, so Kafka partitions round-robin.
+    /// Dotted paths are supported (`"user.id"`).
+    ///
+    /// This replaces an earlier implementation that tried to parse every
+    /// payload as a JSON string and split it on `-`, deriving partition keys
+    /// from arbitrary user data.
+    pub key_field: Option<String>,
 }
 
 impl Default for KafkaConfig {
@@ -54,6 +63,7 @@ impl Default for KafkaConfig {
             auto_commit_interval_ms: Some(5000),
             session_timeout_ms: Some(30000),
             message_timeout_ms: Some(30000),
+            key_field: None,
         }
     }
 }
@@ -69,6 +79,28 @@ pub struct KafkaMetadata {
     pub last_offset: Option<i64>,
     pub consumer_lag: Option<i64>,
     pub throughput: f64,
+}
+
+/// Pull `key_field` out of an already-serialized payload.
+///
+/// Returns `None` when no field is configured, the payload is not a JSON
+/// object, or the field is absent — in which case the record is sent without a
+/// key and Kafka partitions it round-robin.
+pub(crate) fn extract_partition_key(payload: &[u8], key_field: Option<&str>) -> Option<String> {
+    let field = key_field?;
+    let value: serde_json::Value = serde_json::from_slice(payload).ok()?;
+
+    let mut current = &value;
+    for part in field.split('.') {
+        current = current.get(part)?;
+    }
+
+    match current {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 impl KafkaConnector {
@@ -122,6 +154,168 @@ impl KafkaConnector {
         client_config
     }
 
+    /// Real metadata for `topic`, or for the whole cluster when `None`.
+    pub async fn fetch_metadata(
+        &self,
+        topic: Option<&str>,
+    ) -> Result<KafkaMetadata, ConnectorError> {
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &self.bootstrap_servers)
+            .set("group.id", "rs2-metadata-probe")
+            .create()
+            .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
+
+        let md = consumer
+            .fetch_metadata(topic, Duration::from_secs(10))
+            .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
+
+        let partition_count: i32 = md
+            .topics()
+            .iter()
+            .map(|t| t.partitions().len() as i32)
+            .sum();
+
+        Ok(KafkaMetadata {
+            topic: topic.unwrap_or("").to_string(),
+            partition_count,
+            messages_produced: 0,
+            messages_consumed: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            last_offset: None,
+            consumer_lag: None,
+            throughput: 0.0,
+        })
+    }
+
+    /// Real metadata for a single topic, including its partition count.
+    pub async fn topic_metadata(&self, topic: &str) -> Result<KafkaMetadata, ConnectorError> {
+        self.fetch_metadata(Some(topic)).await
+    }
+
+    /// Build and subscribe a consumer for `config`.
+    ///
+    /// Kafka requires a consumer group to subscribe. Without one librdkafka
+    /// fails with `Local: Unknown group`, which says nothing about the cause —
+    /// so check for it up front.
+    fn subscribed_consumer(
+        &self,
+        config: &KafkaConfig,
+    ) -> Result<StreamConsumer, ConnectorError> {
+        if config.group_id.is_none() && self.consumer_group.is_none() {
+            return Err(ConnectorError::InvalidConfiguration(
+                "a consumer group is required to consume: set KafkaConfig::group_id \
+                 or build the connector with `.with_consumer_group(..)`"
+                    .to_string(),
+            ));
+        }
+
+        let consumer: StreamConsumer = self
+            .create_consumer_config(config)
+            .create()
+            .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
+
+        consumer
+            .subscribe(&[config.topic.as_str()])
+            .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
+
+        if let Some(partition) = config.partition {
+            let mut tpl = TopicPartitionList::new();
+            tpl.add_partition(&config.topic, partition);
+            consumer
+                .assign(&tpl)
+                .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
+        }
+
+        Ok(consumer)
+    }
+
+    /// Consume a topic, surfacing per-message failures instead of dropping them.
+    ///
+    /// [`StreamConnector::from_source`] yields bare `T` and has nowhere to put a
+    /// decode error, so it logs and skips — a malformed message is invisible to
+    /// the caller. This yields `Result` so you can decide.
+    pub async fn from_source_with_errors<T>(
+        &self,
+        config: KafkaConfig,
+    ) -> Result<RS2Stream<Result<T, ConnectorError>>, ConnectorError>
+    where
+        T: for<'de> Deserialize<'de> + Send + 'static,
+    {
+        let consumer = self.subscribed_consumer(&config)?;
+        let topic = config.topic.clone();
+
+        Ok(stream! {
+            loop {
+                match consumer.recv().await {
+                    Ok(message) => {
+                        let Some(payload) = message.payload() else { continue };
+                        match serde_json::from_slice::<T>(payload) {
+                            Ok(item) => yield Ok(item),
+                            Err(e) => yield Err(ConnectorError::ConnectorSpecific(format!(
+                                "failed to deserialize message from `{}`: {}",
+                                topic, e
+                            ))),
+                        }
+                    }
+                    Err(e) => {
+                        yield Err(ConnectorError::ConnectionFailed(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        }
+        .boxed())
+    }
+
+    /// Consume a topic with manual offset commits.
+    ///
+    /// Returns the stream plus a [`CommitHandle`]. `KafkaConfig` has always
+    /// exposed `enable_auto_commit`, but with no way to commit by hand: setting
+    /// it to `false` meant offsets were simply never committed. This forces
+    /// `enable.auto.commit=false` and hands back the means to commit.
+    pub async fn from_source_manual_commit<T>(
+        &self,
+        config: KafkaConfig,
+    ) -> Result<(RS2Stream<Result<T, ConnectorError>>, CommitHandle), ConnectorError>
+    where
+        T: for<'de> Deserialize<'de> + Send + 'static,
+    {
+        let mut config = config;
+        config.enable_auto_commit = false;
+
+        let consumer = Arc::new(self.subscribed_consumer(&config)?);
+        let handle = CommitHandle {
+            consumer: Arc::clone(&consumer),
+        };
+        let topic = config.topic.clone();
+        let stream_consumer = Arc::clone(&consumer);
+
+        let stream = stream! {
+            loop {
+                match stream_consumer.recv().await {
+                    Ok(message) => {
+                        let Some(payload) = message.payload() else { continue };
+                        match serde_json::from_slice::<T>(payload) {
+                            Ok(item) => yield Ok(item),
+                            Err(e) => yield Err(ConnectorError::ConnectorSpecific(format!(
+                                "failed to deserialize message from `{}`: {}",
+                                topic, e
+                            ))),
+                        }
+                    }
+                    Err(e) => {
+                        yield Err(ConnectorError::ConnectionFailed(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        }
+        .boxed();
+
+        Ok((stream, handle))
+    }
+
     fn create_producer_config(&self, config: &KafkaConfig) -> ClientConfig {
         let mut client_config = ClientConfig::new();
 
@@ -142,6 +336,32 @@ impl KafkaConnector {
     }
 }
 
+/// Commits offsets for a stream created by
+/// [`KafkaConnector::from_source_manual_commit`].
+#[derive(Clone)]
+pub struct CommitHandle {
+    consumer: Arc<StreamConsumer>,
+}
+
+impl CommitHandle {
+    /// Commit the offsets consumed so far.
+    ///
+    /// `Async` hands the offsets to librdkafka to send in the background;
+    /// use [`CommitHandle::commit_sync`] to wait for the broker.
+    pub fn commit(&self) -> Result<(), ConnectorError> {
+        self.consumer
+            .commit_consumer_state(CommitMode::Async)
+            .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))
+    }
+
+    /// Commit the offsets consumed so far and wait for the broker to confirm.
+    pub fn commit_sync(&self) -> Result<(), ConnectorError> {
+        self.consumer
+            .commit_consumer_state(CommitMode::Sync)
+            .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))
+    }
+}
+
 #[async_trait]
 impl<T> StreamConnector<T> for KafkaConnector
 where
@@ -152,24 +372,7 @@ where
     type Metadata = KafkaMetadata;
 
     async fn from_source(&self, config: Self::Config) -> Result<RS2Stream<T>, Self::Error> {
-        let client_config = self.create_consumer_config(&config);
-        let consumer: StreamConsumer = client_config
-            .create()
-            .map_err(|e| ConnectorError::ConnectionFailed(e.to_string()))?;
-
-        let topics = vec![config.topic.as_str()];
-        consumer
-            .subscribe(&topics)
-            .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
-
-        if let Some(partition) = config.partition {
-            let mut tpl = TopicPartitionList::new();
-            tpl.add_partition(&config.topic, partition);
-            consumer
-                .assign(&tpl)
-                .map_err(|e| ConnectorError::ConnectorSpecific(e.to_string()))?;
-        }
-
+        let consumer = self.subscribed_consumer(&config)?;
         let topic = config.topic.clone();
         let stream = stream! {
             loop {
@@ -227,25 +430,15 @@ where
                 let producer = producer.clone();
                 let topic = config.topic.clone();
                 let partition = config.partition;
+                let key_field = config.key_field.clone();
                 let messages_counter = Arc::clone(&messages_produced);
                 let bytes_counter = Arc::clone(&bytes_sent);
 
                 async move {
                     match serde_json::to_vec(&item) {
                         Ok(payload) => {
-                            // If it's a string message, try to extract a key for partitioning
-                            let key_string = if let Ok(message_str) =
-                                serde_json::from_slice::<String>(&payload)
-                            {
-                                // Check if it matches our test pattern "p{partition}-{sequence}"
-                                if let Some(key) = message_str.split('-').next() {
-                                    Some(key.to_string())
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
+                            let key_string =
+                                extract_partition_key(&payload, key_field.as_deref());
 
                             // Now create the record with the key if we have one
                             let mut record = FutureRecord::to(&topic).payload(&payload);
@@ -318,18 +511,15 @@ where
         }
     }
 
+    /// Cluster-level metadata.
+    ///
+    /// This trait method takes no topic, so `topic` is empty and
+    /// `partition_count` is the total across the cluster. Use
+    /// [`KafkaConnector::topic_metadata`] for a specific topic. It previously
+    /// returned hardcoded placeholders (`"unknown"` and zeros) without
+    /// contacting the broker at all.
     async fn metadata(&self) -> Result<Self::Metadata, Self::Error> {
-        Ok(KafkaMetadata {
-            topic: "unknown".to_string(),
-            partition_count: 0,
-            messages_produced: 0,
-            messages_consumed: 0,
-            bytes_sent: 0,
-            bytes_received: 0,
-            last_offset: None,
-            consumer_lag: None,
-            throughput: 0.0,
-        })
+        self.fetch_metadata(None).await
     }
 
     fn name(&self) -> &'static str {

@@ -90,7 +90,8 @@ fn main() {
             .collect::<Vec<_>>()
             .await;
 
-        println!("Total users after merge: {}", all_users.len()); // 5
+        println!("Total users after merge: {}", all_users.len());
+        assert_eq!(all_users.len(), 5, "merge must not lose or duplicate items");
 
         // Create two streams with different timing
         let fast_stream = stream! {
@@ -110,7 +111,7 @@ fn main() {
 
         // Use either to select whichever stream produces a value first
         let results = fast_stream
-            .either_rs2(slow_stream)
+            .race_rs2(slow_stream)
             .collect::<Vec<_>>()
             .await;
 

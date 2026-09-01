@@ -86,7 +86,8 @@ impl StateConfig {
     pub fn create_storage(&self) -> Box<dyn StateStorage + Send + Sync> {
         match self.storage_type {
             StateStorageType::InMemory => {
-                let mut storage = InMemoryState::new(self.ttl);
+                let mut storage =
+                    InMemoryState::new(self.ttl).with_cleanup_interval(self.cleanup_interval);
                 if let Some(max_size) = self.max_size {
                     storage = storage.with_max_size(max_size);
                 }
@@ -100,7 +101,8 @@ impl StateConfig {
                     Box::new(ArcStorageWrapper(cloned_storage))
                 } else {
                     // Fallback to in-memory if no custom storage is provided
-                    let mut storage = InMemoryState::new(self.ttl);
+                    let mut storage =
+                        InMemoryState::new(self.ttl).with_cleanup_interval(self.cleanup_interval);
                     if let Some(max_size) = self.max_size {
                         storage = storage.with_max_size(max_size);
                     }
@@ -114,7 +116,8 @@ impl StateConfig {
     pub fn create_storage_arc(&self) -> Arc<dyn StateStorage + Send + Sync> {
         match self.storage_type {
             StateStorageType::InMemory => {
-                let mut storage = InMemoryState::new(self.ttl);
+                let mut storage =
+                    InMemoryState::new(self.ttl).with_cleanup_interval(self.cleanup_interval);
                 if let Some(max_size) = self.max_size {
                     storage = storage.with_max_size(max_size);
                 }
@@ -126,7 +129,8 @@ impl StateConfig {
                     custom_storage.clone()
                 } else {
                     // Fallback to in-memory if no custom storage is provided
-                    let mut storage = InMemoryState::new(self.ttl);
+                    let mut storage =
+                        InMemoryState::new(self.ttl).with_cleanup_interval(self.cleanup_interval);
                     if let Some(max_size) = self.max_size {
                         storage = storage.with_max_size(max_size);
                     }

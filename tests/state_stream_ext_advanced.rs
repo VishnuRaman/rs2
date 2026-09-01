@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use rs2_stream::state::stream_ext::StateAccess;
-use rs2_stream::state::{CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
+use rs2_stream::state::{StateError, CustomKeyExtractor, KeyExtractor, StateConfig, StatefulStreamExt};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tokio;
@@ -20,8 +20,8 @@ struct TestState {
 }
 
 impl KeyExtractor<TestData> for fn(&TestData) -> String {
-    fn extract_key(&self, item: &TestData) -> String {
-        self(item)
+    fn extract_key(&self, item: &TestData) -> Result<String, StateError> {
+        Ok(self(item))
     }
 }
 
@@ -392,7 +392,7 @@ async fn test_stateful_throttle() {
 
     let stream = DelayedStream { data, index: 0 };
 
-    let result_stream = stream.stateful_throttle_rs2(
+    let result_stream = stream.stateful_throttle_drop_rs2(
         config,
         key_extractor,
         1,                                     // Rate limit: 1 item per 100ms window
@@ -573,9 +573,11 @@ async fn test_stateful_pattern() {
         "Pattern detection should emit at least one result"
     );
 
-    // Verify that we get pattern results with the expected format
-    for result in &results {
-        if let Some(pattern_result) = result {
+    // Verify that we get pattern results with the expected format.
+    // Items are now plain `String`: `f` returning `None` means "no pattern
+    // here", which is not an item, so `Ok(None)` was never yielded anyway.
+    for pattern_result in &results {
+        {
             assert!(
                 pattern_result.contains("total:"),
                 "Pattern result should contain total count"
@@ -593,18 +595,14 @@ async fn test_stateful_pattern() {
         }
     }
 
-    // Verify that at least one result is Some (not None)
+    // Every yielded item is a detected pattern.
     assert!(
-        results.iter().any(|r| r.is_some()),
-        "Should have at least one non-None result"
+        !results.is_empty(),
+        "Should have at least one detected pattern"
     );
 
     // Check for pattern detection - should detect the purchase pattern
-    let pattern_detected = results.iter().any(|r| {
-        r.as_ref()
-            .map(|s| s.contains("PATTERN_DETECTED"))
-            .unwrap_or(false)
-    });
+    let pattern_detected = results.iter().any(|s| s.contains("PATTERN_DETECTED"));
     assert!(pattern_detected, "Should detect the purchase pattern");
 }
 
@@ -684,7 +682,7 @@ async fn test_stateful_throttle_real_time() {
         index: 0,
     };
 
-    let result_stream = delayed_stream.stateful_throttle_rs2(
+    let result_stream = delayed_stream.stateful_throttle_drop_rs2(
         config,
         key_extractor,
         max_per_interval,
@@ -733,19 +731,21 @@ async fn test_stateful_throttle_real_time() {
     assert!(per_key.contains_key(&1), "Should have results for key 1");
     assert!(per_key.contains_key(&2), "Should have results for key 2");
 
-    // Verify that the total processing time is reasonable (should be at least throttle_interval * number_of_keys)
-    if !results.is_empty() {
-        let total_time = results
-            .last()
-            .unwrap()
-            .1
-            .duration_since(results.first().unwrap().1);
-        let min_expected_time = Duration::from_millis(throttle_interval_ms * 2); // At least 2 throttle intervals
+    // This previously asserted that the run took at least two throttle
+    // intervals, which only held because the throttle slept inline. That
+    // delaying variant was removed: it stalled the whole stream, not just the
+    // throttled key. Under shedding semantics the guarantee is about *counts*,
+    // not elapsed time — the source emits everything inside a single window, so
+    // each key may admit at most `max_per_interval` items and the rest are
+    // dropped.
+    for (id, times) in &per_key {
         assert!(
-            total_time >= min_expected_time,
-            "Total processing time too short: {:?} < {:?}",
-            total_time,
-            min_expected_time
+            times.len() <= max_per_interval as usize,
+            "Key {}: admitted {} items in one {}ms window, limit is {}",
+            id,
+            times.len(),
+            throttle_interval_ms,
+            max_per_interval
         );
     }
 }
@@ -1100,9 +1100,11 @@ async fn test_stateful_pattern_with_complex_sequence() {
         "Pattern detection should emit at least one result"
     );
 
-    // Verify that we get pattern results with the expected format
-    for result in &results {
-        if let Some(pattern_result) = result {
+    // Verify that we get pattern results with the expected format.
+    // Items are now plain `String`: `f` returning `None` means "no pattern
+    // here", which is not an item, so `Ok(None)` was never yielded anyway.
+    for pattern_result in &results {
+        {
             assert!(
                 pattern_result.contains("total:"),
                 "Pattern result should contain total count"
@@ -1119,10 +1121,10 @@ async fn test_stateful_pattern_with_complex_sequence() {
         }
     }
 
-    // Verify that at least one result is Some (not None)
+    // Every yielded item is a detected pattern.
     assert!(
-        results.iter().any(|r| r.is_some()),
-        "Should have at least one non-None result"
+        !results.is_empty(),
+        "Should have at least one detected pattern"
     );
 }
 
@@ -1323,7 +1325,7 @@ async fn test_stateful_throttle_with_multiple_keys() {
         item
     }));
 
-    let result_stream = stream.stateful_throttle_rs2(
+    let result_stream = stream.stateful_throttle_drop_rs2(
         config,
         key_extractor,
         max_per_interval,

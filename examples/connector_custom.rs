@@ -12,6 +12,7 @@ struct MyQueueConnector {
 #[derive(Clone)]
 struct MyQueueConfig {
     queue_name: String,
+    /// Honoured below — see `from_source`.
     common: CommonConfig,
 }
 
@@ -39,17 +40,24 @@ impl StreamConnector<String> for MyQueueConnector {
     async fn from_source(&self, config: Self::Config) -> Result<RS2Stream<String>, Self::Error> {
         // In a real implementation, you would connect to your message queue
         // and create a stream of messages
+        // `CommonConfig` is not interpreted by RS2 — it is here for connector
+        // authors to honour in their own implementation, which is what this
+        // does: the batch size and retry count come straight from it.
         println!(
-            "Connecting to {} with queue {}",
-            self.connection_string, config.queue_name
+            "Connecting to {} with queue {} (batch_size={}, retries={}, timeout={}ms)",
+            self.connection_string,
+            config.queue_name,
+            config.common.batch_size,
+            config.common.retry_attempts,
+            config.common.timeout_ms
         );
 
-        // For this example, we'll just return a stream of mock messages
-        let messages = vec![
-            "Message 1".to_string(),
-            "Message 2".to_string(),
-            "Message 3".to_string(),
-        ];
+        // For this example, we'll just return a stream of mock messages,
+        // honouring the configured batch size.
+        let messages: Vec<String> = (1..=10)
+            .map(|i| format!("Message {}", i))
+            .take(config.common.batch_size.max(1))
+            .collect();
 
         Ok(from_iter(messages))
     }

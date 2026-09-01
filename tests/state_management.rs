@@ -20,8 +20,8 @@ struct TestState {
 }
 
 impl KeyExtractor<TestData> for fn(&TestData) -> String {
-    fn extract_key(&self, item: &TestData) -> String {
-        self(item)
+    fn extract_key(&self, item: &TestData) -> Result<String, StateError> {
+        Ok(self(item))
     }
 }
 

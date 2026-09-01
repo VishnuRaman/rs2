@@ -38,6 +38,8 @@ fn main() {
 
         let users = users_stream.collect::<Vec<_>>().await;
 
+        // eval_map runs the async fn per element and preserves count and order.
+        assert_eq!(users.len(), 3);
         for user in users {
             println!("Fetched user: {} ({})", user.name, user.email);
         }

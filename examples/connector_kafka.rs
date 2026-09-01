@@ -23,15 +23,26 @@ fn main() {
             auto_commit_interval_ms: Some(5000),
             session_timeout_ms: Some(30000),
             message_timeout_ms: Some(30000),
+            key_field: None,
         };
 
-        // Check if the connector is healthy
-        let healthy = <KafkaConnector as StreamConnector<String>>::health_check(&connector)
-            .await
-            .unwrap();
-        if !healthy {
-            println!("Kafka connector is not healthy!");
-            return;
+        // Check if the connector is healthy.
+        //
+        // `health_check` returns Err when no broker is reachable, so unwrapping
+        // it makes the example panic on any machine without Kafka running.
+        // Degrade cleanly instead.
+        match <KafkaConnector as StreamConnector<String>>::health_check(&connector).await {
+            Ok(true) => {}
+            Ok(false) => {
+                println!("Kafka connector is not healthy!");
+                return;
+            }
+            Err(e) => {
+                println!("No Kafka broker reachable at localhost:9092 ({e}).");
+                println!("Start one, e.g.:");
+                println!("  docker run -p 9092:9092 apache/kafka:latest");
+                return;
+            }
         }
 
         // Create a stream from Kafka
@@ -63,6 +74,7 @@ fn main() {
             auto_commit_interval_ms: Some(5000),
             session_timeout_ms: Some(30000),
             message_timeout_ms: Some(30000),
+            key_field: None,
         };
 
         // Send to sink

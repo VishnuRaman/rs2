@@ -11,7 +11,6 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use crate::resource_manager::get_global_resource_manager;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PriorityItem {
@@ -53,7 +52,6 @@ impl MediaPriorityQueue {
     }
 
     pub async fn enqueue(&self, chunk: MediaChunk) -> Result<(), QueueError> {
-        let resource_manager = get_global_resource_manager();
         let priority = chunk.priority;
         let sequence = chunk.sequence_number;
         let item = PriorityItem {
@@ -66,10 +64,7 @@ impl MediaPriorityQueue {
             let mut buffer = self.priority_buffer.lock().await;
             if buffer.len() < self.buffer_size {
                 buffer.push(item);
-                resource_manager.track_memory_allocation(1).await.ok();
                 return Ok(());
-            } else {
-                resource_manager.track_buffer_overflow().await.ok();
             }
         }
         // Buffer full, push to main queue
@@ -79,18 +74,13 @@ impl MediaPriorityQueue {
     pub fn dequeue(&self) -> impl Stream<Item = MediaChunk> + Send + 'static {
         let priority_buffer = Arc::clone(&self.priority_buffer);
         let queue_stream = self.internal_queue.dequeue();
-        let resource_manager = get_global_resource_manager();
         stream! {
             let mut queue_stream = std::pin::pin!(queue_stream);
             loop {
                 // First check priority buffer
                 let high_priority_item = {
                     let mut buffer = priority_buffer.lock().await;
-                    let popped = buffer.pop();
-                    if popped.is_some() {
-                        resource_manager.track_memory_deallocation(1).await;
-                    }
-                    popped
+                    buffer.pop()
                 };
                 if let Some(item) = high_priority_item {
                     yield item.chunk;
@@ -98,7 +88,6 @@ impl MediaPriorityQueue {
                     // No high priority items, get from main queue
                     match queue_stream.next().await {
                         Some(item) => {
-                            resource_manager.track_memory_deallocation(1).await;
                             yield item.chunk
                         },
                         None => break,
@@ -110,7 +99,6 @@ impl MediaPriorityQueue {
 
     /// Try to enqueue without blocking - useful for live streaming
     pub async fn try_enqueue(&self, chunk: MediaChunk) -> Result<(), QueueError> {
-        let resource_manager = get_global_resource_manager();
         let priority = chunk.priority;
         let sequence = chunk.sequence_number;
         let item = PriorityItem {
@@ -123,10 +111,7 @@ impl MediaPriorityQueue {
             let mut buffer = self.priority_buffer.lock().await;
             if buffer.len() < self.buffer_size {
                 buffer.push(item);
-                resource_manager.track_memory_allocation(1).await.ok();
                 return Ok(());
-            } else {
-                resource_manager.track_buffer_overflow().await.ok();
             }
         }
         // Buffer full, try to push to main queue without blocking

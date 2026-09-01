@@ -255,6 +255,53 @@ pub trait RS2ResultStreamExt<T: Send + 'static, E: Send + 'static>:
     {
         bracket_case(acquire, use_fn, release)
     }
+    /// Replace the stream with `h(e)` on the first `Err`, terminating the source
+    ///
+    /// FS2's `handleErrorWith`. The source stops at the first error — that is
+    /// what makes this different from [`RS2ResultStreamExt::on_error_resume_next_rs2`],
+    /// which keeps consuming the source and recovers each error individually.
+    fn handle_error_with_rs2<F>(self, mut h: F) -> RS2Stream<T>
+    where
+        F: FnMut(E) -> RS2Stream<T> + Send + 'static,
+    {
+        let mut stream = self;
+        stream! {
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(value) => yield value,
+                    Err(e) => {
+                        // Source terminates here; the handler takes over.
+                        let mut recovery = h(e);
+                        while let Some(v) = recovery.next().await {
+                            yield v;
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+        .boxed()
+    }
+
+    /// Emit `Ok` values until the first `Err`, emit that, then stop
+    ///
+    /// FS2's `attempt`. RS2 streams already carry errors in-band, so the value
+    /// here is the short-circuiting: everything after the first error is
+    /// discarded rather than passed through.
+    fn attempt_rs2(self) -> RS2Stream<Result<T, E>> {
+        let mut stream = self;
+        stream! {
+            while let Some(item) = stream.next().await {
+                let is_err = item.is_err();
+                yield item;
+                if is_err {
+                    return;
+                }
+            }
+        }
+        .boxed()
+    }
+
 }
 
 impl<T, E, S> RS2ResultStreamExt<T, E> for S
@@ -263,4 +310,5 @@ where
     T: Send + 'static,
     E: Send + 'static,
 {
+
 }

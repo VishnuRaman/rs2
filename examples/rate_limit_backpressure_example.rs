@@ -54,6 +54,17 @@ fn main() {
             "Without backpressure, all elements would have been produced in {:?}",
             Duration::from_millis(10 * 20)
         );
+        // Invariants that must hold on any machine, however loaded:
+        //  - backpressure paces delivery, it does not discard;
+        //  - the consumer sleeps 10ms per item, so the run cannot be faster
+        //    than that. The bound is one-sided and generous on purpose: a slow
+        //    machine may take much longer, but never less.
+        assert_eq!(result.len(), 20, "backpressure must not drop items");
+        assert!(
+            elapsed >= Duration::from_millis(150),
+            "consumption was impossibly fast: {:?}",
+            elapsed
+        );
         println!("With backpressure, the production rate is limited by the consumption rate");
     });
 }

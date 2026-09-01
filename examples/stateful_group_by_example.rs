@@ -83,6 +83,8 @@ async fn main() {
     ];
 
     // Example 1: Group by service with size-based emission (emit when group reaches 3 items)
+    // Size-based emission fires whenever a group reaches 3 items; whatever is
+    // left over is flushed at stream end. Totals accumulate across emissions.
     println!("1. Group by Service with Size-Based Emission (max 3 items per group):");
     let service_groups = futures::stream::iter(logs.clone())
         .stateful_group_by_advanced_rs2(

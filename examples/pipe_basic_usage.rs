@@ -17,6 +17,29 @@ fn main() {
 
         // Collect the results
         let result = doubled.collect::<Vec<_>>().await;
-        println!("Doubled: {:?}", result); // [2, 4, 6, 8, 10]
+        println!("Doubled: {:?}", result);
+        assert_eq!(result, vec![2, 4, 6, 8, 10]);
+
+        // --- identity ----------------------------------------------------
+        // `identity()` passes the stream through untouched — useful as the
+        // neutral element when a pipe is assembled conditionally.
+        let passthrough: Pipe<i32, i32> = identity();
+        let out = passthrough
+            .apply(from_iter(vec![1, 2, 3]))
+            .collect::<Vec<_>>()
+            .await;
+        println!("\nidentity pipe -> {:?}", out);
+
+        let double_it = false;
+        let maybe_double: Pipe<i32, i32> = if double_it {
+            map(|x: i32| x * 2)
+        } else {
+            identity()
+        };
+        let out = maybe_double
+            .apply(from_iter(vec![1, 2, 3]))
+            .collect::<Vec<_>>()
+            .await;
+        println!("conditional pipe (disabled) -> {:?}", out);
     });
 }
